@@ -4772,6 +4772,7 @@ source = { editable = "." }
 dependencies = [
     { name = "hyrax" },
     { name = "numpy" },
+    { name = "pandas" },
 ]
 
 [package.dev-dependencies]
@@ -4785,6 +4786,7 @@ test = [
 requires-dist = [
     { name = "hyrax", specifier = ">=0.12" },
     { name = "numpy", specifier = ">=2.5.3" },
+    { name = "pandas", specifier = ">=3.0.5" },
 ]
 
 [package.metadata.requires-dev]
