@@ -7,8 +7,22 @@ authors = [
     { name = "MatthieuPe", email = "matthieupelissier01@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "hyrax>=0.12",
+    "numpy>=2.5.3",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+test = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-emoji>=0.2.0",
+]
+
+[tool.pytest.ini_options]
+addopts = ["--verbose", "--emoji"]
+testpaths = ["tests"]
