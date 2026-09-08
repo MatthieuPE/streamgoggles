@@ -1,0 +1,12 @@
+# Reference isochrone, bands, pixelization, and trial-distance spec for the matched filter.
+reference_isochrone: {age: 12.5, z: 0.0002}   # age in Gyr, metallicity Z (mass fraction)
+bands: [g, r]                           # bands used in the color-magnitude cuts
+pixelization:
+  nside: 128                            # HEALPix grid for counting (start value)
+  projection: gnomonic                  # HEALPix -> 2D image, centered on the field
+  rotation_deg: 0.0                     # random position angle/tilt per window (set per sample, not here)
+  image_size_pix: [256, 256]            # 256 * 0.05 deg = 12.8 deg window, well under the 30 deg cap
+  pixel_scale_deg: 0.05
+  interpolate: true                     # hp.get_interp_val when projecting
+distance: {mode: fixed, value: 17.5}   # trial distances for the filter
+finalize: {enabled: false, smoothing_deg: 0.1, background_subtract: false}   # off until integrated

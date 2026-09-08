@@ -1,0 +1,16 @@
+# Default background config: LSST year-1 forecast, no real data (decision 23) —
+# the workflow the first milestone starts with. Switch `source` to `data_file`
+# once real DP2 data is being used; everything downstream (cuts, clipping,
+# select, caching) is unchanged either way.
+background:
+  source: light               # data_file | light | injection
+  survey: lsst
+  release: yr1
+  light: {}                   # streamobs-specific params for LightBackgroundGenerator go here
+  dust_correction: {enabled: false}  # light/injection already account for extinction internally
+                                      # (see PLAN.md §6.1.6) — only data_file needs deredden_dataframe
+study_region: {center_ra: 0.0, center_dec: -30.0, width_deg: 70.0, height_deg: 20.0}
+cuts:
+  - {quantity: snr, band: g, op: ">", value: 5}
+  - {quantity: snr, band: r, op: ">", value: 5}
+magnitude_clipping: {g: {min: 16.0, max: 26.5}, r: {min: 16.0, max: 26.0}}

@@ -1,0 +1,13 @@
+# Training injection grid — first milestone: everything fixed except position/orientation.
+morphology: uniform
+richness: {surface_brightness: 30.0}   # or {mass: 1.0e4} or {nstars: 2000}; converted to nstars via inject_utils
+width: 0.2
+length: 8.0
+distance_modulus: 17.5              # TRUE stream distance
+age: 12.0                           # Gyr
+z: 0.0004                           # metallicity Z (mass fraction), not [Fe/H]
+orientation: {min: 0.0, max: 180.0} # free
+position: uniform_in_footprint
+background_fraction: 0.0            # default off; raise deliberately for robustness training
+label: {policy: density, normalization: max, dilate_to_width: true}
+persist: false
