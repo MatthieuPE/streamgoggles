@@ -15,9 +15,15 @@ pixelization:
                                           # never a naive ra x dec histogram (decision 15)
   rotation_deg: 0.0                     # window position angle/tilt, degrees; set per-sample by windows.py,
                                           # not read from here — this is just the PixelizationSpec default
-  image_size_pix: [256, 256]            # output image size in pixels; 256 * 0.05 deg = 12.8 deg window,
-                                          # well under the <=30 deg cap (decision 21)
-  pixel_scale_deg: 0.05                 # degrees per pixel
+  image_size_pix: [60, 60]              # output image size in pixels; 60 * ~0.458 deg (native resolution at
+                                          # nside=128, see below) = ~27.5 deg window, under the <=30 deg cap
+                                          # (decision 21). Raise nside for a finer per-pixel resolution and/or
+                                          # a bigger window at the same pixel count.
+  # pixel_scale_deg intentionally omitted: PixelizationSpec auto-derives it from
+  # nside (native_pixel_scale_deg) so the image resolution always matches what the
+  # HEALPix map actually contains — specifying a finer value than native raises
+  # ValueError (it would just be fabricated detail from interpolation). Only set
+  # this explicitly to deliberately use a COARSER-than-native pixel size.
   interpolate: true                     # use hp.get_interp_val (bilinear) rather than nearest-pixel lookup
                                           # when projecting HEALPix -> image
 

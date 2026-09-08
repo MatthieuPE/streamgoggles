@@ -29,5 +29,10 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-addopts = ["--verbose", "--emoji"]
+addopts = ["--verbose", "--emoji", "--strict-markers"]
 testpaths = ["tests"]
+markers = [
+    "config: config.py (StreamConfig/BackgroundConfig/MatchedFilterConfig, eval grid)",
+    "storage: storage.py (ParameterStore, SimulationStore, BackgroundMapStore, ModelStore)",
+    "matched_filter: matched_filter.py (matched filter, pixelization, projection)",
+]

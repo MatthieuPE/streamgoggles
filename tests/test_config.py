@@ -3,6 +3,8 @@
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.config
+
 from streamgoggles.config import (
     BackgroundConfig,
     DistributionType,

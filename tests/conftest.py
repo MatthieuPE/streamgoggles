@@ -171,3 +171,42 @@ def default_matched_filter_dict():
             "background_subtract": False,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Storage fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_sample():
+    """A minimal, valid Sample for storage round-trip tests."""
+    from streamgoggles.sample import Sample
+
+    gen = np.random.default_rng(0)
+    map_stack = gen.normal(size=(2, 4, 4)).astype(np.float32)
+    label_stack = gen.uniform(size=(2, 4, 4)).astype(np.float32)
+    valid_mask = np.ones((4, 4), dtype=bool)
+    return Sample(
+        map_stack=map_stack,
+        label_stack=label_stack,
+        valid_mask=valid_mask,
+        params={"width": 0.2, "age": 12.0},
+        metadata={"seed": 0},
+    )
+
+
+@pytest.fixture
+def tiny_torch_model_class():
+    """A minimal torch.nn.Module class for ModelStore round-trip tests."""
+    from torch import nn
+
+    class TinyLinearModel(nn.Module):
+        def __init__(self, in_features=2, out_features=1):
+            super().__init__()
+            self.linear = nn.Linear(in_features, out_features)
+
+        def forward(self, x):
+            return self.linear(x)
+
+    return TinyLinearModel
