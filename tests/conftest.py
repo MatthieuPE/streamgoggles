@@ -4,6 +4,7 @@ Shared pytest fixtures for the streamobs test suite.
 
 import numpy as np
 import pytest
+import yaml
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -28,7 +29,145 @@ def verbose():
     return True
 
 
-def test_seed(seed):
-    """Test that the seed fixture returns a fixed integer."""
-    assert isinstance(seed, int)
-    assert seed == 42
+# ---------------------------------------------------------------------------
+# Config fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def write_yaml(tmp_path):
+    """Factory fixture: write a dict as YAML to a temp file, return its path.
+
+    Centralizes the write-a-synthetic-config-then-load-it pattern used across
+    config.py's tests, so synthetic fixture content lives in one place instead
+    of being re-typed as an inline `yaml.safe_dump({...})` in every test.
+    """
+
+    def _write(data: dict, filename: str = "config.yaml"):
+        path = tmp_path / filename
+        path.write_text(yaml.safe_dump(data))
+        return path
+
+    return _write
+
+
+@pytest.fixture
+def stream_dict_single_fixed_width():
+    """Minimal stream-config dict with exactly one fixed parameter (width)."""
+    return {"width": 0.2}
+
+
+@pytest.fixture
+def stream_dict_mixed_free():
+    """Stream-config dict with one free uniform param and one free discrete param.
+
+    Shared by tests that need >1 free parameter (free_parameters() detection,
+    eval-grid Cartesian product) without caring about the rest of a realistic
+    stream config.
+    """
+    return {
+        "orientation": {"min": 0.0, "max": 180.0},
+        "age": {"values": [10.0, 12.0, 13.5]},
+    }
+
+
+# ---------------------------------------------------------------------------
+# "Default" config dicts
+#
+# These are frozen, hand-maintained snapshots of a realistic training/eval/
+# background/matched-filter config — deliberately NOT read from config/*.yaml.
+# Tests built on these run against a fixed, known shape regardless of later
+# edits to the real config files; keep the two in sync by hand when the real
+# files' schema changes, don't have one load the other.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def default_injection_grid_dict():
+    """Representative training injection-grid config (first milestone shape)."""
+    return {
+        "morphology": "uniform",
+        "richness": {"surface_brightness": 30.0},
+        "width": 0.2,
+        "length": 8.0,
+        "distance_modulus": 17.5,
+        "age": 12.0,
+        "z": 0.0004,
+        "orientation": {"min": 0.0, "max": 180.0},
+        "position": "uniform_in_footprint",
+        "background_fraction": 0.0,
+        "label": {"policy": "density", "normalization": "max", "dilate_to_width": True},
+        "persist": False,
+    }
+
+
+@pytest.fixture
+def default_eval_grid_dict():
+    """Representative persisted eval-grid config: only richness is free."""
+    return {
+        "morphology": "uniform",
+        "richness": {
+            "surface_brightness": {"values": [26.0, 27.2, 28.4, 29.6, 30.8, 32.0]}
+        },
+        "width": 0.2,
+        "length": 8.0,
+        "distance_modulus": 17.5,
+        "age": 12.0,
+        "z": 0.0004,
+        "orientation": 90.0,
+        "position": "uniform_in_footprint",
+        "background_fraction": 0.0,
+        "label": {"policy": "density", "normalization": "max", "dilate_to_width": True},
+        "persist": True,
+    }
+
+
+@pytest.fixture
+def default_background_dict():
+    """Representative background config: LSST yr1 forecast via `light`."""
+    return {
+        "background": {
+            "source": "light",
+            "survey": "lsst",
+            "release": "yr1",
+            "light": {},
+            "dust_correction": {"enabled": False},
+        },
+        "study_region": {
+            "center_ra": 0.0,
+            "center_dec": -30.0,
+            "width_deg": 70.0,
+            "height_deg": 20.0,
+        },
+        "cuts": [
+            {"quantity": "snr", "band": "g", "op": ">", "value": 5},
+            {"quantity": "snr", "band": "r", "op": ">", "value": 5},
+        ],
+        "magnitude_clipping": {
+            "g": {"min": 16.0, "max": 26.5},
+            "r": {"min": 16.0, "max": 26.0},
+        },
+    }
+
+
+@pytest.fixture
+def default_matched_filter_dict():
+    """Representative matched-filter config: fixed distance modulus, finalize off."""
+    return {
+        "reference_isochrone": {"age": 12.5, "z": 0.0002},
+        "bands": ["g", "r"],
+        "pixelization": {
+            "nside": 128,
+            "projection": "gnomonic",
+            "rotation_deg": 0.0,
+            "image_size_pix": [256, 256],
+            "pixel_scale_deg": 0.05,
+            "interpolate": True,
+        },
+        "distance": {"mode": "fixed", "value": 17.5},
+        "finalize": {
+            "enabled": False,
+            "smoothing_deg": 0.1,
+            "background_subtract": False,
+        },
+    }

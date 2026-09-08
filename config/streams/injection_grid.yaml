@@ -1,13 +1,46 @@
 # Training injection grid — first milestone: everything fixed except position/orientation.
-morphology: uniform
-richness: {surface_brightness: 30.0}   # or {mass: 1.0e4} or {nstars: 2000}; converted to nstars via inject_utils
-width: 0.2
-length: 8.0
-distance_modulus: 17.5              # TRUE stream distance
-age: 12.0                           # Gyr
-z: 0.0004                           # metallicity Z (mass fraction), not [Fe/H]
-orientation: {min: 0.0, max: 180.0} # free
-position: uniform_in_footprint
-background_fraction: 0.0            # default off; raise deliberately for robustness training
-label: {policy: density, normalization: max, dilate_to_width: true}
-persist: false
+#
+# Every key below (except the reserved ones noted inline) is a stream parameter,
+# parsed by config.py's `_parse_param_spec`. Each value is either:
+#   - a bare scalar                              -> fixed
+#   - {min: ..., max: ...}                       -> free, sampled uniformly
+#   - {min: ..., max: ..., log: true}             -> free, sampled log-uniformly
+#   - {values: [...]}                             -> free, sampled from a discrete set
+# `StreamConfig.free_parameters()` returns whichever of these are non-scalar.
+
+morphology: uniform   # stream track shape: "uniform" (straight) or "spline" — no sinusoidal (decision 5)
+
+# Richness: exactly ONE of surface_brightness / mass / nstars must be given.
+# Whichever key is present tells the injector which unit this value (or free
+# spec) is expressed in; it is converted to `nstars` via inject_utils before
+# any star is generated. `nstars` itself is the TRUE star count and is never
+# reduced by selection/completeness downstream (decision 16).
+richness: {surface_brightness: 30.0}   # mag/arcsec^2; or {mass: 1.0e4} (Msun) or {nstars: 2000}
+
+width: 0.2       # cross-track Gaussian sigma, degrees
+length: 8.0      # on-sky stream length, degrees
+distance_modulus: 17.5              # TRUE distance modulus of the injected stream (mag); independent
+                                     # of the matched filter's trial-distance list in matched_filter.yaml
+age: 12.0                           # stellar population age, Gyr (isochrone used to sample magnitudes)
+z: 0.0004                           # metallicity Z (mass fraction, NOT [Fe/H])
+orientation: {min: 0.0, max: 180.0} # position angle of the track on the sky, degrees; free -> sampled per sample
+position: uniform_in_footprint      # sentinel string: injector places the stream uniformly within
+                                     # Background.footprint; not a numeric parameter, so always "fixed"
+
+# Reserved keys below are NOT parsed as ParameterSpecs — they configure the
+# sample-generation pipeline itself, not a property of the injected stream.
+
+background_fraction: 0.0  # fraction of generated samples that are pure background (no stream at all),
+                           # default off (decision 20) — raise deliberately once validating robustness
+                           # to non-detections; the rest of this file's stream params don't apply to those.
+
+label:                      # target-label policy for rasterize.py (decision 9); model head/loss are
+                             # chosen consistently with this (§4.6 of the build prompt)
+  policy: density            # "binary" | "density" | "soft_distance" (soft_distance is a later stub)
+  normalization: max          # for policy=density: how the raw stream count map is normalized before
+                               # becoming the regression target ("max" | "sum" | "log1p")
+  dilate_to_width: true       # for policy=binary (or density's member footprint): grow labeled pixels
+                               # out to the stream's cross-track width instead of single-pixel members
+
+persist: false   # whether SimulationStore should cache generated samples to disk (data/simulations/).
+                  # Training draws on-the-fly by default (false); the persisted eval grid sets this true.

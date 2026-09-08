@@ -1,10 +1,7 @@
 """Test configuration loading and parameter spec management."""
 
-from pathlib import Path
-
 import numpy as np
 import pytest
-import yaml
 
 from streamgoggles.config import (
     BackgroundConfig,
@@ -15,9 +12,6 @@ from streamgoggles.config import (
     StreamConfig,
     build_eval_grid,
 )
-
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
-
 
 # ---------------------------------------------------------------------------
 # ParameterSpec
@@ -75,11 +69,16 @@ def test_parameter_spec_sample_discrete_empty_raises(rng):
 
 # ---------------------------------------------------------------------------
 # StreamConfig
+#
+# Tests run against the frozen `default_*_dict` fixtures in conftest.py, not
+# against config/*.yaml directly — editing the real config files does not
+# affect these tests. Tests that need a one-off shape use `write_yaml` with
+# an inline dict instead of duplicating a fixture.
 # ---------------------------------------------------------------------------
 
 
-def test_stream_config_load_injection_grid():
-    config = StreamConfig.load(CONFIG_DIR / "streams" / "injection_grid.yaml")
+def test_stream_config_load_injection_grid(write_yaml, default_injection_grid_dict):
+    config = StreamConfig.load(write_yaml(default_injection_grid_dict))
 
     assert config.params["morphology"].is_fixed()
     assert config.params["morphology"].value == "uniform"
@@ -98,33 +97,33 @@ def test_stream_config_load_injection_grid():
     assert config.persist is False
 
 
-def test_stream_config_load_eval_grid_richness_is_discrete():
-    config = StreamConfig.load(CONFIG_DIR / "streams" / "eval_grid.yaml")
+def test_stream_config_load_eval_grid_richness_is_discrete(
+    write_yaml, default_eval_grid_dict
+):
+    config = StreamConfig.load(write_yaml(default_eval_grid_dict))
     assert config.richness_kind == "surface_brightness"
     assert config.params["richness"].dist_type == DistributionType.DISCRETE
     assert config.params["richness"].values == [26.0, 27.2, 28.4, 29.6, 30.8, 32.0]
+    assert config.params["orientation"].is_fixed()
+    assert config.params["orientation"].value == 90.0
     assert config.persist is True
 
 
-def test_stream_config_free_parameters(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "morphology": "uniform",
-                "width": 0.2,
-                "orientation": {"min": 0.0, "max": 180.0},
-                "age": {"values": [10.0, 12.0]},
-            }
-        )
+def test_stream_config_free_parameters(write_yaml):
+    path = write_yaml(
+        {
+            "morphology": "uniform",
+            "width": 0.2,
+            "orientation": {"min": 0.0, "max": 180.0},
+            "age": {"values": [10.0, 12.0]},
+        }
     )
     config = StreamConfig.load(path)
     assert set(config.free_parameters()) == {"orientation", "age"}
 
 
-def test_stream_config_fix_is_immutable(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"width": {"min": 0.05, "max": 0.5}}))
+def test_stream_config_fix_is_immutable(write_yaml):
+    path = write_yaml({"width": {"min": 0.05, "max": 0.5}})
     original = StreamConfig.load(path)
 
     fixed = original.fix("width", 0.3)
@@ -137,18 +136,16 @@ def test_stream_config_fix_is_immutable(tmp_path):
     assert fixed is not original
 
 
-def test_stream_config_fix_unknown_parameter_raises(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"width": 0.2}))
-    config = StreamConfig.load(path)
+def test_stream_config_fix_unknown_parameter_raises(
+    write_yaml, stream_dict_single_fixed_width
+):
+    config = StreamConfig.load(write_yaml(stream_dict_single_fixed_width))
     with pytest.raises(KeyError):
         config.fix("does_not_exist", 1.0)
 
 
-def test_stream_config_free_is_immutable(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"width": 0.2}))
-    original = StreamConfig.load(path)
+def test_stream_config_free_is_immutable(write_yaml, stream_dict_single_fixed_width):
+    original = StreamConfig.load(write_yaml(stream_dict_single_fixed_width))
 
     freed = original.free("width", {"min": 0.1, "max": 0.3})
 
@@ -157,17 +154,14 @@ def test_stream_config_free_is_immutable(tmp_path):
     assert freed is not original
 
 
-def test_stream_config_free_requires_dict(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"width": 0.2}))
-    config = StreamConfig.load(path)
+def test_stream_config_free_requires_dict(write_yaml, stream_dict_single_fixed_width):
+    config = StreamConfig.load(write_yaml(stream_dict_single_fixed_width))
     with pytest.raises(TypeError):
         config.free("width", 0.4)
 
 
-def test_stream_config_richness_requires_single_kind(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"richness": {"mass": 1.0e4, "nstars": 2000}}))
+def test_stream_config_richness_requires_single_kind(write_yaml):
+    path = write_yaml({"richness": {"mass": 1.0e4, "nstars": 2000}})
     with pytest.raises(ValueError):
         StreamConfig.load(path)
 
@@ -177,8 +171,10 @@ def test_stream_config_richness_requires_single_kind(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_background_config_load_default_light_source():
-    config = BackgroundConfig.load(CONFIG_DIR / "background.yaml")
+def test_background_config_load_default_light_source(
+    write_yaml, default_background_dict
+):
+    config = BackgroundConfig.load(write_yaml(default_background_dict))
     assert config.source == "light"
     assert config.survey == "lsst"
     assert config.release == "yr1"
@@ -193,34 +189,24 @@ def test_background_config_load_default_light_source():
     assert len(config.cuts) == 2
 
 
-def test_background_config_dust_correction_defaults_true_for_data_file(tmp_path):
-    path = tmp_path / "background.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "background": {
-                    "source": "data_file",
-                    "survey": "lsst",
-                    "release": "dp2",
-                },
-            }
-        )
+def test_background_config_dust_correction_defaults_true_for_data_file(write_yaml):
+    path = write_yaml(
+        {
+            "background": {"source": "data_file", "survey": "lsst", "release": "dp2"},
+        }
     )
     config = BackgroundConfig.load(path)
     assert config.dust_correction_enabled is True
 
 
-def test_background_config_dust_correction_explicit_overrides_default(tmp_path):
-    path = tmp_path / "background.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "background": {
-                    "source": "data_file",
-                    "dust_correction": {"enabled": False},
-                },
-            }
-        )
+def test_background_config_dust_correction_explicit_overrides_default(write_yaml):
+    path = write_yaml(
+        {
+            "background": {
+                "source": "data_file",
+                "dust_correction": {"enabled": False},
+            },
+        }
     )
     config = BackgroundConfig.load(path)
     assert config.dust_correction_enabled is False
@@ -231,46 +217,42 @@ def test_background_config_dust_correction_explicit_overrides_default(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_matched_filter_config_load():
-    config = MatchedFilterConfig.load(CONFIG_DIR / "matched_filter.yaml")
+def test_matched_filter_config_load(write_yaml, default_matched_filter_dict):
+    config = MatchedFilterConfig.load(write_yaml(default_matched_filter_dict))
     assert config.bands == ["g", "r"]
     assert config.reference_isochrone == {"age": 12.5, "z": 0.0002}
     assert config.pixelization["nside"] == 128
     assert config.finalize_config["enabled"] is False
 
 
-def test_matched_filter_config_distance_moduli_fixed():
-    config = MatchedFilterConfig.load(CONFIG_DIR / "matched_filter.yaml")
+def test_matched_filter_config_distance_moduli_fixed(
+    write_yaml, default_matched_filter_dict
+):
+    config = MatchedFilterConfig.load(write_yaml(default_matched_filter_dict))
     assert config.distance_moduli() == [17.5]
 
 
-def test_matched_filter_config_distance_moduli_scan(tmp_path):
-    path = tmp_path / "mf.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "reference_isochrone": {"age": 12.5, "z": 0.0002},
-                "bands": ["g", "r"],
-                "pixelization": {},
-                "distance": {"mode": "scan", "min": 14.0, "max": 15.0, "step": 0.5},
-            }
-        )
+def test_matched_filter_config_distance_moduli_scan(write_yaml):
+    path = write_yaml(
+        {
+            "reference_isochrone": {"age": 12.5, "z": 0.0002},
+            "bands": ["g", "r"],
+            "pixelization": {},
+            "distance": {"mode": "scan", "min": 14.0, "max": 15.0, "step": 0.5},
+        }
     )
     config = MatchedFilterConfig.load(path)
     np.testing.assert_allclose(config.distance_moduli(), [14.0, 14.5, 15.0])
 
 
-def test_matched_filter_config_distance_moduli_fixed_without_value_raises(tmp_path):
-    path = tmp_path / "mf.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "reference_isochrone": {"age": 12.5, "z": 0.0002},
-                "bands": ["g", "r"],
-                "pixelization": {},
-                "distance": {"mode": "fixed"},
-            }
-        )
+def test_matched_filter_config_distance_moduli_fixed_without_value_raises(write_yaml):
+    path = write_yaml(
+        {
+            "reference_isochrone": {"age": 12.5, "z": 0.0002},
+            "bands": ["g", "r"],
+            "pixelization": {},
+            "distance": {"mode": "fixed"},
+        }
     )
     config = MatchedFilterConfig.load(path)
     with pytest.raises(ValueError):
@@ -287,25 +269,15 @@ def test_eval_grid_mismatched_lengths_raises():
         EvalGrid(points=[{"a": 1}], seeds=[1, 2])
 
 
-def test_build_eval_grid_no_free_parameters_raises(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"width": 0.2, "age": 12.0}))
+def test_build_eval_grid_no_free_parameters_raises(write_yaml):
+    path = write_yaml({"width": 0.2, "age": 12.0})
     config = StreamConfig.load(path)
     with pytest.raises(ValueError):
         build_eval_grid(config)
 
 
-def test_build_eval_grid_cartesian_product_size(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "orientation": {"min": 0.0, "max": 180.0},
-                "age": {"values": [10.0, 12.0, 13.5]},
-            }
-        )
-    )
-    config = StreamConfig.load(path)
+def test_build_eval_grid_cartesian_product_size(write_yaml, stream_dict_mixed_free):
+    config = StreamConfig.load(write_yaml(stream_dict_mixed_free))
     grid = build_eval_grid(config, n_points_per_range=4)
     assert len(grid.points) == 4 * 3
     assert len(grid.seeds) == len(grid.points)
@@ -315,9 +287,8 @@ def test_build_eval_grid_cartesian_product_size(tmp_path):
         assert 0.0 <= point["orientation"] <= 180.0
 
 
-def test_build_eval_grid_discrete_truncation(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"age": {"values": [10.0, 11.0, 12.0, 13.0, 13.5]}}))
+def test_build_eval_grid_discrete_truncation(write_yaml):
+    path = write_yaml({"age": {"values": [10.0, 11.0, 12.0, 13.0, 13.5]}})
     config = StreamConfig.load(path)
     grid = build_eval_grid(config, n_points_discrete=3)
     ages = {point["age"] for point in grid.points}
@@ -325,9 +296,8 @@ def test_build_eval_grid_discrete_truncation(tmp_path):
     assert ages.issubset({10.0, 11.0, 12.0, 13.0, 13.5})
 
 
-def test_build_eval_grid_reproducible_with_same_seed(tmp_path):
-    path = tmp_path / "stream.yaml"
-    path.write_text(yaml.safe_dump({"orientation": {"min": 0.0, "max": 180.0}}))
+def test_build_eval_grid_reproducible_with_same_seed(write_yaml):
+    path = write_yaml({"orientation": {"min": 0.0, "max": 180.0}})
     config = StreamConfig.load(path)
     grid1 = build_eval_grid(config, seed=7)
     grid2 = build_eval_grid(config, seed=7)
@@ -335,8 +305,8 @@ def test_build_eval_grid_reproducible_with_same_seed(tmp_path):
     assert grid1.points == grid2.points
 
 
-def test_build_eval_grid_eval_config_matches_real_file():
-    config = StreamConfig.load(CONFIG_DIR / "streams" / "eval_grid.yaml")
+def test_build_eval_grid_default_eval_grid(write_yaml, default_eval_grid_dict):
+    config = StreamConfig.load(write_yaml(default_eval_grid_dict))
     grid = build_eval_grid(config)
     assert len(grid.points) == 6
     values = sorted(point["richness"] for point in grid.points)

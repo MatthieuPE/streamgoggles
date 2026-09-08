@@ -1,12 +1,38 @@
 # Reference isochrone, bands, pixelization, and trial-distance spec for the matched filter.
-reference_isochrone: {age: 12.5, z: 0.0002}   # age in Gyr, metallicity Z (mass fraction)
-bands: [g, r]                           # bands used in the color-magnitude cuts
+# This filter is deliberately independent of the injected stream's own population
+# (injection_grid.yaml's age/z) — the mismatch is intentional (decision 6).
+
+reference_isochrone: {age: 12.5, z: 0.0002}   # age in Gyr, metallicity Z (mass fraction);
+                                                # fixed reference isochrone used to build the
+                                                # matched-filter polygon (streamobs.match_filter.build_match_filter)
+
+bands: [g, r]   # photometric bands entering the color-magnitude selection: color = bands[0] - bands[1],
+                # magnitude axis = bands[0]
+
 pixelization:
-  nside: 128                            # HEALPix grid for counting (start value)
-  projection: gnomonic                  # HEALPix -> 2D image, centered on the field
-  rotation_deg: 0.0                     # random position angle/tilt per window (set per sample, not here)
-  image_size_pix: [256, 256]            # 256 * 0.05 deg = 12.8 deg window, well under the 30 deg cap
-  pixel_scale_deg: 0.05
-  interpolate: true                     # hp.get_interp_val when projecting
-distance: {mode: fixed, value: 17.5}   # trial distances for the filter
-finalize: {enabled: false, smoothing_deg: 0.1, background_subtract: false}   # off until integrated
+  nside: 128                            # HEALPix resolution for counting selected stars (decision 15)
+  projection: gnomonic                  # HEALPix -> 2D image, tangent-plane projection centered on the window;
+                                          # never a naive ra x dec histogram (decision 15)
+  rotation_deg: 0.0                     # window position angle/tilt, degrees; set per-sample by windows.py,
+                                          # not read from here — this is just the PixelizationSpec default
+  image_size_pix: [256, 256]            # output image size in pixels; 256 * 0.05 deg = 12.8 deg window,
+                                          # well under the <=30 deg cap (decision 21)
+  pixel_scale_deg: 0.05                 # degrees per pixel
+  interpolate: true                     # use hp.get_interp_val (bilinear) rather than nearest-pixel lookup
+                                          # when projecting HEALPix -> image
+
+# Trial distance modulus/moduli the filter is evaluated at. Always resolves to a
+# LIST (decision 4): fixed mode is a scan of length 1, so downstream code never
+# branches on fixed-vs-scan.
+distance:
+  mode: fixed     # "fixed" (uses `value` below) or "scan" (uses min/max/step, not set here)
+  value: 17.5     # distance modulus, mag — the single trial distance for this milestone
+
+# Background-model smoothing/polynomial subtraction (decision 18). Off by default
+# for computational reasons; the first milestone doesn't need it. When enabled, it
+# must run on the FULL survey map with background+stream already summed (see
+# matched_filter.py's finalize_full/combine_full_maps — never on a window crop).
+finalize:
+  enabled: false
+  smoothing_deg: 0.1          # Gaussian smoothing kernel width, degrees (only used if enabled)
+  background_subtract: false  # whether to also fit/subtract a polynomial background trend

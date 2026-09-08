@@ -2,15 +2,43 @@
 # the workflow the first milestone starts with. Switch `source` to `data_file`
 # once real DP2 data is being used; everything downstream (cuts, clipping,
 # select, caching) is unchanged either way.
+
 background:
-  source: light               # data_file | light | injection
-  survey: lsst
-  release: yr1
-  light: {}                   # streamobs-specific params for LightBackgroundGenerator go here
-  dust_correction: {enabled: false}  # light/injection already account for extinction internally
-                                      # (see PLAN.md §6.1.6) — only data_file needs deredden_dataframe
-study_region: {center_ra: 0.0, center_dec: -30.0, width_deg: 70.0, height_deg: 20.0}
+  source: light   # which BackgroundSource to use:
+                  #   data_file  -> real skimmed catalog (data/background/dp2_star_gmax_27_skim.parquet)
+                  #   light      -> streamobs's fast synthetic generator (precomputed CMD-grid resource;
+                  #                 see PLAN.md §6.1.2 — needs a one-time reference truth catalog to build)
+                  #   injection  -> streamobs's full injection pipeline over an existing true catalog
+  survey: lsst    # passed to streamobs.surveys.Survey.load(survey=...)
+  release: yr1    # passed to Survey.load(release=...); "yr1" is the year-1 forecast, "dp2" the real skim
+
+  light: {}       # source-specific kwargs for whichever `source` is selected above (empty = defaults);
+                  # e.g. for source: data_file this would hold {path: ...} to override the parquet path
+
+  dust_correction:
+    enabled: false   # whether background.py additionally runs utils.deredden_dataframe() on this catalog.
+                      # Only `data_file` needs this (the real DP2 skim isn't pre-dereddened); `light` and
+                      # `injection` already account for extinction internally by construction, so applying
+                      # deredden again would double-correct (see PLAN.md §6.1.6). If omitted entirely, this
+                      # defaults to true only when source == data_file (config.py's BackgroundConfig.load).
+
+# Sky region synthetic generation (light/injection) is restricted to (decision 24).
+# Ignored entirely for source: data_file — the real skim is used in full, as-is,
+# whatever area it actually covers.
+study_region:
+  center_ra: 0.0     # degrees; fixed manually (not computed from a footprint centroid — user decision,
+  center_dec: -30.0  # 2026-09-08, since the yr1 forecast footprint has no unambiguous centroid)
+  width_deg: 70.0     # study-region extent in RA
+  height_deg: 20.0    # study-region extent in Dec; independent of and larger than the per-sample
+                       # window (<=30x30 deg, decision 21) — this is where synthetic stars may be
+                       # generated at all, not what any one sample actually sees.
+
+# Catalog-quality cuts, applied identically regardless of `source`, BEFORE the
+# matched-filter `select()` — ordered list of {quantity, band?, op, value},
+# plus an escape hatch {callable: module:function} (not used here).
 cuts:
   - {quantity: snr, band: g, op: ">", value: 5}
   - {quantity: snr, band: r, op: ">", value: 5}
+
+# Per-band magnitude clipping applied after cuts, before the matched filter.
 magnitude_clipping: {g: {min: 16.0, max: 26.5}, r: {min: 16.0, max: 26.0}}
