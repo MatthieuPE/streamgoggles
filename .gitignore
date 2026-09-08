@@ -170,3 +170,6 @@ memray-flamegraph-memray_results.html
 
 # Data files
 data/*
+
+# claude files
+claude/

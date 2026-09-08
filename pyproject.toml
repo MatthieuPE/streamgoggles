@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "healpy>=1.20.0",
     "hyrax>=0.12",
     "numpy>=2.5.3",
     "pandas>=3.0.5",
