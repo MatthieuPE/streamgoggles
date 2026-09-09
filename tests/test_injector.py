@@ -2,11 +2,9 @@
 StreamInjector.inject_single_stream, and inject_background_only.
 
 Everything runs against real streamobs (survey loading, StreamInjector,
-StreamModel via stream_sources.py) -- no mocking, except that
-inject_single_stream's end-to-end tests monkeypatch rasterize.rasterize()
-since rasterize.py isn't implemented yet (verified separately: the real,
-unpatched call raises NotImplementedError, and every step before it already
-runs for real).
+StreamModel via stream_sources.py) and the real rasterize.py -- no mocking.
+Only the "soft_distance" label policy is still a stub (rasterize.py itself,
+decision 6); that boundary is verified explicitly below.
 """
 
 import astropy.units as u
@@ -14,7 +12,6 @@ import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
 
-import streamgoggles.injector as injector_module
 from streamgoggles import inject_utils
 from streamgoggles.background import Background
 from streamgoggles.background_sources import StreamObsLightBackgroundSource, StudyRegion
@@ -307,28 +304,13 @@ class _CountingFilter:
         return self.inner.select(catalog, bands, distance_modulus)
 
 
-@pytest.fixture
-def stub_rasterize(monkeypatch):
-    """Replace rasterize.rasterize with a zero map of the right shape, so
-    inject_single_stream's non-rasterize steps (all real) can be tested
-    end-to-end despite rasterize.py's real implementation not existing yet.
-    """
-
-    def _fake(**kwargs):
-        ny, nx = kwargs["pix"].image_size_pix
-        return np.zeros((ny, nx), dtype=float)
-
-    monkeypatch.setattr(injector_module.rasterize, "rasterize", _fake)
-
-
-def test_inject_single_stream_builds_valid_sample(
-    real_injector, stream_params, stub_rasterize
-):
+def test_inject_single_stream_builds_valid_sample(real_injector, stream_params):
     sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
 
     assert sample.map_stack.shape == (2, 20, 20)
     assert sample.map_stack.dtype == np.float32
     assert sample.label_stack.shape == (2, 20, 20)
+    assert sample.label_stack.dtype == np.float32
     assert sample.valid_mask.shape == (20, 20)
     assert sample.valid_mask.dtype == bool
     assert sample.params["nstars"] == 3000
@@ -336,15 +318,44 @@ def test_inject_single_stream_builds_valid_sample(
     assert sample.metadata["distance_moduli"] == [16.8, 17.5]
 
 
-def test_inject_single_stream_map_has_signal(
-    real_injector, stream_params, stub_rasterize
-):
+def test_inject_single_stream_map_has_signal(real_injector, stream_params):
     sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
     assert sample.map_stack.sum() > 0
 
 
+def test_inject_single_stream_label_has_signal_and_is_broadcast_across_channels(
+    real_injector, stream_params
+):
+    """density (the default policy) doesn't depend on distance modulus, so
+    the same 2D label must be broadcast identically to every channel."""
+    sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    assert sample.label_stack.sum() > 0
+    np.testing.assert_array_equal(sample.label_stack[0], sample.label_stack[1])
+
+
+def test_inject_single_stream_binary_policy_label_is_binary(
+    real_background, stream_params
+):
+    bg, mf, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filter=mf,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="binary",
+        label_config={"dilate_to_width": True},
+    )
+    sample = injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    assert set(np.unique(sample.label_stack)) <= {0.0, 1.0}
+    assert sample.label_stack.sum() > 0
+
+
 def test_inject_single_stream_reuses_background_selection_across_injections(
-    real_background, stream_params, stub_rasterize
+    real_background, stream_params
 ):
     """The matched filter must be applied to the background exactly once (at
     Background.load_or_cache time, already covered by
@@ -384,7 +395,7 @@ def test_inject_single_stream_reuses_background_selection_across_injections(
 
 
 def test_inject_single_stream_richness_resolved_before_realize(
-    real_injector, stream_params, stub_rasterize
+    real_injector, stream_params
 ):
     params = dict(stream_params)
     del params["nstars"]
@@ -395,9 +406,7 @@ def test_inject_single_stream_richness_resolved_before_realize(
     assert "richness" not in sample.params
 
 
-def test_inject_single_stream_strict_cuts_reduce_signal(
-    real_background, stream_params, stub_rasterize
-):
+def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_params):
     bg, mf, pix = real_background
     lenient = StreamInjector(
         background=bg,
@@ -428,13 +437,26 @@ def test_inject_single_stream_strict_cuts_reduce_signal(
     assert sample_strict.map_stack.sum() < sample_lenient.map_stack.sum()
 
 
-def test_inject_single_stream_rasterize_not_implemented_is_the_only_blocker(
-    real_injector, stream_params
+def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
+    real_background, stream_params
 ):
-    """Documents the current boundary: everything up through crop_window runs
-    for real; only the final rasterize step is unimplemented."""
+    """Documents the current boundary: binary/density labels are fully real;
+    only soft_distance (rasterize.py, decision 6) is still a stub, and
+    everything up through crop_window already ran for real before it does."""
+    bg, mf, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filter=mf,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="soft_distance",
+    )
     with pytest.raises(NotImplementedError):
-        real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
+        injector.inject_single_stream(stream_params, np.random.default_rng(3))
 
 
 def test_inject_background_only_builds_valid_sample(real_background):

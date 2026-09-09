@@ -2,9 +2,24 @@
 Shared pytest fixtures for the streamobs test suite.
 """
 
+import os
+
 import numpy as np
 import pytest
 import yaml
+
+# Must be set before healpy or torch actually gets imported by any test
+# module (both are only imported lazily, well after conftest.py loads, so
+# setting it here at collection time is early enough). healpy's
+# hp.smoothing() and torch (tiny_torch_model_class fixture, below) each load
+# their own OpenMP runtime, and loading both in the same process aborts with
+# a duplicate-OpenMP-runtime segfault on this environment (confirmed via
+# isolation: reproducible with just rasterize.py's smoothing path +
+# test_storage.py's torch fixtures, nothing else). This is a known, common
+# macOS conda interoperability issue (conda's MKL/libomp vs PyTorch's bundled
+# libomp), not a bug in either library; safe here since this codebase never
+# runs MKL and torch numerics concurrently in the same process.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 # ---------------------------------------------------------------------------
 # Utilities

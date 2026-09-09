@@ -8,12 +8,15 @@ with injector.py -- decision 13); this file only exercises Background's use
 of them (test_load_or_cache_applies_cuts) alongside its own caching logic.
 """
 
+from pathlib import Path
+
 import healpy as hp
 import numpy as np
 import pytest
 
 from streamgoggles.background import Background, build_raw_background_maps
 from streamgoggles.background_sources import StreamObsLightBackgroundSource, StudyRegion
+from streamgoggles.config import BackgroundConfig
 from streamgoggles.data_preparation import Cut
 from streamgoggles.matched_filter import PixelizationSpec, StreamobsSplineFilter
 from streamgoggles.storage import BackgroundMapStore
@@ -188,3 +191,55 @@ def test_load_or_cache_applies_cuts(tmp_path, small_region, small_pix, real_filt
     )
 
     assert len(bg_with_cuts.catalog) < len(bg_no_cuts.catalog)
+
+
+# ---------------------------------------------------------------------------
+# config/background.yaml regression test
+#
+# Unlike the rest of this file (and test_config.py's BackgroundConfig tests,
+# which deliberately use a frozen fixture dict, not this real file), this
+# test intentionally reads the real, live config/background.yaml -- its
+# whole point is to catch a config/pipeline mismatch in the file itself, the
+# way "source: light" + "quantity: snr" cuts did (2026-09-09: `light`
+# produces no per-star error columns, so an "snr" cut raised KeyError; fixed
+# to "mag" cuts). A frozen fixture would never have caught that.
+# ---------------------------------------------------------------------------
+
+
+def test_default_background_yaml_works_with_its_own_default_source(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = BackgroundConfig.load(repo_root / "config" / "background.yaml")
+    assert cfg.source == "light"  # this test is specifically about the shipped default
+
+    cuts = [Cut(**c) for c in cfg.cuts]
+    # A smaller region than the real 70x20 deg one, purely for test speed --
+    # the cuts/clipping/source under test are otherwise exactly as shipped.
+    region = StudyRegion(
+        center_ra=cfg.study_region["center_ra"],
+        center_dec=cfg.study_region["center_dec"],
+        width_deg=6.0,
+        height_deg=4.0,
+    )
+    pix = PixelizationSpec(nside=64, pixel_scale_deg=1.0)
+    filt = StreamobsSplineFilter(
+        iso_config={"age": 12.5, "z": 0.0002}, namespace=f"{cfg.survey}_{cfg.release}"
+    )
+    store = BackgroundMapStore(tmp_path / "background_maps")
+
+    bg = Background.load_or_cache(
+        source=StreamObsLightBackgroundSource(),
+        source_cfg=cfg.source_config,
+        study_region=region,
+        cuts=cuts,
+        clipping=cfg.magnitude_clipping,
+        matched_filter=filt,
+        bands=["g", "r"],
+        distance_moduli=[16.8],
+        finalize_cfg={"enabled": False},
+        store=store,
+        pix=pix,
+        survey=cfg.survey,
+        release=cfg.release,
+        filter_config={"age": 12.5, "z": 0.0002},
+    )
+    assert bg.catalog is not None and len(bg.catalog) > 0

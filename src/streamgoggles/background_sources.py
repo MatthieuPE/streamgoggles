@@ -215,6 +215,17 @@ class StreamObsLightBackgroundSource(BackgroundSource):
     `FileNotFoundError` until one is built — that is a separate, not-yet-scoped
     prerequisite, not a bug in this wrapper (verified: the same
     `FileNotFoundError` comes directly from `streamobs`, not from this file).
+
+    Unlike `StreamObsCatalogueBackgroundSource`/`DataFileBackgroundSource`,
+    this method produces NO per-star reported-error columns (`<namespace>_<band>_err`)
+    at all — it's a CMD-histogram draw with no per-star photometric-error
+    model, only `<namespace>_<band>_obs` (verified empirically). Cuts using
+    `quantity: "snr"` (background.py's/data_preparation.py's Cut, which reads
+    `err_col`) will raise `KeyError` against a catalog from this source —
+    exactly what broke `config/background.yaml`'s original default cuts,
+    since `light` is this project's default `source` (fixed 2026-09-09 by
+    switching those defaults to `quantity: "mag"`, which this source does
+    produce).
     """
 
     def load(

@@ -230,6 +230,11 @@ class StreamInjector:
             "surface_brightness" -- see resolve_richness_to_nstars).
         label_policy: Passed to rasterize.rasterize() ("binary"/"density"/
             "soft_distance").
+        label_config: Extra rasterize.rasterize() kwargs, matching
+            StreamConfig's YAML `label:` block (decision 9): "dilate_to_width"
+            (binary), "normalization" (density), "smooth_sigma_deg" (density).
+            Unrecognized/irrelevant keys for the active label_policy are
+            simply unused.
         finalize_cfg: Passed to matched_filter.finalize_full() when
             combining background + stream maps -- must match whatever
             `background` was cached with, or the combined map wouldn't be
@@ -252,6 +257,7 @@ class StreamInjector:
         bands: tuple[str, str] = ("g", "r"),
         richness_kind: str = "nstars",
         label_policy: str = "density",
+        label_config: dict | None = None,
         finalize_cfg: dict | None = None,
     ):
         """Initialize injector.
@@ -270,6 +276,7 @@ class StreamInjector:
             bands: The two bands injected/selected on.
             richness_kind: Unit of params['richness'].
             label_policy: rasterize.py label policy.
+            label_config: Extra rasterize.rasterize() kwargs (see class docstring).
             finalize_cfg: Finalization config, matching whatever
                 `background` was cached with.
         """
@@ -284,6 +291,7 @@ class StreamInjector:
         self.bands = tuple(bands)
         self.richness_kind = richness_kind
         self.label_policy = label_policy
+        self.label_config = label_config or {}
         self.finalize_cfg = finalize_cfg
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
@@ -394,6 +402,9 @@ class StreamInjector:
             policy=self.label_policy,
             window=window,
             pix=self.pix,
+            dilate_to_width=self.label_config.get("dilate_to_width", False),
+            normalization=self.label_config.get("normalization", "max"),
+            smooth_sigma_deg=self.label_config.get("smooth_sigma_deg"),
         )
         label_stack = np.broadcast_to(label_2d, (len(distance_moduli), *label_2d.shape))
 
