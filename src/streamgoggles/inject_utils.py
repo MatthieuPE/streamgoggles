@@ -156,3 +156,66 @@ def convert_SurfaceBrightness_to_N(target_surface_brightness, mag_bounds=(None, 
         print(f"N={N:.1f} gives surface brightness {target_surface_brightness:.2f} mag/arcsec^2")
 
     return N
+
+
+def _load_isochrone(isochrone_config_path=None, isochrone_params=None):
+    """Build the ugali isochrone described by isochrone_config_path/isochrone_params
+    (same 'isochrone' sub-section shape convert_N_SurfaceBrightness uses)."""
+    if isochrone_params is None:
+        if isochrone_config_path is None:
+            raise ValueError("Either isochrone_config_path or isochrone_params must be provided.")
+        import yaml
+        with open(isochrone_config_path, 'r') as f:
+            isochrone_params = yaml.safe_load(f)
+
+    iso_sub_params = isochrone_params.get('isochrone', {})
+    return ugali.isochrone.factory(**iso_sub_params)
+
+
+def convert_N_to_Mass(N, isochrone_config_path=None, isochrone_params=None, mass_min=0.1):
+    """
+    Total stellar mass (Msun) of N stars drawn from the isochrone's IMF.
+
+    mass = N * isochrone.stellar_mass(mass_min=mass_min): stellar_mass() is
+    already the IMF-weighted mean initial mass per star (Msun) -- the same
+    N <-> mass relationship ugali's own IsochroneModel.simulate() uses
+    internally (``richness = stellar_mass / self.stellar_mass()``), not a new
+    convention invented here. Unlike convert_N_SurfaceBrightness, this needs
+    no distance modulus or magnitude bounds -- mass counts all stars, not
+    just the observable ones.
+
+    Parameters
+    ----------
+    N : float
+        Number of stars.
+    isochrone_config_path, isochrone_params : see convert_N_SurfaceBrightness.
+    mass_min : float
+        Minimum mass to integrate the IMF over (Msun). Default 0.1, matching
+        ugali's IsochroneModel.stellar_mass()/sample() default.
+
+    Returns
+    -------
+    float
+        Total stellar mass (Msun).
+    """
+    isochrone = _load_isochrone(isochrone_config_path, isochrone_params)
+    return N * isochrone.stellar_mass(mass_min=mass_min)
+
+
+def convert_Mass_to_N(mass, isochrone_config_path=None, isochrone_params=None, mass_min=0.1):
+    """
+    Numeric inverse of convert_N_to_Mass: N = mass / mean_stellar_mass_per_star.
+
+    Parameters
+    ----------
+    mass : float
+        Total stellar mass (Msun).
+    isochrone_config_path, isochrone_params, mass_min : see convert_N_to_Mass.
+
+    Returns
+    -------
+    float
+        N (number of stars) giving this total mass.
+    """
+    isochrone = _load_isochrone(isochrone_config_path, isochrone_params)
+    return mass / isochrone.stellar_mass(mass_min=mass_min)
