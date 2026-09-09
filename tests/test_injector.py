@@ -293,6 +293,20 @@ def stream_params():
     }
 
 
+class _CountingFilter:
+    """Wraps a MatchedFilter, counting select() calls -- used to prove the
+    matched filter is applied to the background exactly once (at
+    Background.load_or_cache time) and never re-run per stream injection."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = 0
+
+    def select(self, catalog, bands, distance_modulus):
+        self.calls += 1
+        return self.inner.select(catalog, bands, distance_modulus)
+
+
 @pytest.fixture
 def stub_rasterize(monkeypatch):
     """Replace rasterize.rasterize with a zero map of the right shape, so
@@ -327,6 +341,46 @@ def test_inject_single_stream_map_has_signal(
 ):
     sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
     assert sample.map_stack.sum() > 0
+
+
+def test_inject_single_stream_reuses_background_selection_across_injections(
+    real_background, stream_params, stub_rasterize
+):
+    """The matched filter must be applied to the background exactly once (at
+    Background.load_or_cache time, already covered by
+    test_background.py::test_load_or_cache_reuses_cached_maps_without_recompute)
+    and reused unchanged across every stream injection -- never re-run per
+    stream realization. select() is only ever expected to fire on the
+    (much smaller) stream catalog, once per distance modulus per injection.
+    """
+    bg, mf, pix = real_background
+    counting_filter = _CountingFilter(mf)
+    injector = StreamInjector(
+        background=bg,
+        matched_filter=counting_filter,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+    )
+    n_distances = len(bg.raw_map_full_dict)
+    background_raw_before = {dm: arr.copy() for dm, arr in bg.raw_map_full_dict.items()}
+
+    injector.inject_single_stream(stream_params, np.random.default_rng(11))
+    assert counting_filter.calls == n_distances
+
+    injector.inject_single_stream(stream_params, np.random.default_rng(12))
+    assert counting_filter.calls == 2 * n_distances
+
+    injector.inject_single_stream(stream_params, np.random.default_rng(13))
+    assert counting_filter.calls == 3 * n_distances
+
+    # The background's own cached raw maps must be byte-for-byte untouched
+    # across all three stream injections -- proof nothing recomputed them.
+    for dm, arr in background_raw_before.items():
+        np.testing.assert_array_equal(bg.raw_map_full_dict[dm], arr)
 
 
 def test_inject_single_stream_richness_resolved_before_realize(

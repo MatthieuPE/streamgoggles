@@ -41,4 +41,5 @@ markers = [
     "background: background.py (Background.load_or_cache, build_raw_background_maps)",
     "data_preparation: data_preparation.py (Cut, apply_cuts, apply_magnitude_clipping, dust correction)",
     "injector: injector.py (StreamInjector, inject_background_only, resolve_richness_to_nstars, place_stream_in_footprint)",
+    "inject_utils: inject_utils.py (richness conversions: N/mass/surface_brightness/luminosity)",
 ]
