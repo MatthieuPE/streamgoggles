@@ -154,6 +154,7 @@ def place_stream_in_footprint(
     footprint: np.ndarray,
     nside: int,
     rng: np.random.Generator,
+    rotation_deg: float | None = None,
 ) -> pd.DataFrame:
     """Place a realized stream (phi1/phi2 frame) at a random position and
     orientation somewhere inside `footprint`, adding 'ra'/'dec' columns.
@@ -165,6 +166,16 @@ def place_stream_in_footprint(
             (typically background.footprint).
         nside: HEALPix NSIDE matching `footprint`.
         rng: np.random.Generator instance.
+        rotation_deg: Position angle of the phi1 axis on the sky (degrees).
+            If None (default), drawn uniformly at random -- "orientation, if
+            free, uniform within the footprint" (build prompt §4.4b). Pass
+            an explicit value to use a sampled/fixed "orientation" parameter
+            instead (e.g. config/streams/injection_grid.yaml's free
+            `orientation` -- StreamInjector.inject_single_stream forwards
+            `params["orientation"]` here when present). The placement
+            *position* (which footprint pixel) is always random regardless
+            (decision: "position: uniform_in_footprint" is never a tunable
+            parameter, only a sentinel meaning "yes, place it").
 
     Returns:
         Copy of `stream_df` with 'ra'/'dec' columns added (degrees, ICRS).
@@ -181,9 +192,9 @@ def place_stream_in_footprint(
     placement here is direct instead: pick a random valid footprint pixel as
     the great-circle's phi1=phi2=0 origin (gala.coordinates.GreatCircleICRSFrame,
     same construction as background_sources._study_region_to_phi_box), with a
-    random position angle for the phi1 axis via
-    SkyCoord.directional_offset_by(). ra/dec set this way are then left alone
-    by streamobs's own injection (it only fills ra/dec when absent).
+    position angle for the phi1 axis via SkyCoord.directional_offset_by().
+    ra/dec set this way are then left alone by streamobs's own injection (it
+    only fills ra/dec when absent).
     """
     valid_pixels = np.flatnonzero(footprint)
     if valid_pixels.size == 0:
@@ -191,7 +202,10 @@ def place_stream_in_footprint(
 
     pixel = rng.choice(valid_pixels)
     center_ra, center_dec = hp.pix2ang(nside, int(pixel), lonlat=True)
-    rotation_deg = float(rng.uniform(0.0, 360.0))
+    if rotation_deg is None:
+        rotation_deg = float(rng.uniform(0.0, 360.0))
+    else:
+        rotation_deg = float(rotation_deg)
 
     center = SkyCoord(ra=float(center_ra) * u.deg, dec=float(center_dec) * u.deg)
     second = center.directional_offset_by(rotation_deg * u.deg, 1.0 * u.deg)
@@ -315,7 +329,12 @@ class StreamInjector:
             params: Stream parameter dict (morphology, width, length,
                 distance_modulus, age, z, richness or nstars, etc. -- see
                 stream_sources.StreamSource.realize()). `band_1`/`band_2`
-                default to `self.bands` if not given.
+                default to `self.bands` if not given. `orientation`, if
+                present, is forwarded to `place_stream_in_footprint` as the
+                placement's position angle (config/streams/injection_grid.yaml's
+                free `orientation` parameter) instead of drawing a random one;
+                the placement *position* itself is always random regardless
+                ("position: uniform_in_footprint" is a sentinel, never tunable).
             rng: Random number generator.
             min_stream_length_deg: Forwarded to windows.sample_stream_window
                 (decision 21 default: 5 deg).
@@ -330,10 +349,8 @@ class StreamInjector:
             RuntimeError if window sampling fails (e.g. the stream is too
                 far from the footprint, or the footprint is too small/sparse
                 for a >=min_stream_length_deg window to be found).
-            NotImplementedError at the rasterization step (step 7) --
-                rasterize.py isn't implemented yet (PLAN.md next step); every
-                earlier step (placement, injection, cuts, per-distance
-                selection, combine/finalize/crop) already runs for real.
+            NotImplementedError if self.label_policy is "soft_distance"
+                (rasterize.py, decision 6 -- still a stub).
         """
         resolved_params = dict(params)
         resolved_params.setdefault("band_1", self.bands[0])
@@ -344,7 +361,11 @@ class StreamInjector:
 
         stream_df = self.stream_source.realize(resolved_params, rng)
         placed_df = place_stream_in_footprint(
-            stream_df, self.background.footprint, self.pix.nside, rng
+            stream_df,
+            self.background.footprint,
+            self.pix.nside,
+            rng,
+            rotation_deg=resolved_params.get("orientation"),
         )
 
         injected_df = self._obs_injector.inject(

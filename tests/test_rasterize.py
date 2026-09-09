@@ -118,6 +118,45 @@ def test_density_smoothing_spreads_out_peak(window, pix_large):
 
 
 # ---------------------------------------------------------------------------
+# The label must never claim a stream feature exists outside what the
+# cropped window/image can actually show -- a member far outside the
+# window's spatial extent must contribute nothing to the label, and the
+# label's own shape must always match the window regardless of where any
+# member star actually is.
+# ---------------------------------------------------------------------------
+
+
+def test_density_members_outside_window_contribute_nothing(window, pix_large):
+    near_ra = np.array([window.center_ra])
+    near_dec = np.array([window.center_dec])
+    far_ra = np.array([window.center_ra])
+    far_dec = np.array([window.center_dec + 30.0])  # well beyond the ~20.5 deg window
+
+    near_only = rasterize_density(
+        near_ra, near_dec, window, pix_large, normalization="none"
+    )
+    near_and_far = rasterize_density(
+        np.concatenate([near_ra, far_ra]),
+        np.concatenate([near_dec, far_dec]),
+        window,
+        pix_large,
+        normalization="none",
+    )
+    np.testing.assert_array_equal(near_only, near_and_far)
+
+
+def test_density_shape_bounded_to_window_regardless_of_member_positions(
+    window, pix_large
+):
+    ny, nx = pix_large.image_size_pix
+    far_ra = np.array([window.center_ra + 90.0])
+    far_dec = np.array([window.center_dec])
+    image = rasterize_density(far_ra, far_dec, window, pix_large, normalization="none")
+    assert image.shape == (ny, nx)
+    np.testing.assert_array_equal(image, 0.0)
+
+
+# ---------------------------------------------------------------------------
 # rasterize_binary
 # ---------------------------------------------------------------------------
 
@@ -190,6 +229,49 @@ def test_binary_dilate_to_width_zero_is_noop(window, pix_large):
         dilate_to_width=True,
     )
     assert image.sum() == pytest.approx(1.0)
+
+
+def test_binary_members_outside_window_contribute_nothing(window, pix_large):
+    near_ra = np.array([window.center_ra])
+    near_dec = np.array([window.center_dec])
+    far_ra = np.array([window.center_ra])
+    far_dec = np.array([window.center_dec + 30.0])  # well beyond the ~20.5 deg window
+
+    near_only = rasterize_binary(
+        near_ra,
+        near_dec,
+        stream_width_deg=1.0,
+        window=window,
+        pix=pix_large,
+        dilate_to_width=True,
+    )
+    near_and_far = rasterize_binary(
+        np.concatenate([near_ra, far_ra]),
+        np.concatenate([near_dec, far_dec]),
+        stream_width_deg=1.0,
+        window=window,
+        pix=pix_large,
+        dilate_to_width=True,
+    )
+    np.testing.assert_array_equal(near_only, near_and_far)
+
+
+def test_binary_shape_bounded_to_window_regardless_of_member_positions(
+    window, pix_large
+):
+    ny, nx = pix_large.image_size_pix
+    far_ra = np.array([window.center_ra + 90.0])
+    far_dec = np.array([window.center_dec])
+    image = rasterize_binary(
+        far_ra,
+        far_dec,
+        stream_width_deg=1.0,
+        window=window,
+        pix=pix_large,
+        dilate_to_width=True,
+    )
+    assert image.shape == (ny, nx)
+    np.testing.assert_array_equal(image, 0.0)
 
 
 # ---------------------------------------------------------------------------

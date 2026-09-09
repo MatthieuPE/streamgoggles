@@ -201,6 +201,39 @@ def test_place_stream_in_footprint_reproducible_with_same_seed(
     np.testing.assert_array_equal(out1["dec"].to_numpy(), out2["dec"].to_numpy())
 
 
+def test_place_stream_in_footprint_respects_explicit_rotation():
+    """config/streams/injection_grid.yaml's free 'orientation' parameter must
+    actually control placement -- the on-sky position angle of the phi1
+    axis -- not just get silently ignored in favor of a random draw."""
+    import healpy as hp
+    import pandas as pd
+
+    nside = 32
+    footprint = np.zeros(hp.nside2npix(nside), dtype=bool)
+    footprint[100] = True  # single valid pixel -> deterministic placement position
+    stream_df = pd.DataFrame({"phi1": [0.0, 5.0], "phi2": [0.0, 0.0]})
+
+    out_0 = place_stream_in_footprint(
+        stream_df, footprint, nside, np.random.default_rng(1), rotation_deg=0.0
+    )
+    out_90 = place_stream_in_footprint(
+        stream_df, footprint, nside, np.random.default_rng(2), rotation_deg=90.0
+    )
+
+    # The origin (phi1=0, phi2=0) lands at the same ra/dec regardless of
+    # rotation -- rotation only affects points away from the origin.
+    np.testing.assert_allclose(
+        out_0[["ra", "dec"]].iloc[0].to_numpy(),
+        out_90[["ra", "dec"]].iloc[0].to_numpy(),
+        atol=1e-8,
+    )
+    # An off-axis point must differ between the two explicit rotations.
+    assert not np.allclose(
+        out_0[["ra", "dec"]].iloc[1].to_numpy(),
+        out_90[["ra", "dec"]].iloc[1].to_numpy(),
+    )
+
+
 def test_place_stream_in_footprint_empty_footprint_raises(small_footprint_and_nside):
     _footprint, nside = small_footprint_and_nside
     import healpy as hp
@@ -404,6 +437,17 @@ def test_inject_single_stream_richness_resolved_before_realize(
     sample = real_injector.inject_single_stream(params, np.random.default_rng(3))
     assert sample.params["nstars"] == 3000
     assert "richness" not in sample.params
+
+
+def test_inject_single_stream_forwards_orientation_param(real_injector, stream_params):
+    """config/streams/injection_grid.yaml's free 'orientation' parameter must
+    flow through to placement (place_stream_in_footprint's rotation_deg),
+    not get silently dropped -- precise geometric effect is unit-tested
+    directly on place_stream_in_footprint; this just confirms the full
+    pipeline accepts and preserves it end to end."""
+    params = dict(stream_params, orientation=45.0)
+    sample = real_injector.inject_single_stream(params, np.random.default_rng(3))
+    assert sample.params["orientation"] == 45.0
 
 
 def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_params):
