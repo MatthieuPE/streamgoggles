@@ -38,4 +38,6 @@ markers = [
     "windows: windows.py (Window, random/stream window sampling, tile_footprint)",
     "background_sources: background_sources.py (StudyRegion, BackgroundSource implementations, harmonize_columns)",
     "stream_sources: stream_sources.py (StreamObsSource, ExternalSimSource stub)",
+    "background: background.py (Background.load_or_cache, build_raw_background_maps)",
+    "data_preparation: data_preparation.py (Cut, apply_cuts, apply_magnitude_clipping, dust correction)",
 ]

@@ -1,15 +1,20 @@
 """Background catalog preparation and caching.
 
 Pipeline:
-1. Load via BackgroundSource (selects from data_file / light / catalogue).
+1. Load via BackgroundSource (selects from data_file / light / injection).
 2. Apply user cuts (SNR, extendedness, etc.), logging rejection counts.
 3. Apply magnitude clipping per band.
 4. For each trial distance modulus:
    a. select() stars via matched filter.
    b. make_raw_map() on HEALPix grid.
    c. Cache raw map + valid_mask via BackgroundMapStore.
-   d. If finalization enabled: finalize_full() and cache (or build cached FinalizedBackground).
+   d. If finalization enabled: finalize_full() and cache.
 5. Expose Background.footprint as HEALPix mask of valid pixels.
+
+Cut/apply_cuts()/apply_magnitude_clipping() live in data_preparation.py, not
+here -- they're applied identically to the background catalog (here) and to
+the injected stream catalog (injector.py, decision 13), so they belong
+somewhere both can import from rather than in either pipeline-specific module.
 
 All caching goes through BackgroundMapStore; every sample reuses cached results.
 
@@ -20,134 +25,114 @@ and enables efficient per-sample injection (background fixed, only stream varies
 
 import dataclasses
 import logging
-from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import pandas as pd
 
+from streamgoggles.background_sources import BackgroundSource, StudyRegion
+from streamgoggles.data_preparation import (
+    Cut,
+    apply_cuts,
+    apply_magnitude_clipping,
+)
+from streamgoggles.matched_filter import (
+    MatchedFilter,
+    PixelizationSpec,
+    finalize_full,
+    make_raw_map,
+)
+from streamgoggles.storage import BackgroundMapStore
+
 logger = logging.getLogger(__name__)
 
 
-@dataclasses.dataclass
-class Cut:
-    """One quality cut rule.
-    
-    Attributes:
-        quantity: column name or special name (e.g., "snr", "mag", "extendedness").
-        band: photometric band (e.g., "g", "r"); may be None if quantity doesn't apply.
-        op: comparison operator as string (">"、"<"、"=="、"!="、">="、"<=").
-        value: comparison value.
-        
-    Alternative: callable-based cut.
-        callable: "module:function_name" string pointing to external cut function.
-    
-    Rationale: Encapsulate a single cut rule; chain multiple rules in order.
-    """
-    quantity: str | None = None
-    band: str | None = None
-    op: str | None = None
-    value: float | int | None = None
-    callable: str | None = None  # "module:function"
-    
-    def apply(self, df: pd.DataFrame) -> np.ndarray:
-        """Apply this cut to a DataFrame.
-        
-        Parameters:
-            df: Input DataFrame.
-        
-        Returns:
-            Boolean array, True for rows passing the cut.
-        
-        Raises:
-            ValueError if cut is malformed or column missing.
-        """
-        raise NotImplementedError
+def build_raw_background_maps(
+    catalog: pd.DataFrame,
+    matched_filter: MatchedFilter,
+    bands: list[str],
+    distance_moduli: list[float],
+    pix: PixelizationSpec,
+) -> dict[float, tuple[np.ndarray, np.ndarray]]:
+    """Build raw HEALPix maps for each distance modulus.
 
-
-def apply_cuts(
-    df: pd.DataFrame,
-    cuts: list[Cut],
-    verbose: bool = True
-) -> pd.DataFrame:
-    """Apply all cuts in order; log rejection counts.
-    
     Parameters:
-        df: Input DataFrame.
-        cuts: List of Cut instances.
-        verbose: If True, log cumulative rejection counts.
-    
-    Returns:
-        Filtered DataFrame (rows passing all cuts).
-    
-    Rationale: Sequential application allows cuts to depend on previous cuts
-    and makes logging clear ("After SNR cut: 50K → 45K rows; extendedness: 45K → 40K").
-    """
-    raise NotImplementedError
+        catalog: Background catalog (already cut + clipped).
+        matched_filter: MatchedFilter instance.
+        bands: List of photometric bands.
+        distance_moduli: List of trial distance moduli.
+        pix: PixelizationSpec.
 
-
-def apply_magnitude_clipping(
-    df: pd.DataFrame,
-    clipping: dict
-) -> pd.DataFrame:
-    """Apply per-band magnitude clipping.
-    
-    Parameters:
-        df: DataFrame with magnitudes in streamobs convention (e.g., 'lsst_g_obs', 'lsst_r_obs').
-        clipping: dict mapping band -> {min, max} mag bounds, e.g.,
-            {'g': {min: 16, max: 26.5}, 'r': {min: 16, max: 26}}.
-    
     Returns:
-        Clipped DataFrame.
-    
-    Rationale: Separate from cuts for clarity; clipping is uniform per band,
-    not a quality assessment.
+        dict mapping distance_modulus -> (raw_map_full, valid_mask_full).
+        raw_map_full: HEALPix counts (npix,).
+        valid_mask_full: HEALPix bool mask (npix,); same for all distances
+            (determined by catalog coverage, not by distance/selection).
+
+    Rationale: One raw map per distance (since selection depends on distance
+    modulus), but valid_mask is shared (determined by survey coverage, not
+    distance).
     """
-    raise NotImplementedError
+    result = {}
+    for dm in distance_moduli:
+        selected = matched_filter.select(catalog, bands, dm)
+        raw_map, valid_mask = make_raw_map(catalog, selected, pix)
+        result[float(dm)] = (raw_map, valid_mask)
+    return result
 
 
 @dataclasses.dataclass
 class Background:
     """Loaded and cached background data.
-    
+
     Attributes:
-        catalog: Full cleaned catalog (after cuts + clipping).
+        catalog: Full cleaned catalog (after cuts + clipping), or None if
+            every requested distance modulus was already cached (so nothing
+            needed loading -- see `load_or_cache`).
         raw_map_full_dict: dict mapping distance_modulus -> raw_map_full (npix,), float.
         valid_mask_full: HEALPix bool mask (npix,); same for all distances.
-        finalized_map_full_dict: dict mapping distance_modulus -> finalized_map_full or None.
-        footprint: HEALPix bool mask (npix,); True for valid coverage.
-    
+        finalized_map_full_dict: dict mapping distance_modulus -> finalized_map_full
+            or None (None when finalization is disabled).
+        footprint: HEALPix bool mask (npix,); True for valid pixels (data coverage).
+            Same array as valid_mask_full, exposed under its own name for
+            callers (windows.py) that only care about coverage, not distance.
+
     Rationale: Bundles all background data (catalog + cached maps) in one place.
-    Maps are distance-dependent but valid_mask is shared (determined by survey coverage).
+    Maps are distance-dependent but valid_mask is shared (determined by survey
+    coverage).
     """
-    catalog: pd.DataFrame
+
+    catalog: pd.DataFrame | None
     raw_map_full_dict: dict[float, np.ndarray]
     valid_mask_full: np.ndarray
     finalized_map_full_dict: dict[float, np.ndarray | None] = dataclasses.field(
         default_factory=dict
     )
     footprint: np.ndarray | None = None
-    
+
     @classmethod
     def load_or_cache(
         cls,
-        source: "BackgroundSource",
+        source: BackgroundSource,
         source_cfg: dict,
-        study_region: "StudyRegion | None",
+        study_region: StudyRegion | None,
         cuts: list[Cut],
         clipping: dict | None,
-        matched_filter: "MatchedFilter",
+        matched_filter: MatchedFilter,
         bands: list[str],
         distance_moduli: list[float],
         finalize_cfg: dict | None,
-        store: "BackgroundMapStore"
+        store: BackgroundMapStore,
+        pix: PixelizationSpec,
+        survey: str = "lsst",
+        release: str = "dp2",
+        filter_config: dict | None = None,
     ) -> "Background":
         """Load background via source, apply processing, cache maps.
-        
+
         Parameters:
-            source: BackgroundSource instance (data_file, light, or catalogue).
+            source: BackgroundSource instance (data_file, light, or injection).
             source_cfg: Source-specific config (e.g., path for data_file).
-            study_region: StudyRegion (used only by light/catalogue).
+            study_region: StudyRegion (used only by light/injection sources).
             cuts: List of Cut rules.
             clipping: Magnitude clipping dict (e.g., {'g': {min, max}, 'r': {min, max}}).
             matched_filter: MatchedFilter instance.
@@ -155,38 +140,96 @@ class Background:
             distance_moduli: List of trial distance moduli.
             finalize_cfg: Finalization config (enabled, smoothing, background_subtract).
             store: BackgroundMapStore for caching.
-        
+            pix: PixelizationSpec -- only `nside`/`nest` affect a full-sky raw
+                map, so only those two fields enter the cache key (not
+                window-specific fields like center_ra/rotation_deg, which
+                don't apply to a full-sky background map).
+            survey, release: Passed to `source.load()` and used to build the
+                `<survey>_<release>` column namespace for cuts/clipping/select.
+            filter_config: Serializable dict identifying `matched_filter`'s
+                configuration (e.g. its reference isochrone + bands), used
+                only for the cache key -- `matched_filter` itself isn't
+                reliably hashable/serializable across implementations.
+
         Returns:
             Background instance with catalog + cached maps.
-        
+
         Raises:
-            FileNotFoundError if source path missing or data can't be loaded.
+            FileNotFoundError if source path/resource is missing.
+
+        Rationale: The cache key depends only on config (never on the loaded
+        catalog itself), so cache existence is checked for every requested
+        distance modulus BEFORE loading anything. When every distance is
+        already cached, `source.load()` (which can be expensive -- a full
+        synthetic generation, or a large real catalog) is skipped entirely;
+        `catalog` is then `None` (see its attribute docstring). This is what
+        makes "cache once, reuse per-sample" (module docstring) actually
+        efficient rather than just avoiding the map-building work.
         """
-        raise NotImplementedError
+        namespace = f"{survey}_{release}" if release else survey
+        base_key = {
+            "source_type": type(source).__name__,
+            "source_cfg": source_cfg,
+            "survey": survey,
+            "release": release,
+            "study_region": dataclasses.asdict(study_region)
+            if study_region is not None
+            else None,
+            "cuts": [dataclasses.asdict(c) for c in cuts],
+            "clipping": clipping,
+            "filter_config": filter_config,
+            "nside": pix.nside,
+            "nest": pix.nest,
+            "finalize_config": finalize_cfg,
+        }
 
+        raw_map_full_dict: dict[float, np.ndarray] = {}
+        finalized_map_full_dict: dict[float, np.ndarray | None] = {}
+        valid_mask_full = None
+        to_compute = []
+        for dm in distance_moduli:
+            key = {**base_key, "distance_modulus": float(dm)}
+            if store.exists(key):
+                raw_map, valid_mask, finalized_map = store.load_background(key)
+                raw_map_full_dict[float(dm)] = raw_map
+                finalized_map_full_dict[float(dm)] = finalized_map
+                if valid_mask_full is None:
+                    valid_mask_full = valid_mask
+            else:
+                to_compute.append(dm)
 
-def build_raw_background_maps(
-    catalog: pd.DataFrame,
-    matched_filter: "MatchedFilter",
-    bands: list[str],
-    distance_moduli: list[float],
-    pix: "PixelizationSpec"
-) -> dict[float, tuple[np.ndarray, np.ndarray]]:
-    """Build raw HEALPix maps for each distance modulus.
-    
-    Parameters:
-        catalog: Background catalog (already cut + clipped).
-        matched_filter: MatchedFilter instance.
-        bands: List of photometric bands.
-        distance_moduli: List of trial distance moduli.
-        pix: PixelizationSpec.
-    
-    Returns:
-        dict mapping distance_modulus -> (raw_map_full, valid_mask_full).
-        raw_map_full: HEALPix counts (npix,).
-        valid_mask_full: HEALPix bool mask (npix,); same for all distances.
-    
-    Rationale: One raw map per distance (since selection depends on distance modulus),
-    but valid_mask is shared (determined by survey coverage, not distance).
-    """
-    raise NotImplementedError
+        catalog = None
+        if to_compute:
+            catalog = source.load(survey, release, study_region, source_cfg)
+            catalog = apply_cuts(catalog, cuts, namespace=namespace)
+            if clipping:
+                catalog = apply_magnitude_clipping(
+                    catalog, clipping, namespace=namespace
+                )
+
+            computed = build_raw_background_maps(
+                catalog, matched_filter, bands, to_compute, pix
+            )
+            finalize_enabled = (
+                bool(finalize_cfg.get("enabled", False)) if finalize_cfg else False
+            )
+            for dm, (raw_map, valid_mask) in computed.items():
+                finalized_map = (
+                    finalize_full(raw_map, valid_mask, finalize_cfg)
+                    if finalize_enabled
+                    else None
+                )
+                raw_map_full_dict[dm] = raw_map
+                finalized_map_full_dict[dm] = finalized_map
+                if valid_mask_full is None:
+                    valid_mask_full = valid_mask
+                key = {**base_key, "distance_modulus": dm}
+                store.save_background(raw_map, valid_mask, finalized_map, key)
+
+        return cls(
+            catalog=catalog,
+            raw_map_full_dict=raw_map_full_dict,
+            valid_mask_full=valid_mask_full,
+            finalized_map_full_dict=finalized_map_full_dict,
+            footprint=valid_mask_full,
+        )

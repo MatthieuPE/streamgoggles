@@ -122,6 +122,39 @@ def test_realize_population_age_changes_true_magnitudes(uniform_params):
     )
 
 
+def test_realize_population_z_changes_color(uniform_params):
+    """A different isochrone doesn't just shift both bands by the same
+    amount -- it must change the stream's g-r color, i.e. actually produce
+    different stars, not a uniform brightness offset."""
+    low_z = dict(uniform_params, z=0.0001)
+    high_z = dict(uniform_params, z=0.01)
+    df_low = StreamObsSource().realize(low_z, np.random.default_rng(7))
+    df_high = StreamObsSource().realize(high_z, np.random.default_rng(7))
+    color_low = (df_low["lsst_g_true"] - df_low["lsst_r_true"]).mean()
+    color_high = (df_high["lsst_g_true"] - df_high["lsst_r_true"]).mean()
+    assert color_low != pytest.approx(color_high, abs=0.05)
+
+
+def test_realize_larger_distance_modulus_gives_fainter_true_magnitudes(uniform_params):
+    """True magnitudes must track the requested distance modulus: for the
+    same underlying stars (same seed), a larger (farther) distance modulus
+    makes every star fainter (larger magnitude) by exactly the difference in
+    distance modulus -- true magnitudes are purely apparent = absolute + dm,
+    with no other dm-dependence in this (no-extinction) true-magnitude path.
+    """
+    near = dict(uniform_params, distance_modulus=15.0)
+    far = dict(uniform_params, distance_modulus=18.0)
+    df_near = StreamObsSource().realize(near, np.random.default_rng(42))
+    df_far = StreamObsSource().realize(far, np.random.default_rng(42))
+
+    assert (df_far["lsst_g_true"].to_numpy() > df_near["lsst_g_true"].to_numpy()).all()
+    assert (df_far["lsst_r_true"].to_numpy() > df_near["lsst_r_true"].to_numpy()).all()
+    np.testing.assert_allclose(
+        df_far["lsst_g_true"].to_numpy() - df_near["lsst_g_true"].to_numpy(),
+        far["distance_modulus"] - near["distance_modulus"],
+    )
+
+
 def test_realize_custom_survey_and_bands(uniform_params):
     params = dict(uniform_params, survey="lsst", release="yr1", band_1="r", band_2="i")
     df = StreamObsSource().realize(params, np.random.default_rng(0))
