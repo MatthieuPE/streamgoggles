@@ -16,6 +16,7 @@ from streamgoggles.matched_filter import (
     make_raw_map,
     native_pixel_scale_deg,
     project,
+    world_to_tangent_plane,
 )
 
 pytestmark = pytest.mark.matched_filter
@@ -341,6 +342,41 @@ def test_project_rotation_swaps_axes_near_90_degrees():
     # Offset one column to the right at rotation=0 ~= offset one row up at rotation=90.
     assert ra_0[2, 3] == pytest.approx(ra_90[1, 2], abs=1e-6)
     assert dec_0[2, 3] == pytest.approx(dec_90[1, 2], abs=1e-6)
+
+
+def test_world_to_tangent_plane_is_inverse_of_tangent_plane_radec():
+    """world_to_tangent_plane must exactly undo _tangent_plane_radec: feeding
+    a deprojected (ra, dec) grid back in must recover the original row/col
+    offsets (xi=col, eta=row), for a rotated window too."""
+    pix = PixelizationSpec(
+        nside=128,
+        center_ra=200.0,
+        center_dec=-15.0,
+        rotation_deg=37.0,
+        image_size_pix=(9, 7),
+        pixel_scale_deg=0.8,
+    )
+    ra_grid, dec_grid = _tangent_plane_radec(pix)
+
+    ny, nx = pix.image_size_pix
+    row_offsets = (np.arange(ny) - (ny - 1) / 2.0) * pix.pixel_scale_deg
+    col_offsets = (np.arange(nx) - (nx - 1) / 2.0) * pix.pixel_scale_deg
+    expected_eta, expected_xi = np.meshgrid(row_offsets, col_offsets, indexing="ij")
+
+    xi, eta = world_to_tangent_plane(
+        ra_grid, dec_grid, pix.center_ra, pix.center_dec, pix.rotation_deg
+    )
+
+    np.testing.assert_allclose(xi, expected_xi, atol=1e-8)
+    np.testing.assert_allclose(eta, expected_eta, atol=1e-8)
+
+
+def test_world_to_tangent_plane_center_is_origin():
+    xi, eta = world_to_tangent_plane(
+        np.array([123.0]), np.array([-40.0]), 123.0, -40.0, rotation_deg=25.0
+    )
+    np.testing.assert_allclose(xi, [0.0], atol=1e-10)
+    np.testing.assert_allclose(eta, [0.0], atol=1e-10)
 
 
 # ---------------------------------------------------------------------------

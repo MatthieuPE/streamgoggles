@@ -351,6 +351,55 @@ def _tangent_plane_radec(pix: PixelizationSpec) -> tuple[np.ndarray, np.ndarray]
     return np.degrees(ra) % 360.0, np.degrees(dec)
 
 
+def world_to_tangent_plane(
+    ra_deg: np.ndarray,
+    dec_deg: np.ndarray,
+    center_ra_deg: float,
+    center_dec_deg: float,
+    rotation_deg: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Forward gnomonic (TAN) projection: sky (ra, dec) -> local tangent-plane
+    offsets (xi_deg, eta_deg), in degrees.
+
+    This is the exact mathematical inverse of `_tangent_plane_radec`'s
+    deprojection (same rotation convention: rotation_deg is applied to the
+    tangent-plane offsets, not as a post-hoc sky rotation) — round-tripping
+    a `_tangent_plane_radec` grid through this function recovers the
+    original row/col offsets. Used to test whether a sky point falls inside
+    a `Window`: a point is inside a `size_deg` x `size_deg` window iff
+    `abs(xi_deg) <= size_deg / 2` and `abs(eta_deg) <= size_deg / 2`.
+
+    Parameters:
+        ra_deg, dec_deg: Sky positions (degrees), any shape.
+        center_ra_deg, center_dec_deg: Tangent point / window center (degrees).
+        rotation_deg: Window position angle (degrees), same convention as
+            `PixelizationSpec.rotation_deg` / `Window.rotation_deg`.
+
+    Returns:
+        Tuple (xi_deg, eta_deg), same shape as the input.
+    """
+    ra = np.radians(ra_deg)
+    dec = np.radians(dec_deg)
+    ra0 = np.radians(center_ra_deg)
+    dec0 = np.radians(center_dec_deg)
+
+    d_ra = ra - ra0
+    cos_c = np.sin(dec0) * np.sin(dec) + np.cos(dec0) * np.cos(dec) * np.cos(d_ra)
+    xi_rot = np.cos(dec) * np.sin(d_ra) / cos_c
+    eta_rot = (
+        np.cos(dec0) * np.sin(dec) - np.sin(dec0) * np.cos(dec) * np.cos(d_ra)
+    ) / cos_c
+
+    theta = np.radians(rotation_deg)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    # Inverse of _tangent_plane_radec's rotation (xi_rot = xi*cos - eta*sin,
+    # eta_rot = xi*sin + eta*cos) -> rotate back by -theta.
+    xi = xi_rot * cos_t + eta_rot * sin_t
+    eta = -xi_rot * sin_t + eta_rot * cos_t
+
+    return np.degrees(xi), np.degrees(eta)
+
+
 def project(
     raw_map: np.ndarray, valid_mask: np.ndarray, pix: PixelizationSpec
 ) -> tuple[np.ndarray, np.ndarray]:
