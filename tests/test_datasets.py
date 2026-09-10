@@ -3,7 +3,13 @@
 StreamMapDataset (real streamobs throughout, no mocking): training mode
 (on-the-fly generation, background_fraction, optional persistence) and eval
 mode (fixed eval_grid, always persisted, deterministic across accesses).
-transforms.py isn't implemented yet -- no tests for it here until it is.
+
+RobustNormalizer/StreamMapTransform (pure numpy, no streamobs needed):
+valid_mask-aware normalization, and augmentation that keeps map_stack,
+label_stack, and valid_mask in geometric lockstep. No noise injection --
+considered and removed (map_stack is count data with its own realistic
+survey noise already; synthetic Gaussian noise would teach a mismatched
+noise model for a counting/denoising target).
 """
 
 import numpy as np
@@ -13,6 +19,7 @@ from streamgoggles.background import Background
 from streamgoggles.background_sources import StreamObsLightBackgroundSource, StudyRegion
 from streamgoggles.config import DistributionType, EvalGrid, ParameterSpec, StreamConfig
 from streamgoggles.datasets.stream_map_dataset import StreamMapDataset
+from streamgoggles.datasets.transforms import RobustNormalizer, StreamMapTransform
 from streamgoggles.injector import StreamInjector
 from streamgoggles.matched_filter import (
     PixelizationSpec,
@@ -436,3 +443,224 @@ def test_eval_mode_index_out_of_range_raises(
     )
     with pytest.raises(IndexError):
         dataset[len(dataset)]
+
+
+# ---------------------------------------------------------------------------
+# RobustNormalizer
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def map_stack_with_invalid_pixel():
+    rng = np.random.default_rng(0)
+    map_stack = rng.uniform(0, 100, size=(3, 10, 10)).astype(np.float32)
+    valid_mask = np.ones((10, 10), dtype=bool)
+    valid_mask[0, 0] = False
+    # A wild value only an invalid pixel has -- must never influence fit()
+    # or get touched by __call__().
+    map_stack[:, 0, 0] = 9999.0
+    return map_stack, valid_mask
+
+
+def test_robust_normalizer_fit_ignores_invalid_pixels(map_stack_with_invalid_pixel):
+    map_stack, valid_mask = map_stack_with_invalid_pixel
+    norm = RobustNormalizer()
+    norm.fit(map_stack, valid_mask)
+    # 9999.0 would massively inflate mean/std if it leaked into the fit.
+    assert np.all(norm.mean < 100)
+    assert np.all(norm.std < 100)
+
+
+def test_robust_normalizer_call_leaves_invalid_pixels_unchanged(
+    map_stack_with_invalid_pixel,
+):
+    map_stack, valid_mask = map_stack_with_invalid_pixel
+    norm = RobustNormalizer()
+    norm.fit(map_stack, valid_mask)
+    out = norm(map_stack, valid_mask)
+    np.testing.assert_array_equal(out[:, 0, 0], map_stack[:, 0, 0])
+
+
+def test_robust_normalizer_call_normalizes_valid_pixels(map_stack_with_invalid_pixel):
+    map_stack, valid_mask = map_stack_with_invalid_pixel
+    norm = RobustNormalizer()
+    norm.fit(map_stack, valid_mask)
+    out = norm(map_stack, valid_mask)
+    for c in range(3):
+        assert out[c][valid_mask].mean() == pytest.approx(0.0, abs=1e-4)
+        assert out[c][valid_mask].std() == pytest.approx(1.0, rel=1e-4)
+
+
+def test_robust_normalizer_call_before_fit_raises():
+    norm = RobustNormalizer()
+    map_stack = np.ones((2, 4, 4), dtype=np.float32)
+    valid_mask = np.ones((4, 4), dtype=bool)
+    with pytest.raises(RuntimeError):
+        norm(map_stack, valid_mask)
+
+
+def test_robust_normalizer_per_channel_independent():
+    map_stack = np.zeros((2, 4, 4), dtype=np.float32)
+    map_stack[0] = 10.0  # channel 0: constant-ish, small scale
+    map_stack[1] = 1000.0  # channel 1: large scale
+    map_stack[0, 0, 0] = 12.0
+    map_stack[1, 0, 0] = 1200.0
+    valid_mask = np.ones((4, 4), dtype=bool)
+
+    norm = RobustNormalizer()
+    norm.fit(map_stack, valid_mask)
+    assert norm.mean[1] > norm.mean[0] * 10  # channels never mixed
+    out = norm(map_stack, valid_mask)
+    # Both channels end up on a comparable normalized scale despite the
+    # 100x difference in raw magnitude.
+    assert abs(out[0].std() - out[1].std()) < 0.5
+
+
+def test_robust_normalizer_constant_channel_no_divide_by_zero():
+    map_stack = np.full((1, 4, 4), 5.0, dtype=np.float32)
+    valid_mask = np.ones((4, 4), dtype=bool)
+    norm = RobustNormalizer()
+    norm.fit(map_stack, valid_mask)
+    assert norm.std[0] == 1.0  # fallback, not 0
+    out = norm(map_stack, valid_mask)
+    assert np.all(np.isfinite(out))
+
+
+def test_robust_normalizer_fit_requires_3d_map_stack():
+    norm = RobustNormalizer()
+    with pytest.raises(ValueError, match="3D"):
+        norm.fit(np.ones((4, 4)), np.ones((4, 4), dtype=bool))
+
+
+def test_robust_normalizer_fit_shape_mismatch_raises():
+    norm = RobustNormalizer()
+    with pytest.raises(ValueError, match="valid_mask shape"):
+        norm.fit(np.ones((2, 4, 4)), np.ones((5, 5), dtype=bool))
+
+
+def test_robust_normalizer_call_wrong_channel_count_raises():
+    norm = RobustNormalizer()
+    norm.fit(np.ones((2, 4, 4)), np.ones((4, 4), dtype=bool))
+    with pytest.raises(ValueError, match="channels"):
+        norm(np.ones((3, 4, 4)), np.ones((4, 4), dtype=bool))
+
+
+def test_robust_normalizer_fit_no_valid_pixels_raises():
+    norm = RobustNormalizer()
+    with pytest.raises(ValueError, match="valid pixels"):
+        norm.fit(np.ones((1, 4, 4)), np.zeros((4, 4), dtype=bool))
+
+
+def test_robust_normalizer_call_does_not_mutate_input(map_stack_with_invalid_pixel):
+    map_stack, valid_mask = map_stack_with_invalid_pixel
+    original = map_stack.copy()
+    norm = RobustNormalizer()
+    norm.fit(map_stack, valid_mask)
+    norm(map_stack, valid_mask)
+    np.testing.assert_array_equal(map_stack, original)
+
+
+# ---------------------------------------------------------------------------
+# StreamMapTransform
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def transform_sample():
+    map_stack = np.arange(2 * 6 * 6, dtype=np.float32).reshape(2, 6, 6)
+    label_stack = map_stack.copy() * 10.0
+    valid_mask = np.ones((6, 6), dtype=bool)
+    valid_mask[0, 0] = False
+    return {
+        "map_stack": map_stack,
+        "label_stack": label_stack,
+        "valid_mask": valid_mask,
+        "params": {"a": 1},
+        "metadata": {"b": 2},
+    }
+
+
+def test_stream_map_transform_missing_key_raises_keyerror():
+    transform = StreamMapTransform()
+    with pytest.raises(KeyError):
+        transform({"map_stack": np.zeros((1, 2, 2))})
+
+
+def test_stream_map_transform_identity_when_disabled(transform_sample):
+    transform = StreamMapTransform(normalizer=None, augment=False)
+    out = transform(transform_sample)
+    np.testing.assert_array_equal(out["map_stack"], transform_sample["map_stack"])
+    np.testing.assert_array_equal(out["label_stack"], transform_sample["label_stack"])
+    np.testing.assert_array_equal(out["valid_mask"], transform_sample["valid_mask"])
+
+
+def test_stream_map_transform_does_not_mutate_input_sample(transform_sample):
+    original_map = transform_sample["map_stack"].copy()
+    transform = StreamMapTransform(augment=True, rng=np.random.default_rng(0))
+    transform(transform_sample)
+    np.testing.assert_array_equal(transform_sample["map_stack"], original_map)
+
+
+def test_stream_map_transform_passes_through_extra_keys(transform_sample):
+    transform = StreamMapTransform()
+    out = transform(transform_sample)
+    assert out["params"] == {"a": 1}
+    assert out["metadata"] == {"b": 2}
+
+
+def test_stream_map_transform_output_dtypes(transform_sample):
+    transform = StreamMapTransform(augment=True, rng=np.random.default_rng(0))
+    out = transform(transform_sample)
+    assert out["map_stack"].dtype == np.float32
+    assert out["label_stack"].dtype == np.float32
+    assert out["valid_mask"].dtype == bool
+
+
+def test_stream_map_transform_applies_normalizer(transform_sample):
+    norm = RobustNormalizer()
+    norm.fit(transform_sample["map_stack"], transform_sample["valid_mask"])
+    transform = StreamMapTransform(normalizer=norm, augment=False)
+    out = transform(transform_sample)
+    assert not np.array_equal(out["map_stack"], transform_sample["map_stack"])
+    # label_stack is never normalized -- stays in its raw count unit.
+    np.testing.assert_array_equal(out["label_stack"], transform_sample["label_stack"])
+
+
+def test_stream_map_transform_augmentation_keeps_map_label_mask_in_lockstep(
+    transform_sample,
+):
+    """A marker at one pixel in map_stack/label_stack, and the ONLY invalid
+    pixel in valid_mask, must all land at the same new location after any
+    random flip/rotation -- proving the three arrays are transformed
+    identically, not independently."""
+    map_stack = transform_sample["map_stack"].copy()
+    label_stack = transform_sample["label_stack"].copy()
+    valid_mask = np.ones((6, 6), dtype=bool)
+    marker_pos = (2, 3)
+    map_stack[:] = 0.0
+    map_stack[0, marker_pos[0], marker_pos[1]] = 1.0
+    label_stack[:] = 0.0
+    label_stack[0, marker_pos[0], marker_pos[1]] = 1.0
+    valid_mask[marker_pos] = False
+
+    sample = {
+        "map_stack": map_stack,
+        "label_stack": label_stack,
+        "valid_mask": valid_mask,
+    }
+
+    for seed in range(20):
+        transform = StreamMapTransform(augment=True, rng=np.random.default_rng(seed))
+        out = transform(sample)
+        map_pos = tuple(np.argwhere(out["map_stack"][0] == 1.0)[0])
+        label_pos = tuple(np.argwhere(out["label_stack"][0] == 1.0)[0])
+        mask_pos = tuple(np.argwhere(~out["valid_mask"])[0])
+        assert map_pos == label_pos == mask_pos
+
+
+def test_stream_map_transform_augmentation_output_is_contiguous(transform_sample):
+    transform = StreamMapTransform(augment=True, rng=np.random.default_rng(2))
+    out = transform(transform_sample)
+    assert out["map_stack"].flags["C_CONTIGUOUS"]
+    assert out["label_stack"].flags["C_CONTIGUOUS"]
+    assert out["valid_mask"].flags["C_CONTIGUOUS"]
