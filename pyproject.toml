@@ -45,4 +45,5 @@ markers = [
     "rasterize: rasterize.py (rasterize_binary, rasterize_density, rasterize dispatcher, soft_distance stub)",
     "datasets: datasets/stream_map_dataset.py (StreamMapDataset training/eval modes)",
     "models: models/unet.py (UNet architecture, forward/encoder, head types)",
+    "losses: models/losses.py (MaskedLoss subclasses, get_loss factory)",
 ]
