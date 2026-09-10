@@ -395,6 +395,70 @@ def test_inject_single_stream_good_filter_label_beats_decoy_at_true_distance(
     assert sample.label_stack[good_idx].sum() > sample.label_stack[decoy_idx].sum()
 
 
+def test_inject_single_stream_label_lower_at_larger_trial_distance(
+    real_injector, stream_params
+):
+    """The "good" filter's label total must drop as the trial distance
+    modulus moves further past the stream's own true value (16.8): the
+    isochrone locus shifts away from where the true (fixed-distance) stream
+    actually sits in color-magnitude space, so fewer true members fall
+    inside an increasingly mismatched filter."""
+    sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    channels = sample.metadata["channels"]
+    at_true_dm = channels.index({"filter": "good", "distance_modulus": 16.8})
+    at_larger_dm = channels.index({"filter": "good", "distance_modulus": 17.5})
+    assert sample.label_stack[at_larger_dm].sum() < sample.label_stack[at_true_dm].sum()
+
+
+def test_inject_single_stream_label_excludes_members_outside_window(real_background):
+    """The label must only ever reflect what's inside the sampled window
+    (decision 21: partial-stream inclusion is expected -- a stream much
+    longer than the window WILL have most of its members outside it). Same
+    nstars, spread over a much longer track: if members outside the window
+    still counted, the label total wouldn't meaningfully drop; since
+    map_stack/label_stack are cropped to the window's own fixed pixel grid
+    (matched_filter.crop_window/project, already proven not to leak in
+    tests/test_rasterize.py's boundary tests), it should drop substantially.
+    """
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+    )
+    short_params = {
+        "morphology": "uniform",
+        "nstars": 3000,
+        "width": 0.2,
+        "length": 8.0,
+        "distance_modulus": 16.8,
+        "age": 12.5,
+        "z": 0.0002,
+    }
+    long_params = dict(short_params, length=100.0)  # far longer than the ~20 deg window
+
+    sample_short = injector.inject_single_stream(
+        short_params, np.random.default_rng(99)
+    )
+    sample_long = injector.inject_single_stream(long_params, np.random.default_rng(99))
+
+    idx_short = sample_short.metadata["channels"].index(
+        {"filter": "good", "distance_modulus": 16.8}
+    )
+    idx_long = sample_long.metadata["channels"].index(
+        {"filter": "good", "distance_modulus": 16.8}
+    )
+    assert (
+        sample_long.label_stack[idx_long].sum()
+        < sample_short.label_stack[idx_short].sum()
+    )
+
+
 def test_inject_single_stream_density_policy_label_is_broadcast_across_channels(
     real_background, stream_params
 ):
