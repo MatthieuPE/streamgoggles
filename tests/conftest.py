@@ -11,15 +11,25 @@ import yaml
 # Must be set before healpy or torch actually gets imported by any test
 # module (both are only imported lazily, well after conftest.py loads, so
 # setting it here at collection time is early enough). healpy's
-# hp.smoothing() and torch (tiny_torch_model_class fixture, below) each load
-# their own OpenMP runtime, and loading both in the same process aborts with
-# a duplicate-OpenMP-runtime segfault on this environment (confirmed via
-# isolation: reproducible with just rasterize.py's smoothing path +
-# test_storage.py's torch fixtures, nothing else). This is a known, common
-# macOS conda interoperability issue (conda's MKL/libomp vs PyTorch's bundled
-# libomp), not a bug in either library; safe here since this codebase never
-# runs MKL and torch numerics concurrently in the same process.
+# hp.smoothing() and torch (models/unet.py, tiny_torch_model_class fixture)
+# each load their own OpenMP runtime, and loading both in the same process
+# aborts with a duplicate-OpenMP-runtime crash on this environment. This is
+# a known, common macOS conda interoperability issue (conda's MKL/libomp vs
+# PyTorch's bundled libomp), not a bug in either library.
+#
+# KMP_DUPLICATE_LIB_OK alone silences the *abort* but not the underlying
+# thread-safety conflict: once models/unet.py started exercising torch for
+# real (multiple Conv2d/BatchNorm layers, forward+backward, across many
+# tests) in the same session as healpy's hp.smoothing() calls
+# (data_preparation.py, matched_filter.py's finalize_full, rasterize.py),
+# that residual conflict reproducibly segfaulted mid-run instead of
+# aborting cleanly. Forcing both libraries' OpenMP pools down to a single
+# thread (OMP_NUM_THREADS=1) removes the concurrent-runtime race entirely
+# and was confirmed to make the full suite (healpy- and torch-heavy tests
+# interleaved) pass reliably; it costs some raw speed but nothing here is
+# a perf benchmark.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # ---------------------------------------------------------------------------
 # Utilities

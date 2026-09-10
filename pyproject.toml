@@ -44,4 +44,5 @@ markers = [
     "inject_utils: inject_utils.py (richness conversions: N/mass/surface_brightness/luminosity)",
     "rasterize: rasterize.py (rasterize_binary, rasterize_density, rasterize dispatcher, soft_distance stub)",
     "datasets: datasets/stream_map_dataset.py (StreamMapDataset training/eval modes)",
+    "models: models/unet.py (UNet architecture, forward/encoder, head types)",
 ]
