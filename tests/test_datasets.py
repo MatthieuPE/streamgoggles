@@ -18,9 +18,12 @@ import pytest
 from streamgoggles.background import Background
 from streamgoggles.background_sources import StreamObsLightBackgroundSource, StudyRegion
 from streamgoggles.config import DistributionType, EvalGrid, ParameterSpec, StreamConfig
-from streamgoggles.datasets.stream_map_dataset import StreamMapDataset
+from streamgoggles.datasets.stream_map_dataset import (
+    StreamMapDataset,
+    stream_map_collate_fn,
+)
 from streamgoggles.datasets.transforms import RobustNormalizer, StreamMapTransform
-from streamgoggles.injector import StreamInjector
+from streamgoggles.injector import StreamInjector, inject_background_only
 from streamgoggles.matched_filter import (
     PixelizationSpec,
     ShiftedColorBoxFilter,
@@ -28,6 +31,7 @@ from streamgoggles.matched_filter import (
 )
 from streamgoggles.storage import BackgroundMapStore, SimulationStore
 from streamgoggles.stream_sources import StreamObsSource
+from streamgoggles.windows import sample_random_window
 
 pytestmark = pytest.mark.datasets
 
@@ -214,6 +218,66 @@ def test_training_mode_background_fraction_one_is_always_background_only(
         item = dataset[i]
         assert item["params"] == {}
         assert np.all(item["label_stack"] == 0.0)
+
+
+def test_stream_map_collate_fn_handles_mixed_background_and_stream_samples(
+    real_background, injector, fixed_config
+):
+    """Found via real training with background_fraction > 0 through a real
+    DataLoader: torch's default collate_fn crashes on a batch mixing a
+    background-only item (params={}) with a stream item (params={richness,
+    morphology, ...}) -- differing key sets. stream_map_collate_fn is the
+    fix; this proves it actually handles the mix, using two real samples
+    (not hand-built dicts)."""
+    bg, _filters, pix = real_background
+    stream_item = injector.inject_single_stream(
+        {name: spec.value for name, spec in fixed_config.params.items()},
+        np.random.default_rng(0),
+    )
+    size_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
+    window = sample_random_window(
+        bg.footprint, pix.nside, size_deg=size_deg, rng=np.random.default_rng(1)
+    )
+    bg_item = inject_background_only(bg, window, pix)
+
+    batch = [
+        {
+            "map_stack": stream_item.map_stack,
+            "label_stack": stream_item.label_stack,
+            "valid_mask": stream_item.valid_mask,
+            "params": stream_item.params,
+            "metadata": stream_item.metadata,
+        },
+        {
+            "map_stack": bg_item.map_stack,
+            "label_stack": bg_item.label_stack,
+            "valid_mask": bg_item.valid_mask,
+            "params": bg_item.params,
+            "metadata": bg_item.metadata,
+        },
+    ]
+
+    collated = stream_map_collate_fn(batch)
+
+    assert collated["map_stack"].shape[0] == 2
+    assert collated["label_stack"].shape[0] == 2
+    assert collated["valid_mask"].shape[0] == 2
+    assert collated["params"] == [stream_item.params, bg_item.params]
+    assert collated["metadata"] == [stream_item.metadata, bg_item.metadata]
+
+
+def test_default_collate_fails_on_the_same_mixed_batch_without_the_fix():
+    """Documents the exact bug stream_map_collate_fn fixes: torch's own
+    default_collate cannot batch dicts whose "params" key has different
+    sub-keys across the batch."""
+    from torch.utils.data import default_collate
+
+    batch = [
+        {"params": {"richness": 100, "morphology": "uniform"}},
+        {"params": {}},
+    ]
+    with pytest.raises(KeyError):
+        default_collate(batch)
 
 
 def test_training_mode_background_fraction_zero_is_never_background_only(

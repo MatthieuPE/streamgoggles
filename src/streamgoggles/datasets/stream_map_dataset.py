@@ -6,6 +6,12 @@ persisted samples (eval, deterministic, reproducible). Duck-typed as a torch
 Dataset -- only __len__/__getitem__, no actual torch.utils.data.Dataset
 subclassing -- so this module stays importable without torch installed, the
 same lazy-import convention storage.ModelStore uses for its own torch calls.
+
+Wrapping this dataset in a real `torch.utils.data.DataLoader`: pass
+`collate_fn=stream_map_collate_fn` (below) whenever `StreamConfig.
+background_fraction > 0` -- torch's default collate_fn cannot batch this
+dataset's items once background-only samples (params={}) get mixed with
+stream samples (params={richness, morphology, ...}) in the same batch.
 """
 
 import logging
@@ -23,8 +29,9 @@ logger = logging.getLogger(__name__)
 
 
 def _sample_to_dict(sample: Sample) -> dict:
-    """Convert a Sample to the plain dict torch.utils.data.DataLoader's
-    default collate_fn expects (arrays/dicts, not a dataclass)."""
+    """Convert a Sample to the plain dict a DataLoader's collate_fn expects
+    (arrays/dicts, not a dataclass) -- see `stream_map_collate_fn` below for
+    the collate_fn this dict actually needs when background_fraction > 0."""
     return {
         "map_stack": sample.map_stack,
         "label_stack": sample.label_stack,
@@ -32,6 +39,47 @@ def _sample_to_dict(sample: Sample) -> dict:
         "params": sample.params,
         "metadata": sample.metadata,
     }
+
+
+def stream_map_collate_fn(batch: list[dict]) -> dict:
+    """DataLoader collate_fn for batches of `StreamMapDataset` items.
+
+    torch's own default collate_fn recursively collates every dict key,
+    requiring each sample's "params"/"metadata" dict to have identical keys
+    across the whole batch -- but they don't: `inject_background_only`'s
+    samples (drawn whenever `StreamConfig.background_fraction > 0`) carry
+    `params={}`, while injected-stream samples carry richness/morphology/
+    etc., so any batch mixing the two crashes `default_collate` with a bare
+    `KeyError` on whichever param name it hits first. (Found by actually
+    training with `background_fraction > 0` through a real `DataLoader` --
+    training/plain_runner.py's tests happened to only exercise
+    `background_fraction=0.0`, which never mixes the two shapes.)
+
+    This collates `map_stack`/`label_stack`/`valid_mask` into batched
+    tensors via torch's own `default_collate` (so dtype/behavior stays
+    identical to the default path), and leaves `params`/`metadata` as
+    plain per-sample lists instead of trying to merge them -- exactly what
+    `training.plain_runner.PlainTrainer` needs, since it never reads
+    `params`/`metadata` from a batch at all.
+
+    Parameters:
+        batch: list of dicts, each shaped like `StreamMapDataset.__getitem__`'s
+            return value.
+
+    Returns:
+        dict with `map_stack`/`label_stack`/`valid_mask` as batched
+        tensors, and `params`/`metadata` as lists (length `len(batch)`) of
+        the original per-sample dicts, unmerged.
+    """
+    from torch.utils.data import default_collate
+
+    tensor_keys = ("map_stack", "label_stack", "valid_mask")
+    collated = {
+        key: default_collate([item[key] for item in batch]) for key in tensor_keys
+    }
+    collated["params"] = [item["params"] for item in batch]
+    collated["metadata"] = [item["metadata"] for item in batch]
+    return collated
 
 
 class StreamMapDataset:
