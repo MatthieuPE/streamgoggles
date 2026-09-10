@@ -242,6 +242,100 @@ class StreamobsSplineFilter(MatchedFilter):
         return is_in_match_filter(mag_1, mag_2, polygon_vertices=polygon)
 
 
+class ShiftedColorBoxFilter(MatchedFilter):
+    """A deliberately "bad" matched filter: a plain color-magnitude box,
+    same magnitude range as a real isochrone filter at the same distance,
+    but shifted off the isochrone locus in color.
+
+    Rationale: a decoy negative control for training. Unlike
+    `StreamobsSplineFilter`, this has no isochrone shape at all, so it
+    passes generic background contamination through without preferentially
+    selecting isochrone-consistent (i.e. real stream-like) stars. Pairing a
+    "good" and a "bad" filter at the same trial distance teaches a network
+    what background contamination looks like versus a real overdensity,
+    since both channels see the same background but only the good one is
+    biased toward real stream members.
+
+    Attributes:
+        reference_filter: The real filter this decoy is shifted relative
+            to. Its `_polygon()` (cached there) supplies both the magnitude
+            range and the color center to shift away from -- so the decoy
+            always tracks whatever isochrone/distance/bands the reference
+            filter is configured with, with no separate isochrone sampling
+            of its own.
+        color_shift: Offset (mag) added to the reference polygon's median
+            color to get this box's center. Any nonzero value moves the box
+            off the isochrone locus; sign is arbitrary (bluer vs redder).
+        color_width: Full width (mag) of the box in color.
+    """
+
+    def __init__(
+        self,
+        reference_filter: StreamobsSplineFilter,
+        color_shift: float,
+        color_width: float = 0.3,
+    ):
+        """Initialize the decoy filter.
+
+        Parameters:
+            reference_filter: StreamobsSplineFilter to shift away from.
+            color_shift: Color offset (mag) from the reference polygon's
+                median color. Must be nonzero enough that the box doesn't
+                still overlap the isochrone locus, but that's the caller's
+                responsibility -- not validated here (depends on the
+                isochrone's own color width, which varies by age/z/distance).
+            color_width: Full width (mag) of the box in color (default 0.3).
+        """
+        self.reference_filter = reference_filter
+        self.color_shift = color_shift
+        self.color_width = color_width
+
+    @property
+    def namespace(self) -> str | None:
+        """Column namespace, taken from `reference_filter` -- both filters
+        must read the same catalog columns, so there is only one namespace
+        to track, not two that could drift out of sync."""
+        return self.reference_filter.namespace
+
+    def select(
+        self, catalog: pd.DataFrame, bands: list[str], distance_modulus: float
+    ) -> np.ndarray:
+        """Apply the shifted color-magnitude box cut.
+
+        Parameters:
+            catalog: DataFrame with `<namespace>_<band>_obs` columns matching
+                `self.namespace` (== `self.reference_filter.namespace`).
+            bands: List of photometric bands (color = bands[0] - bands[1],
+                magnitude axis = bands[0] -- same convention as
+                `streamobs.match_filter.build_match_filter`).
+            distance_modulus: Trial distance modulus (only used to look up
+                the reference filter's polygon at this distance; the box
+                itself has no distance dependence beyond that).
+
+        Returns:
+            Boolean selection mask, shape (len(catalog),).
+        """
+        from streamobs.columns import obs_col
+
+        polygon = self.reference_filter._polygon(bands, distance_modulus)
+        mag_min, mag_max = polygon[:, 1].min(), polygon[:, 1].max()
+        color_center = float(np.median(polygon[:, 0]))
+
+        mag_1 = catalog[obs_col(bands[0], self.namespace)].to_numpy(dtype=float)
+        mag_2 = catalog[obs_col(bands[1], self.namespace)].to_numpy(dtype=float)
+        color = mag_1 - mag_2
+
+        color_min = color_center + self.color_shift - self.color_width / 2.0
+        color_max = color_center + self.color_shift + self.color_width / 2.0
+
+        return (
+            (mag_1 >= mag_min)
+            & (mag_1 <= mag_max)
+            & (color >= color_min)
+            & (color <= color_max)
+        )
+
+
 def make_raw_map(
     catalog: pd.DataFrame,
     selected: np.ndarray,

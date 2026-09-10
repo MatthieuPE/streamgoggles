@@ -8,6 +8,7 @@ from astropy.coordinates import angular_separation
 
 from streamgoggles.matched_filter import (
     PixelizationSpec,
+    ShiftedColorBoxFilter,
     StreamobsSplineFilter,
     _tangent_plane_radec,
     combine_full_maps,
@@ -120,6 +121,110 @@ def test_streamobs_filter_rejects_stars_far_from_isochrone():
     catalog = pd.DataFrame({"g_obs": mag_g, "r_obs": mag_r})
     selected = filt.select(catalog, ["g", "r"], distance_modulus=dm)
     assert selected.sum() / n < 0.05
+
+
+# ---------------------------------------------------------------------------
+# ShiftedColorBoxFilter (real streamobs, via the reference filter's polygon)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cmd_spanning_catalog():
+    """A synthetic catalog with mag/color spread uniformly well beyond the
+    12.5 Gyr, z=0.0002 isochrone's own polygon at dm=16.8, so both a real
+    filter and any reasonably shifted decoy box have something to select
+    from."""
+    ref = StreamobsSplineFilter(iso_config={"age": 12.5, "z": 0.0002})
+    poly = ref._polygon(["g", "r"], 16.8)
+    rng = np.random.default_rng(0)
+    n = 50_000
+    mag_r = rng.uniform(poly[:, 1].min() - 1.0, poly[:, 1].max() + 1.0, n)
+    color = rng.uniform(poly[:, 0].min() - 1.0, poly[:, 0].max() + 1.0, n)
+    mag_g = mag_r + color
+    return ref, poly, pd.DataFrame({"g_obs": mag_g, "r_obs": mag_r})
+
+
+def test_shifted_color_box_filter_namespace_matches_reference():
+    ref = StreamobsSplineFilter(
+        iso_config={"age": 12.5, "z": 0.0002}, namespace="lsst_yr1"
+    )
+    decoy = ShiftedColorBoxFilter(reference_filter=ref, color_shift=0.5)
+    assert decoy.namespace == "lsst_yr1"
+
+
+def test_shifted_color_box_filter_respects_reference_magnitude_range(
+    cmd_spanning_catalog,
+):
+    ref, poly, catalog = cmd_spanning_catalog
+    decoy = ShiftedColorBoxFilter(
+        reference_filter=ref, color_shift=0.5, color_width=0.3
+    )
+    selected = decoy.select(catalog, ["g", "r"], distance_modulus=16.8)
+
+    assert selected.sum() > 0
+    # polygon's magnitude axis is band_1 = "g" (color = band_1 - band_2).
+    mag_g_selected = catalog["g_obs"].to_numpy()[selected]
+    mag_min, mag_max = poly[:, 1].min(), poly[:, 1].max()
+    assert (mag_g_selected >= mag_min - 1e-9).all()
+    assert (mag_g_selected <= mag_max + 1e-9).all()
+
+
+def test_shifted_color_box_filter_mostly_disjoint_from_reference(cmd_spanning_catalog):
+    ref, _poly, catalog = cmd_spanning_catalog
+    decoy = ShiftedColorBoxFilter(
+        reference_filter=ref, color_shift=0.5, color_width=0.3
+    )
+
+    sel_ref = ref.select(catalog, ["g", "r"], distance_modulus=16.8)
+    sel_decoy = decoy.select(catalog, ["g", "r"], distance_modulus=16.8)
+    overlap = (sel_ref & sel_decoy).sum()
+
+    assert sel_ref.sum() > 0
+    assert sel_decoy.sum() > 0
+    assert overlap / min(sel_ref.sum(), sel_decoy.sum()) < 0.5
+
+
+def test_shifted_color_box_filter_zero_shift_centers_on_reference_color(
+    cmd_spanning_catalog,
+):
+    """A zero color_shift box, wide enough to cover the isochrone's own
+    color spread, must be centered where the reference locus actually is --
+    confirms the median-color extraction from the real polygon is correct,
+    not just "some" color."""
+    ref, poly, catalog = cmd_spanning_catalog
+    color_width = float(poly[:, 0].max() - poly[:, 0].min()) + 0.5
+    decoy = ShiftedColorBoxFilter(
+        reference_filter=ref, color_shift=0.0, color_width=color_width
+    )
+
+    sel_ref = ref.select(catalog, ["g", "r"], distance_modulus=16.8)
+    sel_decoy = decoy.select(catalog, ["g", "r"], distance_modulus=16.8)
+
+    # A wide, zero-shift box centered on the isochrone's own color should
+    # contain nearly all of the reference filter's own selection.
+    assert (sel_ref & sel_decoy).sum() / sel_ref.sum() > 0.9
+
+
+def test_shifted_color_box_filter_narrower_width_selects_fewer(cmd_spanning_catalog):
+    ref, _poly, catalog = cmd_spanning_catalog
+    narrow = ShiftedColorBoxFilter(
+        reference_filter=ref, color_shift=0.5, color_width=0.1
+    )
+    wide = ShiftedColorBoxFilter(reference_filter=ref, color_shift=0.5, color_width=1.0)
+
+    n_narrow = narrow.select(catalog, ["g", "r"], distance_modulus=16.8).sum()
+    n_wide = wide.select(catalog, ["g", "r"], distance_modulus=16.8).sum()
+    assert n_wide > n_narrow
+
+
+def test_shifted_color_box_filter_returns_bool_array_of_right_length(
+    cmd_spanning_catalog,
+):
+    ref, _poly, catalog = cmd_spanning_catalog
+    decoy = ShiftedColorBoxFilter(reference_filter=ref, color_shift=0.5)
+    selected = decoy.select(catalog, ["g", "r"], distance_modulus=16.8)
+    assert selected.dtype == bool
+    assert len(selected) == len(catalog)
 
 
 # ---------------------------------------------------------------------------

@@ -2,9 +2,14 @@
 StreamInjector.inject_single_stream, and inject_background_only.
 
 Everything runs against real streamobs (survey loading, StreamInjector,
-StreamModel via stream_sources.py) and the real rasterize.py -- no mocking.
-Only the "soft_distance" label policy is still a stub (rasterize.py itself,
-decision 6); that boundary is verified explicitly below.
+StreamModel via stream_sources.py) -- no mocking. StreamInjector now works
+with a *named dict* of matched filters (2026-09-09 pivot: typically a real
+isochrone filter plus one or more deliberately "bad" decoy filters --
+matched_filter.ShiftedColorBoxFilter -- per trial distance), and its default
+label ("stream_count") is the true stream-only raw count per (filter,
+distance) channel, built directly here rather than via rasterize.py.
+rasterize.py-based labels (binary/density/soft_distance) are still reachable
+via label_policy and remain tested; only "soft_distance" is still a stub.
 """
 
 import astropy.units as u
@@ -22,7 +27,11 @@ from streamgoggles.injector import (
     place_stream_in_footprint,
     resolve_richness_to_nstars,
 )
-from streamgoggles.matched_filter import PixelizationSpec, StreamobsSplineFilter
+from streamgoggles.matched_filter import (
+    PixelizationSpec,
+    ShiftedColorBoxFilter,
+    StreamobsSplineFilter,
+)
 from streamgoggles.storage import BackgroundMapStore
 from streamgoggles.stream_sources import StreamObsSource
 from streamgoggles.windows import sample_random_window
@@ -257,28 +266,31 @@ def test_place_stream_in_footprint_empty_footprint_raises(small_footprint_and_ns
 
 # ---------------------------------------------------------------------------
 # StreamInjector.inject_single_stream / inject_background_only
-# (real streamobs, real background, real cuts -- rasterize monkeypatched
-# where noted)
+# (real streamobs, real background, real cuts, real multi-filter channels)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def real_background(tmp_path_factory):
+    """Two named filters ("good" isochrone + "decoy" shifted color box) x two
+    trial distances -> 4 channels, matching the real, current design."""
     region = StudyRegion(
         center_ra=0.0, center_dec=-30.0, width_deg=25.0, height_deg=18.0
     )
     pix = PixelizationSpec(nside=64, pixel_scale_deg=1.0, image_size_pix=(20, 20))
     store = BackgroundMapStore(tmp_path_factory.mktemp("bgmaps"))
-    mf = StreamobsSplineFilter(
+    good = StreamobsSplineFilter(
         iso_config={"age": 12.5, "z": 0.0002}, namespace="lsst_yr1"
     )
+    decoy = ShiftedColorBoxFilter(reference_filter=good, color_shift=0.5)
+    filters = {"good": good, "decoy": decoy}
     bg = Background.load_or_cache(
         source=StreamObsLightBackgroundSource(),
         source_cfg={},
         study_region=region,
         cuts=[],
         clipping=None,
-        matched_filter=mf,
+        matched_filters=filters,
         bands=["g", "r"],
         distance_moduli=[16.8, 17.5],
         finalize_cfg=None,
@@ -286,17 +298,17 @@ def real_background(tmp_path_factory):
         pix=pix,
         survey="lsst",
         release="yr1",
-        filter_config={"age": 12.5, "z": 0.0002},
+        filter_configs={"good": {"age": 12.5, "z": 0.0002}, "decoy": {"shift": 0.5}},
     )
-    return bg, mf, pix
+    return bg, filters, pix
 
 
 @pytest.fixture
 def real_injector(real_background):
-    bg, mf, pix = real_background
+    bg, filters, pix = real_background
     return StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -305,7 +317,6 @@ def real_injector(real_background):
         release="yr1",
         bands=("g", "r"),
         richness_kind="nstars",
-        label_policy="density",
         finalize_cfg=None,
     )
 
@@ -340,15 +351,21 @@ class _CountingFilter:
 def test_inject_single_stream_builds_valid_sample(real_injector, stream_params):
     sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
 
-    assert sample.map_stack.shape == (2, 20, 20)
+    assert sample.map_stack.shape == (4, 20, 20)  # 2 distances x 2 filters
     assert sample.map_stack.dtype == np.float32
-    assert sample.label_stack.shape == (2, 20, 20)
+    assert sample.label_stack.shape == (4, 20, 20)
     assert sample.label_stack.dtype == np.float32
     assert sample.valid_mask.shape == (20, 20)
     assert sample.valid_mask.dtype == bool
     assert sample.params["nstars"] == 3000
     assert "window" in sample.metadata
     assert sample.metadata["distance_moduli"] == [16.8, 17.5]
+    assert sample.metadata["channels"] == [
+        {"filter": "good", "distance_modulus": 16.8},
+        {"filter": "decoy", "distance_modulus": 16.8},
+        {"filter": "good", "distance_modulus": 17.5},
+        {"filter": "decoy", "distance_modulus": 17.5},
+    ]
 
 
 def test_inject_single_stream_map_has_signal(real_injector, stream_params):
@@ -356,23 +373,58 @@ def test_inject_single_stream_map_has_signal(real_injector, stream_params):
     assert sample.map_stack.sum() > 0
 
 
-def test_inject_single_stream_label_has_signal_and_is_broadcast_across_channels(
+def test_inject_single_stream_stream_count_label_never_exceeds_map(
     real_injector, stream_params
 ):
-    """density (the default policy) doesn't depend on distance modulus, so
-    the same 2D label must be broadcast identically to every channel."""
+    """The label is the stream-only contribution to each channel's combined
+    map -- it can never exceed what the combined map itself shows there."""
     sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
     assert sample.label_stack.sum() > 0
-    np.testing.assert_array_equal(sample.label_stack[0], sample.label_stack[1])
+    assert (sample.label_stack <= sample.map_stack + 1e-4).all()
+
+
+def test_inject_single_stream_good_filter_label_beats_decoy_at_true_distance(
+    real_injector, stream_params
+):
+    """The whole point of a decoy filter: at the stream's own true distance,
+    the real isochrone filter's label count must be well above the decoy's."""
+    sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    channels = sample.metadata["channels"]
+    good_idx = channels.index({"filter": "good", "distance_modulus": 16.8})
+    decoy_idx = channels.index({"filter": "decoy", "distance_modulus": 16.8})
+    assert sample.label_stack[good_idx].sum() > sample.label_stack[decoy_idx].sum()
+
+
+def test_inject_single_stream_density_policy_label_is_broadcast_across_channels(
+    real_background, stream_params
+):
+    """density doesn't depend on distance or filter, so the same 2D label
+    must be broadcast identically to every one of the 4 channels."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="density",
+    )
+    sample = injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    assert sample.label_stack.sum() > 0
+    for c in range(1, sample.label_stack.shape[0]):
+        np.testing.assert_array_equal(sample.label_stack[0], sample.label_stack[c])
 
 
 def test_inject_single_stream_binary_policy_label_is_binary(
     real_background, stream_params
 ):
-    bg, mf, pix = real_background
+    bg, filters, pix = real_background
     injector = StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -395,13 +447,14 @@ def test_inject_single_stream_reuses_background_selection_across_injections(
     test_background.py::test_load_or_cache_reuses_cached_maps_without_recompute)
     and reused unchanged across every stream injection -- never re-run per
     stream realization. select() is only ever expected to fire on the
-    (much smaller) stream catalog, once per distance modulus per injection.
+    (much smaller) stream catalog, once per distance modulus per injection,
+    per filter it's wrapping.
     """
-    bg, mf, pix = real_background
-    counting_filter = _CountingFilter(mf)
+    bg, filters, pix = real_background
+    counting_good = _CountingFilter(filters["good"])
     injector = StreamInjector(
         background=bg,
-        matched_filter=counting_filter,
+        matched_filters={"good": counting_good, "decoy": filters["decoy"]},
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -409,22 +462,26 @@ def test_inject_single_stream_reuses_background_selection_across_injections(
         survey="lsst",
         release="yr1",
     )
-    n_distances = len(bg.raw_map_full_dict)
-    background_raw_before = {dm: arr.copy() for dm, arr in bg.raw_map_full_dict.items()}
+    n_distances = len(bg.raw_map_full_dict["good"])
+    background_raw_before = {
+        filter_name: {dm: arr.copy() for dm, arr in per_dm.items()}
+        for filter_name, per_dm in bg.raw_map_full_dict.items()
+    }
 
     injector.inject_single_stream(stream_params, np.random.default_rng(11))
-    assert counting_filter.calls == n_distances
+    assert counting_good.calls == n_distances
 
     injector.inject_single_stream(stream_params, np.random.default_rng(12))
-    assert counting_filter.calls == 2 * n_distances
+    assert counting_good.calls == 2 * n_distances
 
     injector.inject_single_stream(stream_params, np.random.default_rng(13))
-    assert counting_filter.calls == 3 * n_distances
+    assert counting_good.calls == 3 * n_distances
 
     # The background's own cached raw maps must be byte-for-byte untouched
     # across all three stream injections -- proof nothing recomputed them.
-    for dm, arr in background_raw_before.items():
-        np.testing.assert_array_equal(bg.raw_map_full_dict[dm], arr)
+    for filter_name, per_dm in background_raw_before.items():
+        for dm, arr in per_dm.items():
+            np.testing.assert_array_equal(bg.raw_map_full_dict[filter_name][dm], arr)
 
 
 def test_inject_single_stream_richness_resolved_before_realize(
@@ -451,10 +508,10 @@ def test_inject_single_stream_forwards_orientation_param(real_injector, stream_p
 
 
 def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_params):
-    bg, mf, pix = real_background
+    bg, filters, pix = real_background
     lenient = StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -464,7 +521,7 @@ def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_
     )
     strict = StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[Cut(quantity="mag", band="g", op="<", value=18.0)],
         clipping=None,
@@ -484,13 +541,14 @@ def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_
 def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
     real_background, stream_params
 ):
-    """Documents the current boundary: binary/density labels are fully real;
-    only soft_distance (rasterize.py, decision 6) is still a stub, and
-    everything up through crop_window already ran for real before it does."""
-    bg, mf, pix = real_background
+    """Documents the current boundary: stream_count/binary/density labels
+    are fully real; only soft_distance (rasterize.py, decision 6) is still a
+    stub, and everything up through crop_window already ran for real before
+    it does."""
+    bg, filters, pix = real_background
     injector = StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -504,31 +562,38 @@ def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
 
 
 def test_inject_background_only_builds_valid_sample(real_background):
-    bg, _mf, pix = real_background
+    bg, _filters, pix = real_background
     window = sample_random_window(
         bg.footprint, pix.nside, size_deg=20.0, rng=np.random.default_rng(4)
     )
     sample = inject_background_only(bg, window, pix)
 
-    assert sample.map_stack.shape == (2, 20, 20)
+    assert sample.map_stack.shape == (4, 20, 20)
     assert sample.map_stack.dtype == np.float32
     assert np.all(sample.label_stack == 0.0)
     assert sample.params == {}
     assert sample.metadata["distance_moduli"] == [16.8, 17.5]
+    assert sample.metadata["channels"] == [
+        {"filter": "good", "distance_modulus": 16.8},
+        {"filter": "decoy", "distance_modulus": 16.8},
+        {"filter": "good", "distance_modulus": 17.5},
+        {"filter": "decoy", "distance_modulus": 17.5},
+    ]
 
 
 def test_inject_background_only_matches_manual_crop(real_background):
     from streamgoggles.matched_filter import crop_window
 
-    bg, _mf, pix = real_background
+    bg, _filters, pix = real_background
     window = sample_random_window(
         bg.footprint, pix.nside, size_deg=20.0, rng=np.random.default_rng(4)
     )
     sample = inject_background_only(bg, window, pix)
 
-    dm = min(bg.raw_map_full_dict)
+    filter_name = next(iter(bg.raw_map_full_dict))
+    dm = min(bg.raw_map_full_dict[filter_name])
     expected_map, expected_valid = crop_window(
-        bg.raw_map_full_dict[dm], bg.valid_mask_full, window, pix
+        bg.raw_map_full_dict[filter_name][dm], bg.valid_mask_full, window, pix
     )
     np.testing.assert_allclose(sample.map_stack[0], expected_map, atol=1e-4)
     np.testing.assert_array_equal(sample.valid_mask, expected_valid)
@@ -540,10 +605,10 @@ def test_inject_background_only_matches_manual_crop(real_background):
 
 
 def test_injector_namespace_derivation(real_background):
-    bg, mf, pix = real_background
+    bg, filters, pix = real_background
     inj = StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -557,10 +622,10 @@ def test_injector_namespace_derivation(real_background):
 def test_injector_default_bands(real_background):
     # release must still name a real streamobs survey config (only "yr1" is
     # available in this environment); only `bands` is left at its default here.
-    bg, mf, pix = real_background
+    bg, filters, pix = real_background
     inj = StreamInjector(
         background=bg,
-        matched_filter=mf,
+        matched_filters=filters,
         stream_source=StreamObsSource(),
         cuts=[],
         clipping=None,
@@ -569,3 +634,18 @@ def test_injector_default_bands(real_background):
         release="yr1",
     )
     assert inj.bands == ("g", "r")
+
+
+def test_injector_filter_names_preserve_dict_order(real_background):
+    bg, filters, pix = real_background
+    inj = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+    )
+    assert inj.filter_names == ["good", "decoy"]

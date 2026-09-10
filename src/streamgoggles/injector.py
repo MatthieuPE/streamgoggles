@@ -15,12 +15,26 @@ Pipeline for one stream:
    numerically.
 4. Apply the SAME background cuts + magnitude clipping (data_preparation.py,
    decision 13) used on the background catalog.
-5. For each trial distance already cached on `background`: select + make_raw_map.
-6. Combine with the cached background map, finalize (identity unless
-   finalize_cfg enables it -- not implemented yet, matched_filter.py), crop
-   to the window.
-7. Rasterize stream labels (rasterize.py).
+5. For each (matched filter, trial distance) pair already cached on
+   `background`: select + make_raw_map on the injected stream catalog.
+6. Combine with the cached background map for that same (filter, distance),
+   finalize (identity unless finalize_cfg enables it -- not implemented yet,
+   matched_filter.py), crop to the window.
+7. Label: the stream-only (background-excluded) raw counts for that same
+   (filter, distance), cropped through the identical window/valid_mask as
+   its map_stack channel (2026-09-09 pivot -- see label_policy="stream_count"
+   below; the old rasterize.py-based labels are still available for
+   label_policy in {"binary", "density", "soft_distance"}).
 8. Return Sample.
+
+Multiple named matched filters (2026-09-09 pivot): a sample's input is one
+channel per (filter, distance) pair, not one per distance -- typically a
+real isochrone filter plus one or more deliberately "bad" decoy filters
+(matched_filter.ShiftedColorBoxFilter), so a network sees both what a real
+overdensity looks like and what generic background contamination looks like
+at the same trial distance. Channels are ordered distance-major,
+filter-minor (`channel_index = dist_idx * n_filters + filter_idx`); the
+exact mapping is recorded in Sample.metadata["channels"].
 
 Pure-background samples (no stream) use inject_background_only() instead,
 which skips steps 1, 3-5, 7 entirely -- window is placed randomly and there
@@ -228,8 +242,12 @@ class StreamInjector:
     """Inject stream(s) into background, apply survey effects, build sample.
 
     Attributes:
-        background: Background instance (catalog + cached maps).
-        matched_filter: MatchedFilter instance.
+        background: Background instance (catalog + cached maps), built with
+            the SAME `matched_filters` dict (by name) as this injector.
+        matched_filters: dict mapping filter name -> MatchedFilter instance
+            (2026-09-09 pivot from a single filter). Applied to the stream
+            catalog once per (filter, distance) pair, mirroring how
+            `background` was cached.
         stream_source: StreamSource instance.
         cuts: List of Cut rules (applied to stream as well as background,
             via data_preparation.apply_cuts -- decision 13).
@@ -237,18 +255,22 @@ class StreamInjector:
         pix: PixelizationSpec.
         survey, release: Passed to streamobs.observed.StreamInjector and
             used to build the `<survey>_<release>` column namespace --
-            must match whatever `background`/`matched_filter` were built
+            must match whatever `background`/`matched_filters` were built
             with, or cuts/select will look up the wrong columns.
         bands: Bands injected/selected on (e.g. ["g", "r"]).
         richness_kind: Unit of params['richness'] ("nstars"/"mass"/
             "surface_brightness" -- see resolve_richness_to_nstars).
-        label_policy: Passed to rasterize.rasterize() ("binary"/"density"/
-            "soft_distance").
+        label_policy: "stream_count" (default, 2026-09-09 pivot): the label
+            is the true stream-only (background-excluded) raw count for each
+            (filter, distance) channel, computed directly here -- no
+            rasterize.py involved. Otherwise ("binary"/"density"/
+            "soft_distance"): dispatched to rasterize.rasterize() as before,
+            a single distance-and-filter-independent 2D label broadcast
+            across every channel.
         label_config: Extra rasterize.rasterize() kwargs, matching
             StreamConfig's YAML `label:` block (decision 9): "dilate_to_width"
             (binary), "normalization" (density), "smooth_sigma_deg" (density).
-            Unrecognized/irrelevant keys for the active label_policy are
-            simply unused.
+            Unused when label_policy is "stream_count".
         finalize_cfg: Passed to matched_filter.finalize_full() when
             combining background + stream maps -- must match whatever
             `background` was cached with, or the combined map wouldn't be
@@ -261,7 +283,7 @@ class StreamInjector:
     def __init__(
         self,
         background: Background,
-        matched_filter: MatchedFilter,
+        matched_filters: dict[str, MatchedFilter],
         stream_source: StreamSource,
         cuts: list[Cut],
         clipping: dict | None,
@@ -270,7 +292,7 @@ class StreamInjector:
         release: str = "dp2",
         bands: tuple[str, str] = ("g", "r"),
         richness_kind: str = "nstars",
-        label_policy: str = "density",
+        label_policy: str = "stream_count",
         label_config: dict | None = None,
         finalize_cfg: dict | None = None,
     ):
@@ -278,7 +300,10 @@ class StreamInjector:
 
         Parameters:
             background: Background instance.
-            matched_filter: MatchedFilter instance.
+            matched_filters: dict mapping filter name -> MatchedFilter
+                instance -- must use the same names as whatever
+                `background` was built with (`Background.load_or_cache`'s
+                own `matched_filters`), since channels are looked up by name.
             stream_source: StreamSource instance.
             cuts: List of Cut rules.
             clipping: Magnitude clipping dict, or None.
@@ -286,16 +311,18 @@ class StreamInjector:
                 1 simplification -- window sampling only supports a single
                 size_deg, matching windows.py's own API).
             survey, release: Column namespace components; must match
-                `background`/`matched_filter`.
+                `background`/`matched_filters`.
             bands: The two bands injected/selected on.
             richness_kind: Unit of params['richness'].
-            label_policy: rasterize.py label policy.
+            label_policy: "stream_count" (default) or a rasterize.py policy
+                (see class docstring).
             label_config: Extra rasterize.rasterize() kwargs (see class docstring).
             finalize_cfg: Finalization config, matching whatever
                 `background` was cached with.
         """
         self.background = background
-        self.matched_filter = matched_filter
+        self.matched_filters = matched_filters
+        self.filter_names = list(matched_filters)
         self.stream_source = stream_source
         self.cuts = cuts or []
         self.clipping = clipping or {}
@@ -394,40 +421,65 @@ class StreamInjector:
             rng=rng,
         )
 
-        distance_moduli = sorted(self.background.raw_map_full_dict)
-        map_channels = []
-        valid_mask = None
-        for dm in distance_moduli:
-            selected = self.matched_filter.select(detected, list(self.bands), dm)
-            stream_raw, _stream_valid = make_raw_map(detected, selected, self.pix)
-            combined = combine_full_maps(
-                self.background.raw_map_full_dict[dm],
-                stream_raw,
-                self.background.valid_mask_full,
-            )
-            finalized = finalize_full(
-                combined, self.background.valid_mask_full, self.finalize_cfg
-            )
-            windowed_map, windowed_valid = crop_window(
-                finalized, self.background.valid_mask_full, window, self.pix
-            )
-            map_channels.append(windowed_map)
-            if valid_mask is None:
-                valid_mask = windowed_valid
-
-        label_2d = rasterize.rasterize(
-            stream_members_ra=detected["ra"].to_numpy(dtype=float),
-            stream_members_dec=detected["dec"].to_numpy(dtype=float),
-            stream_width_deg=resolved_params.get("width", 0.0),
-            params=resolved_params,
-            policy=self.label_policy,
-            window=window,
-            pix=self.pix,
-            dilate_to_width=self.label_config.get("dilate_to_width", False),
-            normalization=self.label_config.get("normalization", "max"),
-            smooth_sigma_deg=self.label_config.get("smooth_sigma_deg"),
+        # Distance-major, filter-minor channel order: every filter's map at
+        # one distance is contiguous. Sample.metadata["channels"] records
+        # this mapping explicitly so nothing downstream has to guess it.
+        distance_moduli = sorted(
+            self.background.raw_map_full_dict[self.filter_names[0]]
         )
-        label_stack = np.broadcast_to(label_2d, (len(distance_moduli), *label_2d.shape))
+        map_channels = []
+        label_channels = []
+        channels_meta = []
+        valid_mask = None
+        use_stream_count_label = self.label_policy == "stream_count"
+
+        for dm in distance_moduli:
+            for filter_name in self.filter_names:
+                selected = self.matched_filters[filter_name].select(
+                    detected, list(self.bands), dm
+                )
+                stream_raw, _stream_valid = make_raw_map(detected, selected, self.pix)
+                combined = combine_full_maps(
+                    self.background.raw_map_full_dict[filter_name][dm],
+                    stream_raw,
+                    self.background.valid_mask_full,
+                )
+                finalized = finalize_full(
+                    combined, self.background.valid_mask_full, self.finalize_cfg
+                )
+                windowed_map, windowed_valid = crop_window(
+                    finalized, self.background.valid_mask_full, window, self.pix
+                )
+                map_channels.append(windowed_map)
+                if valid_mask is None:
+                    valid_mask = windowed_valid
+
+                if use_stream_count_label:
+                    windowed_label, _ = crop_window(
+                        stream_raw, self.background.valid_mask_full, window, self.pix
+                    )
+                    label_channels.append(windowed_label)
+
+                channels_meta.append({"filter": filter_name, "distance_modulus": dm})
+
+        if use_stream_count_label:
+            label_stack = np.stack(label_channels, axis=0)
+        else:
+            label_2d = rasterize.rasterize(
+                stream_members_ra=detected["ra"].to_numpy(dtype=float),
+                stream_members_dec=detected["dec"].to_numpy(dtype=float),
+                stream_width_deg=resolved_params.get("width", 0.0),
+                params=resolved_params,
+                policy=self.label_policy,
+                window=window,
+                pix=self.pix,
+                dilate_to_width=self.label_config.get("dilate_to_width", False),
+                normalization=self.label_config.get("normalization", "max"),
+                smooth_sigma_deg=self.label_config.get("smooth_sigma_deg"),
+            )
+            label_stack = np.broadcast_to(
+                label_2d, (len(map_channels), *label_2d.shape)
+            )
 
         return Sample(
             map_stack=np.stack(map_channels, axis=0).astype(np.float32),
@@ -437,6 +489,7 @@ class StreamInjector:
             metadata={
                 "window": dataclasses.asdict(window),
                 "distance_moduli": distance_moduli,
+                "channels": channels_meta,
             },
         )
 
@@ -486,21 +539,29 @@ def inject_background_only(
     Rationale: Teaches network not to hallucinate streams in every field.
     Used when background_fraction > 0 in config. Unlike inject_single_stream,
     this needs no stream realization/injection/rasterization at all, so it
-    has no dependency on rasterize.py.
+    has no dependency on rasterize.py. Produces the same (filter, distance)
+    channel count/order as inject_single_stream (distance-major,
+    filter-minor, from `background.raw_map_full_dict`'s own filter names and
+    insertion order -- the same order `Background.load_or_cache` built it
+    in), so background-only and stream samples stay shape-compatible.
     """
-    distance_moduli = sorted(background.raw_map_full_dict)
+    filter_names = list(background.raw_map_full_dict)
+    distance_moduli = sorted(background.raw_map_full_dict[filter_names[0]])
     map_channels = []
+    channels_meta = []
     valid_mask = None
     for dm in distance_moduli:
-        chosen = background.finalized_map_full_dict.get(dm)
-        if chosen is None:
-            chosen = background.raw_map_full_dict[dm]
-        windowed_map, windowed_valid = crop_window(
-            chosen, background.valid_mask_full, window, pix
-        )
-        map_channels.append(windowed_map)
-        if valid_mask is None:
-            valid_mask = windowed_valid
+        for filter_name in filter_names:
+            chosen = background.finalized_map_full_dict.get(filter_name, {}).get(dm)
+            if chosen is None:
+                chosen = background.raw_map_full_dict[filter_name][dm]
+            windowed_map, windowed_valid = crop_window(
+                chosen, background.valid_mask_full, window, pix
+            )
+            map_channels.append(windowed_map)
+            if valid_mask is None:
+                valid_mask = windowed_valid
+            channels_meta.append({"filter": filter_name, "distance_modulus": dm})
 
     map_stack = np.stack(map_channels, axis=0).astype(np.float32)
     return Sample(
@@ -511,5 +572,6 @@ def inject_background_only(
         metadata={
             "window": dataclasses.asdict(window),
             "distance_moduli": distance_moduli,
+            "channels": channels_meta,
         },
     )
