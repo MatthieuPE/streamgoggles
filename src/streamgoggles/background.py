@@ -5,10 +5,12 @@ Pipeline:
 2. Apply user cuts (SNR, extendedness, etc.), logging rejection counts.
 3. Apply magnitude clipping per band.
 4. For each named matched filter, for each trial distance modulus:
+
    a. select() stars via that filter.
    b. make_raw_map() on HEALPix grid.
    c. Cache raw map + valid_mask via BackgroundMapStore.
    d. If finalization enabled: finalize_full() and cache.
+
 5. Expose Background.footprint as HEALPix mask of valid pixels.
 
 Multiple named matched filters (2026-09-09 pivot): a sample's input is no

@@ -1,6 +1,7 @@
 """Segmentation losses accepting soft targets and optional valid_mask.
 
 All losses accept:
+
 - pred: model output (B, C, H, W) or (C, H, W).
 - target: target labels, same shape as pred, float or soft.
 - valid_mask: optional (B, H, W) or (H, W) bool mask (matching pred's
@@ -16,6 +17,7 @@ Rationale: Invalid pixels (outside survey footprint) should not affect training.
 All losses must handle soft float targets [0, 1] for density labels.
 
 Pred convention by loss (tied to UNet's `head` types, models/unet.py):
+
 - DiceLoss/FocalLoss/TverskyLoss: pred is a probability in [0, 1]
   (UNet head="sigmoid").
 - BCEWithLogitsLoss: pred is pre-sigmoid logits (UNet head="identity"),
@@ -137,7 +139,7 @@ class MaskedLoss(nn.Module):
 class DiceLoss(MaskedLoss):
     """Soft Dice loss, supports soft targets [0, 1].
 
-    Dice = 2 * |pred ∩ target| / (|pred| + |target|).
+    Dice = 2 * ``|pred ∩ target|`` / (``|pred|`` + ``|target|``).
 
     Rationale: Robust to class imbalance; emphasizes IoU rather than
     per-pixel accuracy. Soft Dice naturally extends to soft targets.

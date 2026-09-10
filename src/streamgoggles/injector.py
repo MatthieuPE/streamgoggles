@@ -1,6 +1,7 @@
 """Single-stream and population-stream injection into background.
 
 Pipeline for one stream:
+
 1. Resolve richness (nstars/mass/surface_brightness) to nstars (inject_utils
    conversions), then realize stream via stream_source (phi1, phi2, dist,
    true mags).

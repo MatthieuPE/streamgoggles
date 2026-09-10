@@ -58,11 +58,12 @@ def evaluate_on_grid(
 
     Returns:
         DataFrame with columns:
-            (param_1, param_2, ..., param_N): parameter values
-            (metric_1, metric_2, ...): computed metrics per sample
-            id: sample identifier (for tracing) -- the eval_grid index,
-                which StreamMapDataset guarantees is a stable identity
-                (the same idx always returns the same sample).
+
+        - ``param_1``, ``param_2``, ..., ``param_N``: parameter values
+        - ``metric_1``, ``metric_2``, ...: computed metrics per sample
+        - ``id``: sample identifier (for tracing) -- the eval_grid index,
+          which StreamMapDataset guarantees is a stable identity (the same
+          idx always returns the same sample).
 
     Raises:
         ValueError if metric names not recognized, or eval_dataset is not
@@ -198,11 +199,12 @@ def compute_completeness_purity(
 
     Returns:
         dict with keys:
-            completeness: float in [0, 1] (NaN if there are no true streams)
-            purity: float in [0, 1] (NaN if nothing was detected)
-            n_streams_total: int, number of true-stream rows
-            n_detected: int, number of rows stream_detection_fn flagged
-                (across both true streams and, if present, non-stream rows)
+
+        - ``completeness``: float in [0, 1] (NaN if there are no true streams)
+        - ``purity``: float in [0, 1] (NaN if nothing was detected)
+        - ``n_streams_total``: int, number of true-stream rows
+        - ``n_detected``: int, number of rows stream_detection_fn flagged
+          (across both true streams and, if present, non-stream rows)
 
     Raises:
         KeyError if `metric` not in results.

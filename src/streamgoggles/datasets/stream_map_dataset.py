@@ -86,6 +86,7 @@ class StreamMapDataset:
     """Torch Dataset returning (map_stack, label_stack, valid_mask, params, metadata).
 
     Modes:
+
     - Training (eval_mode=False): sample free parameters on-the-fly and
       generate a fresh sample via `injector` on every `__getitem__` call.
       `idx` has no stable identity -- it's ignored beyond bounds-checking --

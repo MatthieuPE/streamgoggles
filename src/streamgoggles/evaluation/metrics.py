@@ -78,7 +78,7 @@ def iou(
 ) -> float:
     """Intersection over Union (binary metric).
 
-    IoU = |pred ∩ target| / |pred ∪ target|.
+    IoU = ``|pred ∩ target|`` / ``|pred ∪ target|``.
     Computed over valid pixels only.
 
     Parameters:
@@ -115,7 +115,7 @@ def dice(
 ) -> float:
     """Dice coefficient.
 
-    Dice = 2 * |pred ∩ target| / (|pred| + |target|), on `pred`/`target`
+    Dice = 2 * ``|pred ∩ target|`` / (``|pred|`` + ``|target|``), on `pred`/`target`
     binarized at `threshold` (matching iou()'s convention exactly, despite
     the "soft" label in some descriptions of this formula elsewhere --
     unlike models.losses.DiceLoss, which stays continuous, this evaluation
@@ -125,7 +125,7 @@ def dice(
         pred, target, valid_mask, threshold: as in iou().
 
     Returns:
-        Dice value in [0, 1], or NaN if both |pred| and |target| are 0
+        Dice value in [0, 1], or NaN if both ``|pred|`` and ``|target|`` are 0
         within the valid region.
     """
     pred, target = _check_shapes(pred, target)
@@ -234,9 +234,12 @@ def weighted_recall(
     "stream_count", high-count) regions over low ones: missing a pixel
     with many true stream stars costs more than missing a pixel with one.
 
-    weighted_recall = sum(target * TP) / sum(target * (TP + FN))
-                     = sum(target over correctly-flagged true pixels)
-                       / sum(target over all true pixels)
+    ::
+
+        weighted_recall = sum(target * TP) / sum(target * (TP + FN))
+                         = sum(target over correctly-flagged true pixels)
+                           / sum(target over all true pixels)
+
     (TP + FN, per true pixel, is just "this pixel is a true pixel", so the
     denominator reduces to the total target mass among target_bin pixels.)
 

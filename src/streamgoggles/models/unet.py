@@ -12,6 +12,7 @@ in_channels), matching label_stack's own shape under label_policy=
 label_stack.shape).
 
 Head types (tied to label policy):
+
 - sigmoid: binary classification (crossentropy, focal, dice).
 - identity: regression (MSE, Poisson-style).
 - softplus: smooth non-negative regression -- the natural fit for the

@@ -3,7 +3,7 @@
 Three label policies (decision 6, §4.6):
 1. binary: 1 where stream members fall (optionally dilated), 0 elsewhere.
 2. density: raw star-count map or normalized, emphasizes high-concentration regions.
-3. soft_distance: per-channel soft weight by |dm_c - dm_true| (stub, scan mode).
+3. soft_distance: per-channel soft weight by ``|dm_c - dm_true|`` (stub, scan mode).
 
 binary/density don't depend on distance modulus at all, so rasterize()
 produces a single (ny, nx) label image; the caller (injector.py) broadcasts
@@ -297,7 +297,7 @@ def rasterize_soft_distance(
     pix: PixelizationSpec,
     tolerance_mag: float = 0.3,
 ) -> np.ndarray:
-    """Soft-distance label: per-channel weight by |dm_c - dm_true|.
+    """Soft-distance label: per-channel weight by ``|dm_c - dm_true|``.
 
     Stub for later scan-mode support. Each channel c gets weight
     w_c = exp(-(dm_c - dm_true)^2 / (2 * sigma^2)), where sigma

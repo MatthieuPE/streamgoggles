@@ -1,0 +1,80 @@
+name: docs
+
+on:
+  pull_request:
+    paths:
+      - "src/streamgoggles/**"
+      - "docs/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/streamgoggles/**"
+      - "docs/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Sphinx autodoc imports every streamgoggles module to read its docstrings,
+# so this build needs the FULL runtime environment (torch, healpy, ugali,
+# streamobs), not just the "docs" dependency group -- the same environment
+# tests.yml (once it exists) would need. `uv sync --group docs` alone
+# installs pyproject.toml's declared dependencies + the docs group; it does
+# NOT yet install ugali/streamobs, which pyproject.toml doesn't declare as
+# installable dependencies (a known, already-flagged gap -- see PLAN.md's
+# "pyproject.toml should eventually be brought in line with reality" note).
+# Until that's resolved, add whatever install step makes ugali/streamobs
+# available here (e.g. installing them from their source repos) before
+# `sphinx-build` will actually succeed in this workflow.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group docs
+        # TODO: also install ugali/streamobs here once they're available as
+        # installable dependencies (see the note above) -- until then this
+        # step alone is not sufficient for `sphinx-build` to import every
+        # module.
+
+      - name: Build docs (warnings are errors)
+        run: uv run sphinx-build -b html -W docs/source docs/_build/html
+
+      - name: Upload build artifact (PR preview)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/_build/html
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

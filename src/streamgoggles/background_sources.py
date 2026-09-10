@@ -1,11 +1,12 @@
 """Pluggable background sources (real DP2, synthetic LSST yr1, etc).
 
 Three implementations (decision 23):
+
 1. DataFileBackgroundSource: real DP2 parquet (+ dust correction).
 2. StreamObsLightBackgroundSource: streamobs's fast synthetic background
    (streamobs.background.background.Background(method="light")).
 3. StreamObsCatalogueBackgroundSource: streamobs's fuller injection-based
-   catalog generation (Background(method="injection") — PLAN.md §6.1.2
+   catalog generation (Background(method="injection") -- PLAN.md section 6.1.2
    corrected the original "catalogue" name guess to streamobs's real name).
 
 All three produce the same downstream pipeline input (streamobs column convention),

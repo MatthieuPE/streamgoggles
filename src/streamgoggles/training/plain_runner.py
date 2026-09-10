@@ -144,10 +144,9 @@ class PlainTrainer:
             metrics_fn: optional callable(pred, target, valid_mask) -> dict of metrics.
 
         Returns:
-            dict with keys:
-                loss: average loss
-                *metrics: from metrics_fn if provided (batch-size-weighted
-                    average of whatever scalar values metrics_fn returns)
+            dict with a ``loss`` key (average loss) plus, if `metrics_fn` is
+            given, one key per metric it returns (a batch-size-weighted
+            average of whatever scalar values `metrics_fn` returns).
 
         Rationale: No backprop; just inference and metric computation.
         """
@@ -215,11 +214,12 @@ class PlainTrainer:
 
         Returns:
             dict with keys:
-                train_losses: list of per-epoch train loss
-                val_losses: list of per-epoch val loss (or None if no validation)
-                final_checkpoint_path: path to last saved checkpoint (or
-                    None if model_store not given)
-                epochs_run: number of epochs trained
+
+            - ``train_losses``: list of per-epoch train loss
+            - ``val_losses``: list of per-epoch val loss (or None if no validation)
+            - ``final_checkpoint_path``: path to last saved checkpoint (or
+              None if model_store not given)
+            - ``epochs_run``: number of epochs trained
 
         Raises:
             ValueError if model_store is given but config is missing or

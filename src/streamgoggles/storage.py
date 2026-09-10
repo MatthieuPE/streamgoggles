@@ -414,10 +414,11 @@ class ModelStore(ParameterStore):
     Key is hash of (model config, label policy, training config, dataset config).
 
     Each store entry is a directory containing:
-        state_dict.pt: model weights (torch.nn.Module.state_dict() format)
-        config.json: full config snapshot at training time (also the kwargs
-            used to reconstruct the model: `model_class(**config)`)
-        metrics.json: dict of final losses, epochs, etc.
+
+    - ``state_dict.pt``: model weights (torch.nn.Module.state_dict() format)
+    - ``config.json``: full config snapshot at training time (also the kwargs
+      used to reconstruct the model: `model_class(**config)`)
+    - ``metrics.json``: dict of final losses, epochs, etc.
 
     Attributes (inherited):
         root: typically data/models/

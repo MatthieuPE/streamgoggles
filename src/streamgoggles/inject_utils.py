@@ -126,8 +126,7 @@ def convert_SurfaceBrightness_to_N(target_surface_brightness, mag_bounds=(None, 
     target_surface_brightness : float
         Desired surface brightness, mag/arcsec^2 (same convention as
         convert_N_SurfaceBrightness's return value).
-    mag_bounds, surface, stream_length, stream_width, isochrone_config_path,
-    band, isochrone_params, verbose : see convert_N_SurfaceBrightness.
+    mag_bounds, surface, stream_length, stream_width, isochrone_config_path, band, isochrone_params, verbose : see convert_N_SurfaceBrightness.
     n_bracket : tuple (N_min, N_max)
         Bracket searched in log10(N) space. Widen this if brentq raises a
         sign-mismatch error (the target surface brightness falls outside what

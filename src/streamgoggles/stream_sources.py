@@ -31,32 +31,29 @@ class StreamSource(Protocol):
     def realize(self, params: dict, rng: np.random.Generator) -> pd.DataFrame:
         """Realize one stream sample.
 
-        Parameters:
-            params: Stream parameter dict with keys:
-                morphology: "uniform" or "spline"
-                width: stream width (degrees)
-                length: stream length (degrees)
-                distance_modulus: true distance modulus
-                age: age in Gyr
-                z: metallicity Z (mass fraction)
-                nstars: number of stream stars to generate
-                (other params as needed per morphology / source)
+        `params` is a stream parameter dict; see the module/class docstrings
+        of implementations (e.g. `StreamObsSource.realize`) for the exact
+        keys expected, roughly: morphology ("uniform" or "spline"), width
+        and length (degrees), distance_modulus, age (Gyr), z (metallicity
+        mass fraction), nstars, plus other params as needed per morphology
+        or source.
 
+        Parameters:
+            params: Stream parameter dict (see above).
             rng: np.random.Generator instance for reproducibility.
 
         Returns:
-            DataFrame with exactly these columns — the minimal information
+            DataFrame with exactly these columns -- the minimal information
             downstream code needs, nothing else (e.g. no velocity or mass
-            columns, even if the underlying generator happens to produce them):
-                phi1, phi2: stream frame coordinates (degrees)
-                dist: TRUE distance modulus (mag) — despite the name, this is
-                    a distance modulus, not a physical distance in kpc/pc
-                    (streamobs's own column name; kept as-is for consistency
-                    with streamobs's convention).
-                <survey>_<band>_true (x2): true magnitudes in streamobs
-                    convention (before survey errors), for whichever two
-                    bands were requested.
-                is_stream: bool, always True
+            columns, even if the underlying generator happens to produce
+            them): ``phi1``/``phi2`` (stream frame coordinates, degrees),
+            ``dist`` (TRUE distance modulus, mag -- despite the name, this
+            is a distance modulus, not a physical distance in kpc/pc;
+            streamobs's own column name, kept as-is for consistency with
+            streamobs's convention), the two ``<survey>_<band>_true``
+            columns (true magnitudes in streamobs convention, before survey
+            errors, for whichever two bands were requested), and
+            ``is_stream`` (bool, always True).
 
         Raises:
             ValueError if params are invalid or inconsistent.
@@ -91,34 +88,39 @@ class StreamObsSource(StreamSource):
         """Realize stream via streamobs.
 
         Parameters:
-            params: dict with keys:
-                morphology: "uniform" | "spline" (decision 5 — no other values).
-                nstars: true number of stars to generate (already converted
-                    from richness upstream — see inject_utils.py; never
-                    computed here).
-                distance_modulus: true distance modulus of the stream (mag).
-                age: population age (Gyr).
-                z: population metallicity (mass fraction).
-                survey, release: optional, default "lsst"/"dp2" — the
-                    isochrone/column namespace for the true-magnitude columns
-                    (`<survey>_<band>_true`, decision: release is dropped from
-                    that name by streamobs's own `true_col` convention).
-                band_1, band_2: optional, default "g"/"r".
-                For morphology="uniform":
-                    width: cross-track Gaussian sigma (degrees).
-                    length: on-sky track length (degrees) -> phi1 sampled
-                        uniformly in [-length/2, length/2].
-                For morphology="spline":
-                    control_points: list of >=2 dicts
-                        {"phi1": ..., "phi2": ..., "width": ... (optional)}
-                        defining the track center line (phi2 vs phi1) and,
-                        if given per-point, the local cross-track width.
-                        Sorted by phi1 internally; need not be pre-sorted.
-                    width: fallback constant width (degrees) used for any
-                        control point that doesn't specify its own "width".
-                    Density along the track is uniform (flat intensity) by
-                    construction — non-uniform density profiles are not
-                    exposed here (not required by decision 5).
+            params: dict of stream parameters -- see the key reference below.
+            rng: np.random.Generator instance for reproducibility.
+
+        ``params`` keys:
+
+        - ``morphology``: "uniform" | "spline" (decision 5 -- no other values).
+        - ``nstars``: true number of stars to generate (already converted
+          from richness upstream -- see inject_utils.py; never computed here).
+        - ``distance_modulus``: true distance modulus of the stream (mag).
+        - ``age``: population age (Gyr).
+        - ``z``: population metallicity (mass fraction).
+        - ``survey``, ``release``: optional, default "lsst"/"dp2" -- the
+          isochrone/column namespace for the true-magnitude columns
+          (``<survey>_<band>_true``; release is dropped from that name by
+          streamobs's own `true_col` convention).
+        - ``band_1``, ``band_2``: optional, default "g"/"r".
+        - For ``morphology="uniform"``:
+
+          - ``width``: cross-track Gaussian sigma (degrees).
+          - ``length``: on-sky track length (degrees) -> phi1 sampled
+            uniformly in [-length/2, length/2].
+
+        - For ``morphology="spline"``:
+
+          - ``control_points``: list of >=2 dicts ``{"phi1": ..., "phi2":
+            ..., "width": ... (optional)}`` defining the track center line
+            (phi2 vs phi1) and, if given per-point, the local cross-track
+            width. Sorted by phi1 internally; need not be pre-sorted.
+          - ``width``: fallback constant width (degrees) used for any
+            control point that doesn't specify its own "width".
+          - Density along the track is uniform (flat intensity) by
+            construction -- non-uniform density profiles are not exposed
+            here (not required by decision 5).
 
         Returns:
             DataFrame with exactly phi1, phi2, dist, is_stream, and the two
@@ -262,8 +264,7 @@ class ExternalSimSource(StreamSource):
     """Load pre-realized stream catalogs from data/external_sims/stream_{id}/.
 
     Minimal required columns: phi1, phi2.
-    Optional columns: true magnitudes per band (streamobs convention),
-        age, z (metallicity Z).
+    Optional columns: true magnitudes per band (streamobs convention), age, z (metallicity Z).
 
     If magnitudes/age/z are missing, fallback: call streamobs isochrone
     sampling using params['age'], params['z'].
