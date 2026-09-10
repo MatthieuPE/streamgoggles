@@ -47,4 +47,5 @@ markers = [
     "models: models/unet.py (UNet architecture, forward/encoder, head types)",
     "losses: models/losses.py (MaskedLoss subclasses, get_loss factory)",
     "training: training/plain_runner.py (PlainTrainer: train_epoch/validate/train)",
+    "evaluation: evaluation/{metrics,baseline_threshold,completeness_purity}.py",
 ]
