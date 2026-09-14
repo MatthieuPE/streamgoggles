@@ -50,6 +50,14 @@ jobs:
         uses: astral-sh/setup-uv@v3
         with:
           version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          # Without this, every run re-resolves and re-downloads the full
+          # dependency tree from scratch (`hyrax` alone pulls in torch,
+          # mlflow, chromadb, onnxruntime, and more -- several minutes just
+          # for "Install dependencies", confirmed by watching a real run).
+          # Caching keys on uv.lock's hash, so a push that doesn't touch
+          # dependencies restores from cache instead of reinstalling.
 
       - name: Set up Python
         run: uv python install 3.12
