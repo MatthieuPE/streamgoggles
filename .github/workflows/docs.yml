@@ -16,30 +16,29 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-# Sphinx autodoc imports every streamgoggles module to read its docstrings,
-# so a *complete* build needs the full runtime (torch, healpy, ugali,
-# streamobs+gala), not just the "docs" dependency group. `pyproject.toml`
-# doesn't declare `ugali`/`streamobs` as installable dependencies (a known,
-# already-flagged gap -- see PLAN.md's "pyproject.toml should eventually be
-# brought in line with reality" note), and both need real external survey/
-# isochrone data for anything beyond a bare import -- deliberately NOT
-# installed here (they'd need that data in CI too, which this workflow is
-# not meant to set up; see PLAN.md's decision log for this file).
+# Deliberately lean install -- NOT `uv sync` (which pulls this project's
+# full dependency graph; `hyrax` alone drags in mlflow/chromadb/onnxruntime
+# and more just to get torch, several minutes even cached, confirmed by
+# watching a real run). A docs build only needs sphinx + its plugins, plus
+# whichever streamgoggles modules' own imports autodoc actually needs to
+# read their docstrings -- so this installs exactly that: the "docs"
+# dependency group, and numpy/pandas/healpy/pyyaml (small, fast, already
+# direct project dependencies). `docs/source/conf.py`'s
+# STREAMGOGGLES_DOCS_LEAN branch (set below) mocks the rest
+# (torch/streamobs/ugali/gala/astropy/scipy/matplotlib/hyrax) instead of
+# installing them -- both because they're the genuinely expensive/slow
+# ones, and because streamobs/ugali need real external survey/isochrone
+# data for anything beyond a bare import, which this workflow has no
+# reason to set up just to read docstrings.
 #
-# Deliberate tradeoff instead: `uv sync --group docs` alone (torch/astropy/
-# scipy come along transitively via the `hyrax` dependency; healpy/numpy/
-# pandas are direct dependencies), and no `-W` (warnings-as-errors) on the
-# build. Modules that need streamobs/ugali/gala directly (background.py,
-# background_sources.py, data_preparation.py, datasets/stream_map_dataset.py,
-# inject_utils.py, injector.py, stream_sources.py -- 7 of ~20 API pages,
-# confirmed for real by actually building with those three absent, not
-# assumed) fail to import under autodoc and end up with an empty API
-# reference page each. sphinx's own behavior on an autodoc import failure
-# is a WARNING, not a hard failure, so the build still exits 0 and every
-# other page (the full narrative guide, and the other ~13 modules' API
-# reference) is complete. The narrative pages describe all of those modules
-# anyway (see the Guide section), so this is a real but acceptable gap, not
-# a broken site.
+# Real, accepted gap from mocking rather than installing: two API pages
+# (models.losses, training.plain_runner) use a bare `torch.Tensor | None`
+# parameter annotation that Sphinx's mock objects can't evaluate (no `|`
+# support), so those two end up empty in CI -- confirmed for real, not
+# assumed, and not worth installing torch just to fix (both modules are
+# already described in the narrative "Datasets and models"/"Training and
+# evaluation" guide pages). Every other page -- the full narrative guide,
+# and the other ~18 modules' API reference -- builds completely.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -51,22 +50,21 @@ jobs:
         with:
           version: "latest"
           enable-cache: true
-          cache-dependency-glob: "uv.lock"
-          # Without this, every run re-resolves and re-downloads the full
-          # dependency tree from scratch (`hyrax` alone pulls in torch,
-          # mlflow, chromadb, onnxruntime, and more -- several minutes just
-          # for "Install dependencies", confirmed by watching a real run).
-          # Caching keys on uv.lock's hash, so a push that doesn't touch
-          # dependencies restores from cache instead of reinstalling.
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --group docs
+        run: |
+          uv venv
+          uv pip install --group docs numpy pandas healpy pyyaml
+          uv pip install --no-deps -e .
 
       - name: Build docs
-        run: uv run sphinx-build -b html docs/source docs/_build/html
+        env:
+          STREAMGOGGLES_DOCS_LEAN: "1"
+        run: .venv/bin/sphinx-build -b html docs/source docs/_build/html
 
       - name: Upload build artifact (PR preview)
         if: github.event_name == 'pull_request'
