@@ -167,7 +167,14 @@ class UNet(nn.Module):
 
         Note: Invalid (masked) input pixels should be filled with a neutral
         value (e.g., 0 post-normalization) before forward pass. The network
-        never sees NaNs; valid_mask only re-enters at the loss.
+        never sees NaNs; valid_mask only re-enters at the loss -- which
+        means the OUTPUT is unmasked too: this is a plain per-pixel
+        convolutional pass with no awareness of valid_mask at all, so it
+        will produce some (physically meaningless) value at invalid
+        positions regardless of training. Callers must intersect any
+        prediction with valid_mask themselves before plotting, thresholding,
+        or otherwise interpreting it -- exactly like models.losses and
+        evaluation.metrics already do internally.
         """
         h, skips = self._encode(x)
         h = self._decode(h, skips)

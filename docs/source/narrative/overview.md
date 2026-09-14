@@ -14,6 +14,11 @@ The project is scoped into two stages, and only the first is implemented:
   stream search. Both are explicitly out of scope for now — kept in mind,
   not built.
 
+`scripts/` (`prepare_background.py`, `generate_eval_set.py`, `train.py`,
+`evaluate.py`) sketches CLI wrappers around this same pipeline for
+non-notebook use — each is still a one-line docstring stub. The two
+notebooks below are the actual way to run the pipeline today.
+
 ## Pipeline, end to end
 
 ```{mermaid}

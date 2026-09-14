@@ -1,5 +1,11 @@
 # Datasets and models
 
+```{note}
+This page assumes familiarity with U-Nets, loss functions, and the
+segmentation metrics it names (Dice, MSE, and so on) — see
+{doc}`ml_concepts` first if any of those need a primer.
+```
+
 ## `StreamMapDataset` ({py:mod}`streamgoggles.datasets.stream_map_dataset`)
 
 A duck-typed torch `Dataset` (only `__len__`/`__getitem__`, no
@@ -75,6 +81,37 @@ classification), `"identity"` (unconstrained regression), `"softplus"`
 `UNet.encoder()` exposes bottleneck features alone, for the Stage-2
 embedding work described in {doc}`overview`.
 
+### Predictions are never automatically masked — you always must mask them
+
+`map_stack`/`label_stack` are exactly `0.0` outside `valid_mask` at every
+stage of data preparation ({doc}`data_generation`'s "decision 22" fill
+convention) — this is a real, verified invariant, not just documented
+intent (see {py:mod}`streamgoggles.datasets.stream_map_dataset`'s tests).
+`RobustNormalizer` preserves it too: it only ever writes to
+`out[c][valid_mask]`, so invalid pixels pass through **completely
+untouched by normalization** — they stay at their raw `0.0` fill value even
+inside an otherwise mean-0/std-1 normalized channel. That's a subtle trap:
+a raw `0.0` sitting among z-scored data (mean 0, std 1) can visually read
+as just another unremarkable value near the channel's mean, rather than as
+the obviously-invalid sentinel it actually is — it's easy to eyeball a plot
+and not notice anything is wrong.
+
+The bigger version of the same trap is the model's **output**. `UNet.
+forward()` is a plain per-pixel convolutional pass with no awareness of
+`valid_mask` at all — nothing about the architecture or the masked losses
+in `models.losses` constrains what it predicts at invalid spatial
+positions. Masked losses only exclude invalid pixels from the *training*
+gradient; they do nothing to the model's behavior at *inference* time, so
+`model(x)` routinely produces nonzero, physically meaningless values
+outside the footprint. This is expected, not a bug — but it means **any**
+code that plots, thresholds, or otherwise interprets a prediction must
+intersect it with `valid_mask` first, the same way
+`evaluation.metrics`/`models.losses` already do internally.
+`notebooks/train_model.ipynb` §6 masks every panel, including its residual
+plot (`np.where(valid_mask, image, np.nan)` + `cmap.set_bad`), for exactly
+this reason — an earlier unmasked version of that plot was genuinely
+confusing for this exact reason.
+
 ## Losses ({py:mod}`streamgoggles.models.losses`)
 
 All losses share one convention: `valid_mask` is a *true exclusion*, not a
@@ -89,5 +126,22 @@ via a masked sum divided by the valid pixel count (or, for
   squared error by its own target count, so the (rare) high-count stream
   pixels aren't drowned out by the much more common near-zero background
   pixels.
+
+**A real limitation, found while tuning `train_model.ipynb`, not a
+hypothetical:** `WeightedMSELoss`'s weight normalization
+(`normalize_weight=True`) is computed over the **entire batch tensor**, not
+per sample. For a batch that mixes very different richnesses (e.g. one
+bright stream alongside two fainter ones), the bright sample's pixels can
+end up owning nearly the whole batch's weight sum, leaving the other
+samples in that batch with almost no gradient signal at all. This wasn't
+severe enough to matter at this project's earlier, more modest richness
+range, but became the dominant effect once streams got bright enough for
+per-pixel counts to span orders of magnitude within one batch — at that
+point, `models.losses.MSELoss` on a `log1p`-transformed target (see
+{doc}`notebooks`'s description of `train_model.ipynb`) turned out to behave
+far better than reweighting the raw counts. Not changed in `models/
+losses.py` itself (out of scope for the notebook tuning that surfaced it) —
+flagged here for whoever reaches for `WeightedMSELoss` next on a
+similarly-skewed target.
 
 `get_loss(name, **kwargs)` is a small factory over all six, by name.

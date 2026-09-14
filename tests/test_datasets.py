@@ -728,3 +728,100 @@ def test_stream_map_transform_augmentation_output_is_contiguous(transform_sample
     assert out["map_stack"].flags["C_CONTIGUOUS"]
     assert out["label_stack"].flags["C_CONTIGUOUS"]
     assert out["valid_mask"].flags["C_CONTIGUOUS"]
+
+
+# ---------------------------------------------------------------------------
+# Real pipeline: the data actually fed to the model stays masked
+#
+# Prompted by a real bug hunt: train_model.ipynb's unmasked plots made it
+# look like invalid (outside-footprint) pixels "had a value". The raw data
+# turned out to be correct (map_stack/label_stack are exactly 0.0 outside
+# valid_mask, by construction -- see background.py/injector.py's "decision
+# 22" fill convention); what these tests actually pin down is the more
+# subtle trap: RobustNormalizer only ever writes to out[c][valid_mask], so
+# invalid pixels pass through normalization completely untouched -- they
+# stay at their raw 0.0 fill value even inside an otherwise mean-0/std-1
+# normalized channel, which can look like an unremarkable near-mean value
+# rather than the sentinel it is unless you check valid_mask explicitly.
+# ---------------------------------------------------------------------------
+
+
+def test_real_prepared_data_stays_masked_after_normalization(
+    real_background, injector, fixed_config, sim_store
+):
+    bg, _filters, _pix = real_background
+    dataset = StreamMapDataset(
+        config=fixed_config,
+        background=bg,
+        injector=injector,
+        store=sim_store,
+        eval_mode=False,
+        steps_per_epoch=8,
+        rng=np.random.default_rng(0),
+    )
+    raw_samples = [dataset[i] for i in range(8)]
+
+    pooled_map_stack = np.concatenate([s["map_stack"] for s in raw_samples], axis=1)
+    pooled_valid_mask = np.concatenate([s["valid_mask"] for s in raw_samples], axis=0)
+    normalizer = RobustNormalizer()
+    normalizer.fit(pooled_map_stack, pooled_valid_mask)
+    # A real fit must actually rescale valid pixels away from 0 -- otherwise
+    # this test would trivially pass even if masking were broken.
+    assert np.any(np.abs(normalizer.mean) > 1e-6)
+
+    transform = StreamMapTransform(normalizer=normalizer, augment=False)
+    for raw in raw_samples:
+        invalid = ~raw["valid_mask"]
+        if not invalid.any():
+            continue
+        prepared = transform(raw)
+        for c in range(prepared["map_stack"].shape[0]):
+            # Exactly the pre-normalization raw fill (0.0), not shifted or
+            # rescaled by the channel's (nonzero) mean/std.
+            np.testing.assert_array_equal(
+                prepared["map_stack"][c][invalid], raw["map_stack"][c][invalid]
+            )
+            assert np.all(prepared["map_stack"][c][invalid] == 0.0)
+        # valid_mask itself must still mark them invalid post-transform --
+        # it's the only reliable way to tell, since the value alone (0.0)
+        # can't be distinguished from a coincidentally-near-mean valid pixel.
+        np.testing.assert_array_equal(prepared["valid_mask"], raw["valid_mask"])
+
+
+def test_real_prepared_data_stays_masked_after_augmentation(
+    real_background, injector, fixed_config, sim_store
+):
+    """Augmentation (rotation/flip) runs before normalization inside
+    StreamMapTransform.__call__ -- this pins down that the composition of
+    the two still leaves invalid pixels at exactly 0.0, not just each step
+    in isolation."""
+    bg, _filters, _pix = real_background
+    dataset = StreamMapDataset(
+        config=fixed_config,
+        background=bg,
+        injector=injector,
+        store=sim_store,
+        eval_mode=False,
+        steps_per_epoch=8,
+        rng=np.random.default_rng(0),
+    )
+    raw_samples = [dataset[i] for i in range(8)]
+
+    pooled_map_stack = np.concatenate([s["map_stack"] for s in raw_samples], axis=1)
+    pooled_valid_mask = np.concatenate([s["valid_mask"] for s in raw_samples], axis=0)
+    normalizer = RobustNormalizer()
+    normalizer.fit(pooled_map_stack, pooled_valid_mask)
+
+    transform = StreamMapTransform(
+        normalizer=normalizer, augment=True, rng=np.random.default_rng(3)
+    )
+    saw_any_invalid = False
+    for raw in raw_samples:
+        prepared = transform(raw)
+        invalid = ~prepared["valid_mask"]
+        if not invalid.any():
+            continue
+        saw_any_invalid = True
+        for c in range(prepared["map_stack"].shape[0]):
+            assert np.all(prepared["map_stack"][c][invalid] == 0.0)
+    assert saw_any_invalid  # otherwise this test checked nothing meaningful

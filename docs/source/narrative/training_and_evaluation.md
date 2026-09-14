@@ -1,5 +1,11 @@
 # Training and evaluation
 
+```{note}
+This page assumes familiarity with epochs/batches/optimizer steps and the
+metrics it names (Dice, IoU, precision/recall, correlation) — see
+{doc}`ml_concepts` first if any of those need a primer.
+```
+
 ## `PlainTrainer` ({py:mod}`streamgoggles.training.plain_runner`)
 
 A minimal, explicit, single-device training loop — no framework magic,
@@ -32,6 +38,22 @@ stub (`NotImplementedError`), intentionally deferred until after a plain
 training run was validated. `UNet` and `StreamMapDataset` themselves stay
 completely free of `hyrax` imports either way, so the plain path never pays
 for orchestration machinery it isn't using.
+
+Its eventual shape is already decided, from reading `hyrax`'s own
+registration mechanism directly rather than guessing: `hyrax.models.
+model_registry.hyrax_model` is a class decorator for a `torch.nn.Module`
+subclass needing `__init__(self, config, ...)`, `train_batch`,
+`infer_batch`, and (recommended) a `prepare_inputs` staticmethod;
+`hyrax.datasets.HyraxDataset` is a base class needing `__init__(self,
+config)` and `__len__`, auto-registered via `__init_subclass__`. The plan
+is two small adapter classes living in this one file — never new modules,
+per an explicit "avoid file proliferation" steer — a `@hyrax_model`-
+decorated `UNet` subclass that delegates `train_batch`/`infer_batch` to
+the plain `UNet.forward` plus a `models.losses` loss, and a `HyraxDataset`
+subclass that wraps (composes, doesn't reimplement) a plain
+`StreamMapDataset` and delegates `__len__`/`__getitem__` to it. The
+standard hyrax adapter-per-side pattern, at the narrowest footprint that
+pattern allows.
 
 ## Evaluation ({py:mod}`streamgoggles.evaluation`)
 

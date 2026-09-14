@@ -34,6 +34,91 @@ hashing (`ParameterStore`):
 
 `PixelizationSpec` fixes a HEALPix `nside` and an output image size/scale;
 `project`/`crop_window` handle the HEALPix → 2D gnomonic projection.
+
+### From a catalog to a HEALPix count map ({py:func}`~streamgoggles.matched_filter.make_raw_map`)
+
+Before any projection happens, a selected set of catalog rows (background
+*or* stream stars — the same function serves both) gets binned onto a
+full-sky HEALPix grid at `pix.nside`: `raw_map[p]` is the count of selected
+stars whose `(ra, dec)` falls in HEALPix pixel `p`. A separate `valid_mask`
+marks which HEALPix pixels the *catalog itself* has any coverage at all
+(selected or not) — this is what makes "zero selected stars in a covered
+pixel" distinguishable from "no survey data here at all": both read as
+`0.0` in `raw_map`, and only `valid_mask` tells them apart. For the dense
+background catalog this traces the real survey footprint; a stream-only
+catalog only touches a handful of pixels, so a stream's own `valid_mask`
+is never used for validity downstream — only the background's (computed
+once, cached, and shared by every sample) is.
+
+### HEALPix → 2D image: the gnomonic projection ({py:func}`~streamgoggles.matched_filter.project`)
+
+Every full-sky HEALPix map (`raw_map`, or the combined/finalized map
+downstream) eventually needs to become a small 2D image centered on a
+particular `Window` — that's what `project`/`crop_window` do. The
+projection is a standard **gnomonic (TAN) projection**, following
+Calabretta & Greisen (2002)'s conventions — the same projection FITS/WCS
+astronomy tools use for "tangent plane" images, chosen because it correctly
+handles projection effects (RA stretching near the celestial poles) rather
+than naively treating RA/Dec as a flat Cartesian grid.
+
+**Building the output grid.** `_tangent_plane_radec` lays out a regular
+grid of tangent-plane offsets `(xi, eta)` — one pair per output pixel,
+spaced by `pixel_scale_deg`, centered on `(0, 0)` — then **deprojects**
+each offset back to real sky coordinates `(ra, dec)` around the window's
+`(center_ra, center_dec)`, using the standard inverse-gnomonic spherical
+trig (`rho = sqrt(xi^2 + eta^2)`, `c = arctan(rho)`, then `dec`/`ra` from
+`arcsin`/`arctan2` of `sin(c)`/`cos(c)` combined with the tangent point).
+The forward direction (`world_to_tangent_plane`) is the exact mathematical
+inverse, sharing the identical rotation convention, and is used elsewhere
+(`windows.py`) purely as an "is this sky point inside this window?" test —
+a point is inside a `size_deg × size_deg` window iff both `|xi_deg|` and
+`|eta_deg|` are within `size_deg / 2`.
+
+**Rotation is part of the projection, not a post-processing step.** A
+window's `rotation_deg` (position angle) is applied by rotating the
+tangent-plane offsets `(xi, eta)` *before* deprojecting them to `(ra,
+dec)` — not by deprojecting first and then rotating the resulting 2D
+image. Rotating pixels after the fact would need its own resampling/
+interpolation pass (softening the image and needing to reconcile two
+separate validity masks); folding the rotation into the tangent-plane
+coordinates themselves means there is exactly one resampling step for the
+whole operation, and `world_to_tangent_plane`'s inverse stays exact.
+
+**Sampling the HEALPix map at those sky positions.** Once every output
+pixel has a real `(ra, dec)`, `PixelizationSpec.interpolate` picks how the
+HEALPix map gets sampled there:
+
+- `interpolate=True` (the default): `healpy.get_interp_weights` finds the
+  4 surrounding HEALPix pixels for each output position and their bilinear
+  weights; the output value is their weighted sum. Smoother, but an output
+  pixel is only marked valid if **all four** contributing HEALPix neighbors
+  are themselves valid — otherwise the interpolation would silently blend
+  the invalid-pixel `0.0` fill value in as if it were real data, quietly
+  corrupting counts near the footprint edge.
+- `interpolate=False`: plain nearest-neighbor (`healpy.ang2pix`) — one
+  HEALPix pixel per output pixel, validity copied directly from that one
+  pixel. Blockier, but avoids any averaging across the footprint edge or
+  between the "good" and "decoy" filters' differently-shaped selections.
+
+Either way, any output pixel that ends up invalid is then forced to
+exactly `0.0` in the returned image, regardless of whatever value the
+(vestigial) interpolation/lookup computed for it — the single source of
+truth for "is this pixel real" is always `valid_mask`, never the image
+value alone (see {doc}`datasets_and_models`'s note on why that matters
+downstream, past normalization).
+
+**Pixel scale is tied to `nside`, on purpose.** `PixelizationSpec.
+__post_init__` auto-derives `pixel_scale_deg` from `nside`
+(`native_pixel_scale_deg`, `healpy.nside2resol`) when it isn't given
+explicitly, and **rejects** an explicitly-given scale that's much finer
+than that native HEALPix resolution — requesting `pixel_scale_deg` finer
+than the map was ever sampled at would silently manufacture angular detail
+that was never actually observed. Pass a *coarser* `pixel_scale_deg`
+deliberately if you want that; you cannot ask for a finer one without
+increasing `nside` first.
+
+### Matched filters
+
 `MatchedFilter` is a small protocol with one method, `select(catalog,
 bands, distance_modulus) -> bool array`:
 
@@ -48,7 +133,14 @@ bands, distance_modulus) -> bool array`:
 
 `finalize_full` optionally applies HEALPix-sphere Gaussian smoothing
 (`healpy.smoothing`) and a polynomial background subtraction before a map
-gets projected/cropped.
+gets projected/cropped. When disabled (the common case; `finalize_cfg=
+{"enabled": False}` or `None`) it's not merely a no-op copy of the raw map
+— `Background.finalized_map_full_dict[filter][dm]` is literally `None` in
+that case, not the raw map. Code reading from it needs the same
+`raw_map_full_dict` fallback `injector.inject_background_only` already
+uses (`chosen = finalized.get(...) or raw[...]`) — `crop_window`ing a
+`None` directly is a real mistake it's easy to make writing new code
+against this (see {doc}`tutorial`'s detection walkthrough).
 
 ## Windows ({py:mod}`streamgoggles.windows`)
 
@@ -73,6 +165,30 @@ reused. Three interchangeable sources:
 - `StreamObsCatalogueBackgroundSource` — `streamobs`'s slower,
   injection-based method, which does carry per-star errors.
 - `DataFileBackgroundSource` — a real data skim from disk.
+
+### Dust correction is source-dependent, for different reasons each time
+
+`BackgroundConfig.dust_correction` defaults to disabled for the two
+synthetic sources, and that's deliberate, not an oversight — each is
+already dust-handled internally, just via a different mechanism:
+
+- `StreamObsCatalogueBackgroundSource` (`method="injection"`) subtracts
+  the per-band extinction from observed magnitudes as part of `streamobs`'s
+  own injection step (`dust_correction=True` there by default) — applying
+  `utils.deredden` again on top would double-correct.
+- `StreamObsLightBackgroundSource` (`method="light"`) draws magnitudes from
+  a precomputed color-magnitude-diagram grid built at *uniform*
+  (dust-free) survey conditions, and instead reduces the *effective*
+  magnitude limit used to sample that grid, per pixel, by the local
+  extinction (`maglim_eff = maglim_obs - A_band`) — dust changes which
+  grid point gets sampled (faint stars behind dust don't get drawn),
+  not the magnitude of a star after the fact. Re-dereddening after the
+  fact would correct a magnitude that was never artificially reddened to
+  begin with.
+
+Only `DataFileBackgroundSource` (a real observed skim) needs
+`utils.deredden_dataframe` actually applied — it's the only source whose
+magnitudes reflect real dust extinction in the first place.
 
 ## Cuts and clipping ({py:mod}`streamgoggles.data_preparation`)
 
@@ -100,6 +216,36 @@ mass (M☉), or a surface brightness (mag/arcsec²) — `convert_N_to_Mass`,
 them via the isochrone's stellar population, so
 `resolve_richness_to_nstars` can always reduce whichever unit was given to
 an integer star count before realization.
+
+## Stream sources ({py:mod}`streamgoggles.stream_sources`)
+
+`StreamSource` is the protocol for *realizing* a stream's population —
+`realize(params, rng) -> DataFrame` of `phi1`/`phi2` (stream-frame
+coordinates), a `dist` column (TRUE distance modulus, despite the name —
+`streamobs`'s own column convention, kept as-is), the two true-magnitude
+columns for whichever bands were requested, and `is_stream=True`. No sky
+position yet, no survey noise — purely the population in its own frame.
+
+- `StreamObsSource` wraps `streamobs.model.StreamModel` for two
+  morphologies: `"uniform"` (Gaussian cross-track width, uniform
+  along-track density over a fixed `length`) and `"spline"` (a piecewise
+  track defined by control points, with density still uniform along it —
+  non-uniform density profiles aren't exposed, by design, decision 5).
+  Both use the plain `StreamModel` class rather than `SplineStreamModel`,
+  confirmed by reading `streamobs`'s own source: `SplineStreamModel`
+  unconditionally injects a `stream_name` kwarg meant only for its
+  *file*-backed interpolation classes, which the inline classes this
+  wrapper actually uses don't accept.
+- `ExternalSimSource` is a stub for plugging in external (e.g. N-body)
+  stream realizations without reshaping them into `streamobs`'s format
+  first. Its file schema is already decided even though the
+  implementation isn't: **one Parquet file per realization**
+  (`data/external_sims/stream_{id}.parquet`), not one directory per
+  realization — required columns `phi1`/`phi2`; optional true-magnitude
+  columns (used directly if present) and constant-valued `age`/`z`
+  columns (repeated per row, rather than a separate sidecar metadata
+  file) so one realization stays fully self-contained in one file with
+  one read path.
 
 ## Injection ({py:mod}`streamgoggles.injector`)
 
