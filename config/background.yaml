@@ -36,9 +36,16 @@ study_region:
 # Catalog-quality cuts, applied identically regardless of `source`, BEFORE the
 # matched-filter `select()` — ordered list of {quantity, band?, op, value},
 # plus an escape hatch {callable: module:function} (not used here).
+#
+# `quantity: snr` needs a per-star reported error column (data_preparation.py's
+# err_col), which only the `injection`/`data_file` sources produce -- `light`
+# (this file's default `source`) does not, since it's a fast CMD-histogram
+# draw with no per-star photometric-error model at all. So the default cuts
+# below use `mag` (works with every source); switch to `snr` cuts only if
+# `source` is `injection` or `data_file` (confirmed empirically 2026-09-09).
 cuts:
-  - {quantity: snr, band: g, op: ">", value: 5}
-  - {quantity: snr, band: r, op: ">", value: 5}
+  - {quantity: mag, band: g, op: "<", value: 26.5}
+  - {quantity: mag, band: r, op: "<", value: 26.0}
 
 # Per-band magnitude clipping applied after cuts, before the matched filter.
 magnitude_clipping: {g: {min: 16.0, max: 26.5}, r: {min: 16.0, max: 26.0}}

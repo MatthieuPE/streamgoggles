@@ -1,13 +1,14 @@
-import numpy as np
-
 # You'll need to install jax: pip install -U jax
+import dataclasses
+import importlib
 import logging
-from types import SimpleNamespace
+import operator
+
 import healpy as hp
 import numpy as np
-from numpy.polynomial import polynomial
 import pandas as pd
-
+from numpy.polynomial import polynomial
+from streamobs.columns import err_col, obs_col
 
 LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +53,191 @@ def deredden_dataframe(df, bands=("g", "r", "i"), ebv_col="ebv", coeffs=None,
             if col in out.columns:
                 out[f"{col}{suffix}"] = out[col].to_numpy(dtype=float) - out[f"A_{b}"]
     return out
+
+
+############################################################################################################
+############################### Quality cuts and magnitude clipping ########################################
+############################################################################################################
+# Shared, unchanged, by background.py (on the background catalog) and injector.py
+# (on the injected stream catalog, decision 13) -- both must apply identical
+# selection so the same catalog-quality/depth cuts govern what the matched
+# filter ever sees, regardless of whether a row came from the background or
+# from an injected stream. Living in data_preparation.py rather than either
+# of those two modules is what makes "any data" (background or stream) true.
+
+# Magnitude-error -> S/N conversion: for small errors, sigma_mag ~= 1.0857/SNR
+# (1.0857 = 2.5/ln(10)), the standard photometric approximation relating a
+# reported magnitude error to signal-to-noise ratio.
+_MAG_ERR_TO_SNR = 2.5 / np.log(10.0)
+
+_CUT_OPS = {
+    ">": operator.gt,
+    "<": operator.lt,
+    ">=": operator.ge,
+    "<=": operator.le,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
+
+
+def _resolve_cut_quantity(df, quantity, band, namespace):
+    """Resolve a Cut's `quantity` (+ optional `band`) to a numeric Series.
+
+    'mag' and 'snr' are namespace/band-aware (resolved via streamobs's
+    obs_col/err_col convention); anything else is treated as a literal
+    column name already present in `df` (e.g. 'extendedness', or any
+    survey-specific column) -- matching the build prompt's "snr, mag,
+    extendedness, any column" description.
+    """
+    if quantity == "mag":
+        if band is None:
+            raise ValueError("Cut quantity 'mag' requires 'band' to be set")
+        return df[obs_col(band, namespace)]
+    if quantity == "snr":
+        if band is None:
+            raise ValueError("Cut quantity 'snr' requires 'band' to be set")
+        return _MAG_ERR_TO_SNR / df[err_col(band, namespace)]
+    if quantity in df.columns:
+        return df[quantity]
+    raise ValueError(
+        f"Cut quantity {quantity!r} is not 'mag'/'snr' and no column named "
+        f"{quantity!r} exists in the catalog (columns: {sorted(df.columns)})"
+    )
+
+
+@dataclasses.dataclass
+class Cut:
+    """One quality cut rule.
+
+    Attributes:
+        quantity: column name or special name ("mag", "snr"); may also be
+            any literal column already present in the catalog (e.g.
+            "extendedness").
+        band: photometric band (e.g., "g", "r"); required when quantity is
+            "mag" or "snr", ignored otherwise.
+        op: comparison operator as string (">", "<", "==", "!=", ">=", "<=").
+        value: comparison value.
+
+    Alternative: callable-based cut.
+        callable: "module:function_name" string pointing to an external cut
+            function, called as `function(df) -> np.ndarray[bool]`. Mutually
+            exclusive with quantity/band/op/value.
+
+    Rationale: Encapsulate a single cut rule; chain multiple rules in order.
+    """
+
+    quantity: str | None = None
+    band: str | None = None
+    op: str | None = None
+    value: float | int | None = None
+    callable: str | None = None  # "module:function"
+
+    def apply(self, df: pd.DataFrame, namespace: str | None = None) -> np.ndarray:
+        """Apply this cut to a DataFrame.
+
+        Parameters:
+            df: Input DataFrame.
+            namespace: Survey/release column namespace (e.g. "lsst_yr1"),
+                used to resolve "mag"/"snr" quantities via
+                streamobs.columns.obs_col/err_col. Ignored for callable cuts
+                and for quantities that are literal column names.
+
+        Returns:
+            Boolean array, shape (len(df),), True for rows passing the cut.
+
+        Raises:
+            ValueError if the cut is malformed (neither callable nor a
+                complete quantity/op/value triple), the operator is
+                unrecognized, or the resolved quantity/callable result
+                doesn't match `df`'s length.
+        """
+        if self.callable is not None:
+            if ":" not in self.callable:
+                raise ValueError(
+                    f"Cut.callable must be 'module:function', got {self.callable!r}"
+                )
+            module_name, func_name = self.callable.split(":", 1)
+            func = getattr(importlib.import_module(module_name), func_name)
+            mask = np.asarray(func(df), dtype=bool)
+            if mask.shape != (len(df),):
+                raise ValueError(
+                    f"Cut.callable {self.callable!r} returned shape {mask.shape}, "
+                    f"expected ({len(df)},)"
+                )
+            return mask
+
+        if self.quantity is None or self.op is None or self.value is None:
+            raise ValueError(
+                "Cut must specify either 'callable' or all of 'quantity'/'op'/'value', "
+                f"got {self!r}"
+            )
+        if self.op not in _CUT_OPS:
+            raise ValueError(
+                f"Unknown cut operator {self.op!r}; expected one of {sorted(_CUT_OPS)}"
+            )
+
+        series = _resolve_cut_quantity(df, self.quantity, self.band, namespace)
+        return _CUT_OPS[self.op](series.to_numpy(dtype=float), self.value)
+
+
+def apply_cuts(df, cuts, namespace=None, verbose=True):
+    """Apply all cuts in order; log rejection counts.
+
+    Parameters:
+        df: Input DataFrame.
+        cuts: List of Cut instances, applied sequentially -- each cut sees
+            the catalog already filtered by every earlier one.
+        namespace: Survey/release column namespace, forwarded to each
+            Cut.apply() for "mag"/"snr" resolution.
+        verbose: If True, log per-cut and cumulative rejection counts.
+
+    Returns:
+        Filtered DataFrame (rows passing all cuts), index reset.
+
+    Rationale: Sequential application allows cuts to depend on previous cuts
+    and makes logging clear ("After SNR cut: 50K -> 45K rows; extendedness: 45K -> 40K").
+    """
+    n_start = len(df)
+    for cut in cuts:
+        keep = cut.apply(df, namespace=namespace)
+        n_before = len(df)
+        df = df[keep].reset_index(drop=True)
+        if verbose:
+            LOGGER.info("cut %r: %d -> %d rows", cut, n_before, len(df))
+    if verbose:
+        LOGGER.info(
+            "apply_cuts: %d -> %d rows total (%d cuts)", n_start, len(df), len(cuts)
+        )
+    return df
+
+
+def apply_magnitude_clipping(df, clipping, namespace=None):
+    """Apply per-band magnitude clipping.
+
+    Parameters:
+        df: DataFrame with magnitudes in streamobs convention (e.g.,
+            '<namespace>_g_obs', '<namespace>_r_obs').
+        clipping: dict mapping band -> {min, max} mag bounds (either bound
+            may be omitted), e.g. {'g': {min: 16, max: 26.5}, 'r': {min: 16}}.
+        namespace: Survey/release column namespace used to resolve each
+            band's observed-magnitude column via streamobs.columns.obs_col.
+
+    Returns:
+        Clipped DataFrame (rows within all per-band bounds), index reset.
+
+    Rationale: Separate from cuts for clarity; clipping is uniform per band,
+    not a quality assessment. Rows outside the bounds are dropped (not
+    value-clamped) -- clamping would fabricate magnitudes the matched filter
+    never actually observed.
+    """
+    mask = np.ones(len(df), dtype=bool)
+    for band, bounds in clipping.items():
+        mag = df[obs_col(band, namespace)].to_numpy(dtype=float)
+        if "min" in bounds and bounds["min"] is not None:
+            mask &= mag >= bounds["min"]
+        if "max" in bounds and bounds["max"] is not None:
+            mask &= mag <= bounds["max"]
+    return df[mask].reset_index(drop=True)
 
 
 ############################################################################################################

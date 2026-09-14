@@ -2,9 +2,34 @@
 Shared pytest fixtures for the streamobs test suite.
 """
 
+import os
+
 import numpy as np
 import pytest
 import yaml
+
+# Must be set before healpy or torch actually gets imported by any test
+# module (both are only imported lazily, well after conftest.py loads, so
+# setting it here at collection time is early enough). healpy's
+# hp.smoothing() and torch (models/unet.py, tiny_torch_model_class fixture)
+# each load their own OpenMP runtime, and loading both in the same process
+# aborts with a duplicate-OpenMP-runtime crash on this environment. This is
+# a known, common macOS conda interoperability issue (conda's MKL/libomp vs
+# PyTorch's bundled libomp), not a bug in either library.
+#
+# KMP_DUPLICATE_LIB_OK alone silences the *abort* but not the underlying
+# thread-safety conflict: once models/unet.py started exercising torch for
+# real (multiple Conv2d/BatchNorm layers, forward+backward, across many
+# tests) in the same session as healpy's hp.smoothing() calls
+# (data_preparation.py, matched_filter.py's finalize_full, rasterize.py),
+# that residual conflict reproducibly segfaulted mid-run instead of
+# aborting cleanly. Forcing both libraries' OpenMP pools down to a single
+# thread (OMP_NUM_THREADS=1) removes the concurrent-runtime race entirely
+# and was confirmed to make the full suite (healpy- and torch-heavy tests
+# interleaved) pass reliably; it costs some raw speed but nothing here is
+# a perf benchmark.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 # ---------------------------------------------------------------------------
 # Utilities
@@ -171,3 +196,42 @@ def default_matched_filter_dict():
             "background_subtract": False,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Storage fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_sample():
+    """A minimal, valid Sample for storage round-trip tests."""
+    from streamgoggles.sample import Sample
+
+    gen = np.random.default_rng(0)
+    map_stack = gen.normal(size=(2, 4, 4)).astype(np.float32)
+    label_stack = gen.uniform(size=(2, 4, 4)).astype(np.float32)
+    valid_mask = np.ones((4, 4), dtype=bool)
+    return Sample(
+        map_stack=map_stack,
+        label_stack=label_stack,
+        valid_mask=valid_mask,
+        params={"width": 0.2, "age": 12.0},
+        metadata={"seed": 0},
+    )
+
+
+@pytest.fixture
+def tiny_torch_model_class():
+    """A minimal torch.nn.Module class for ModelStore round-trip tests."""
+    from torch import nn
+
+    class TinyLinearModel(nn.Module):
+        def __init__(self, in_features=2, out_features=1):
+            super().__init__()
+            self.linear = nn.Linear(in_features, out_features)
+
+        def forward(self, x):
+            return self.linear(x)
+
+    return TinyLinearModel

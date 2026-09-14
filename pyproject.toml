@@ -27,7 +27,32 @@ test = [
     "pytest-cov>=7.1.0",
     "pytest-emoji>=0.2.0",
 ]
+docs = [
+    "sphinx>=9.1.0",
+    "furo>=2025.12.19",
+    "myst-parser>=5.1.0",
+    "sphinx-autodoc-typehints>=3.13.6",
+    "sphinxcontrib-mermaid>=2.1.1",
+]
 
 [tool.pytest.ini_options]
-addopts = ["--verbose", "--emoji"]
+addopts = ["--verbose", "--emoji", "--strict-markers"]
 testpaths = ["tests"]
+markers = [
+    "config: config.py (StreamConfig/BackgroundConfig/MatchedFilterConfig, eval grid)",
+    "storage: storage.py (ParameterStore, SimulationStore, BackgroundMapStore, ModelStore)",
+    "matched_filter: matched_filter.py (matched filter, pixelization, projection)",
+    "windows: windows.py (Window, random/stream window sampling, tile_footprint)",
+    "background_sources: background_sources.py (StudyRegion, BackgroundSource implementations, harmonize_columns)",
+    "stream_sources: stream_sources.py (StreamObsSource, ExternalSimSource stub)",
+    "background: background.py (Background.load_or_cache, build_raw_background_maps)",
+    "data_preparation: data_preparation.py (Cut, apply_cuts, apply_magnitude_clipping, dust correction)",
+    "injector: injector.py (StreamInjector, inject_background_only, resolve_richness_to_nstars, place_stream_in_footprint)",
+    "inject_utils: inject_utils.py (richness conversions: N/mass/surface_brightness/luminosity)",
+    "rasterize: rasterize.py (rasterize_binary, rasterize_density, rasterize dispatcher, soft_distance stub)",
+    "datasets: datasets/stream_map_dataset.py (StreamMapDataset training/eval modes)",
+    "models: models/unet.py (UNet architecture, forward/encoder, head types)",
+    "losses: models/losses.py (MaskedLoss subclasses, get_loss factory)",
+    "training: training/plain_runner.py (PlainTrainer: train_epoch/validate/train)",
+    "evaluation: evaluation/{metrics,baseline_threshold,completeness_purity}.py",
+]
