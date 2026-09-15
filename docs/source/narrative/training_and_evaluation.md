@@ -59,7 +59,8 @@ pattern allows.
 
 ### Metrics ({py:mod}`streamgoggles.evaluation.metrics`)
 
-`iou`, `dice`, `precision_recall`, `mse`, `correlation`, `weighted_recall`
+`iou`, `dice`, `precision_recall`, `confusion_matrix`, `mse`,
+`correlation`, `weighted_recall`
 — all pure-numpy, all `valid_mask`-aware (true exclusion, same convention
 as the losses), all operating on whatever scale `pred`/`target` are
 actually in: a `[0, 1]` probability for the binary/density label options
@@ -67,6 +68,15 @@ and for the current default `"stream_detection"` (whose label is already
 `{0, 1}`, so `threshold=0.5` is a natural cut), or a literal star count for
 `"stream_count"` (where `threshold` should be chosen accordingly, e.g.
 `0.5` stars for "is there a true member here").
+
+`confusion_matrix` returns the raw `tp`/`fp`/`tn`/`fn` counts every other
+threshold-based metric here is derived from. Worth having separately
+because the ratios hide *how* a model is wrong — 5 false positives and
+5000 can give identical recall — and because none of the others surfaces
+true negatives at all. One deliberate choice inside it: invalid pixels are
+excluded from `tn` rather than counted as correct rejections, which would
+otherwise inflate it by the entire out-of-footprint area and make any
+TN-based rate (specificity, accuracy) meaningless.
 
 Every metric with an undefined ratio — `iou`/`dice` with nothing predicted
 and nothing true, `precision` with no positive predictions, `correlation`
@@ -97,6 +107,20 @@ metrics, and joins the result with that point's parameters into a
 `pandas.DataFrame` — one row per sample, `id` set to the eval-grid index
 (a stable identity). `plot_recovery_vs_parameter` plots any metric column
 against any parameter column, optionally overlaying a baseline column.
+Most metric names map to one column; `"precision"`/`"recall"` share a
+single call, and `"confusion"` expands into four (`tp`/`fp`/`tn`/`fn`).
+
+`aggregate_over_replicates(results, metrics, group_by=None)` is the
+companion for grids built with
+`build_eval_grid(..., n_replicates=k)` (see {doc}`datasets_and_models`):
+it collapses the k rows per parameter combination into
+`<metric>_mean`/`<metric>_std`/`<metric>_n`. Use it whenever a
+per-parameter number is going to be quoted or plotted — a single
+realization's Dice can sit anywhere inside that spread, so the mean±std
+is the honest form of the same claim. Pass `group_by` explicitly when the
+results carry non-parameter columns you don't want treated as grouping
+keys (raw confusion counts, for instance); the default treats every
+column that isn't a requested metric, `id`, or `replicate` as a parameter.
 
 `compute_completeness_purity(results, stream_detection_fn, metric, ...)`
 turns a metric column and a detection rule into completeness/purity

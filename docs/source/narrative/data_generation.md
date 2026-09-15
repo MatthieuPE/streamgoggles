@@ -190,6 +190,20 @@ Only `DataFileBackgroundSource` (a real observed skim) needs
 `utils.deredden_dataframe` actually applied — it's the only source whose
 magnitudes reflect real dust extinction in the first place.
 
+```{warning}
+**Synthetic background generation is unseeded unless you seed it**, and
+this is a real trap rather than a detail: without a `seed`, two calls in
+the *same process* return different catalogs, and setting numpy's global
+seed makes no difference. Anything built on top — a "fixed-seed,
+reproducible" training run included — is then training on different data
+every run, which is exactly how this project spent a day mis-attributing
+run-to-run metric differences to PyTorch nondeterminism (PLAN.md §6.15).
+Pass `seed` (or a `rng`) through the source config:
+`source_kwargs={"seed": 20260915}`, forwarded by
+`StreamObsLightBackgroundSource.load` to `streamobs`'s `generate()`, which
+is where `streamobs` actually reads it. Both executable notebooks now do.
+```
+
 ## Cuts and clipping ({py:mod}`streamgoggles.data_preparation`)
 
 `Cut`/`apply_cuts`/`apply_magnitude_clipping` live here — deliberately

@@ -121,31 +121,53 @@ make that curve noisy for a different reason, confounding "is the model
 learning" with "did this epoch happen to get an easier window."
 
 **The real cost: a result like PLAN.md §6.13's "SB 34 recovers 0.0 Dice"
-cannot currently distinguish "the network genuinely cannot detect streams
-this faint" from "this one particular window/orientation happened to be
-an unusually hard instance of SB 34."** Both are consistent with the same
-observed number. Resolving that ambiguity needs multiple independent
-realizations *at the same richness*, evaluated (with the same trained
-model) and compared — which `EvalGrid`/`build_eval_grid` doesn't currently
-support (`points`/`seeds` are one-to-one with distinct parameter
-combinations, not with replicate draws of the same combination). Two ways
-to get that:
+cannot be read as "the network genuinely cannot detect streams this
+faint" — it could equally be "this one particular window/orientation
+happened to be an unusually hard instance of SB 34."** Both are consistent
+with the same observed number, and in that specific case the second turned
+out to be closer to the truth (see `train_model.ipynb` §8).
 
-- **Ad hoc, no code change**: call `injector.inject_single_stream` several
-  times directly at a fixed `richness` with different explicit seeds
-  (bypassing `StreamMapDataset`/`EvalGrid` entirely for this one check),
-  run the already-trained model on each, and look at the spread of Dice
-  values — cheap (no retraining needed) and enough to answer "is SB 34's
-  zero consistent, or realization-specific" directly.
-- **A proper fix**: extend `EvalGrid` with an explicit replicate count (a
-  grid point becomes `(params, [seed_1, ..., seed_k])` instead of
-  `(params, seed)`), and have `evaluate_on_grid` report a mean *and*
-  spread per parameter combination instead of a single number. More
-  invasive (touches `EvalGrid`, `build_eval_grid`,
-  `StreamMapDataset._get_eval_sample`, `evaluate_on_grid`'s DataFrame
-  shape, and any code assuming one row per grid point), but turns every
-  future per-parameter recovery curve into a real statistical statement
-  rather than a single sample.
+### Replicates: several realizations per grid point
+
+`build_eval_grid(config, n_replicates=k)` is the fix, and it is
+implemented: each parameter combination is emitted **k times with k
+different seeds**, so one "grid point" becomes k independent realizations
+— different placement, window, orientation and survey noise — of the same
+physical parameters. A per-parameter metric then becomes a mean and
+spread instead of one arbitrary draw of it, which is what a number like
+"Dice at SB 34" should have meant all along.
+
+Replicates are expanded *inline* — the same point dict repeated, each
+entry still carrying exactly one seed — rather than nesting a seed list
+per point. That deliberately keeps `EvalGrid`'s "one index → one sample"
+contract intact, so `StreamMapDataset.__getitem__`, `evaluate_on_grid`'s
+DataFrame shape, and everything downstream needed no changes at all:
+replicate entries are simply more rows, identified by
+`EvalGrid.replicates` (and by a `replicate` column in `evaluate_on_grid`'s
+output, read from `Sample.metadata["replicate"]`). The default is
+`n_replicates=1`, i.e. exactly the historical behavior.
+
+{py:func}`~streamgoggles.evaluation.completeness_purity.aggregate_over_replicates`
+reduces those rows to `<metric>_mean`/`<metric>_std`/`<metric>_n` per
+parameter combination. The `_n` column is not bookkeeping: NaN metrics
+(the undefined-ratio convention above) drop out per metric, so a mean over
+2 of 5 replicates is a materially different claim from a mean over 5 of 5,
+and the column is what tells them apart.
+
+```{warning}
+A real trap this had to handle explicitly: `SimulationStore` addresses
+samples by their parameter dict, so replicates of one combination —
+identical params, different seeds — would all collide on a *single* cache
+entry and silently collapse k realizations back into one. The replicate
+index is therefore part of the store's addressing key while deliberately
+staying out of the params handed to `inject_single_stream` (which only
+ever takes real stream parameters). The same hazard applies to *two
+different grids sharing one store*: a 1-replicate grid and a k-replicate
+grid both have a "replicate 0" whose addressing key is the bare params,
+but they generally want different seeds there — give them separate stores
+(as `train_model.ipynb` does) rather than letting whichever generates
+first silently win.
+```
 
 ### `DataLoader` and `stream_map_collate_fn`
 
