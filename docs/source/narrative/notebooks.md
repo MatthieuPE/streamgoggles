@@ -78,50 +78,39 @@ problem entirely:
 
 It plots a training/validation loss curve, one prediction compared against
 its true detection label *and* the masked residual between them (fixed to
-`[-1, 1]`, the range a bounded target actually spans), and a completeness
-(Dice) curve across the 4-point richness scan against the k·σ baseline —
-1200 training samples (`epochs=40`, `steps_per_epoch=30`), 4x the budget
-a single-richness run used. **Read honestly, not just as a success
-number** — real results, from §7's actual output:
+`[-1, 1]`, the range a bounded target actually spans), and a recovery
+curve across the richness scan against the k·σ baseline — 1200 training
+samples (`epochs=40`, `steps_per_epoch=30`), evaluated on a grid with
+**5 independent realizations per richness** so each point is a mean and
+spread rather than one arbitrary draw. Real results from §7:
 
-| surface_brightness | Dice | IoU | baseline Dice |
-|---|---|---|---|
-| 31 | 0.786 | 0.648 | 0.590 |
-| 32 | 0.611 | 0.440 | 0.262 |
-| 33 | 0.519 | 0.351 | 0.059 |
-| 34 | 0.039 | 0.020 | 0.081 |
+| surface_brightness | nstars | Dice | IoU | baseline Dice |
+|---|---|---|---|---|
+| 31 | 33362 | 0.621 ± 0.026 | 0.451 | 0.634 |
+| 32 | 13282 | 0.577 ± 0.044 | 0.406 | 0.301 |
+| 33 |  5288 | 0.428 ± 0.119 | 0.278 | 0.132 |
+| 34 |  2106 | 0.056 ± 0.079 | 0.030 | 0.038 |
 
-**A real, unplanned finding along the way:** this result is not
-bit-for-bit reproducible across separate runs of the same notebook, same
-code, same nominal seed — an earlier 1200-sample run (identical config)
-gave SB 34 a hard `0.000`; this one gives `0.039`. Every RNG here is
-explicitly seeded, but PyTorch's CPU convolution backward pass isn't
-bit-deterministic across process runs by default (thread-scheduling-
-dependent reduction order) — worth knowing before reading any one number
-in this table too literally.
+Two things the replicates make visible that a single realization per point
+could not:
 
-**§8 gives the deeper reason not to over-read a single per-richness
-number, independent of the run-to-run variation above** — because every
-eval-grid point is exactly *one* fixed realization (one window, one
-orientation, one noise draw — see {doc}`datasets_and_models`'s "Eval grid:
-one fixed realization per point" section), a Dice value at any one
-richness is a measurement on a sample size of one, not an average over
-what a stream at that richness typically looks like. §8 tests this
-directly: running the *same trained model* (no retraining) against 8
-independent SB 34 realizations finds the true behavior is **bimodal** — 5
-of 8 confidently detect the stream (predicted probability 0.87-1.0 at the
-true location, real non-zero Dice), 3 of 8 never activate at all
-(probability stuck at 0.008-0.011, flat background level, Dice=0.0),
-nothing in between. SB 33, checked the same way, detects confidently
-(>=0.998) on *every* realization tried. So SB 34 sits right at a genuine
-sensitivity edge for this model/budget — consistent with this run's own
-single eval point (0.039) landing close to that boundary rather than
-clearly in either regime. The training-budget question this run set out
-to answer is still genuinely open: neither a single eval point nor a
-comparison of two single eval points across runs can tell "budget doesn't
-help" apart from "budget shifts the success fraction across realizations,
-plus run-to-run training noise on top." Scaling this up further (an eval
-grid with replicate realizations per point — not built yet, see
-{doc}`datasets_and_models` — more steps/epochs, a real GPU device, and
-eventually the `training/hyrax_runner.py` orchestration layer) is the
-natural next step.
+- **Where the network actually earns its keep.** It beats the trivial
+  baseline clearly at SB 32 and 33, and *loses* to it at SB 31 (0.621 vs
+  0.634). The bright end is where a real stream is a large, sharp excess a
+  plain threshold finds easily — and where the baseline is additionally
+  handed the "good" channel directly, which the network has to identify
+  for itself. The faint end is where learning pays.
+- **Which numbers are measurements and which are noise.** SB 34's standard
+  deviation (0.079) is *larger than its mean* (0.056): that richness isn't
+  "detected at 0.056", it's bimodal — confidently detected on some
+  realizations, entirely missed on others. §8 shows the per-draw detail
+  (peak predicted probability at the true location is either ~1.0 or
+  ~0.01, nothing between), while SB 33 detects confidently on every
+  realization tried. Earlier versions of this notebook reported a bare
+  `0.000` at SB 34 from a single realization, which read as a definitive
+  failure and wasn't.
+
+Scaling up further (re-running the training-budget comparison now that
+replicates can measure a *success fraction*, more steps/epochs, a real GPU
+device, and eventually the `training/hyrax_runner.py` orchestration layer)
+is the natural next step.
