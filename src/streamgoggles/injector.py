@@ -25,7 +25,12 @@ Pipeline for one stream:
    (filter, distance), cropped through the identical window/valid_mask as
    its map_stack channel (2026-09-09 pivot -- see label_policy="stream_count"
    below; the old rasterize.py-based labels are still available for
-   label_policy in {"binary", "density", "soft_distance"}).
+   label_policy in {"binary", "density", "soft_distance"}). 2026-09-15
+   addition: label_policy="stream_detection" derives a per-channel binary
+   detection target from the same stream-only raw counts instead of
+   returning them directly -- see class docstring and PLAN.md section 6.12
+   (the fix for Stage 1's count-amplitude recovery problem: retarget to a
+   bounded detection label instead of trying to regress the raw count).
 8. Return Sample.
 
 Multiple named matched filters (2026-09-09 pivot): a sample's input is one
@@ -264,14 +269,29 @@ class StreamInjector:
         label_policy: "stream_count" (default, 2026-09-09 pivot): the label
             is the true stream-only (background-excluded) raw count for each
             (filter, distance) channel, computed directly here -- no
-            rasterize.py involved. Otherwise ("binary"/"density"/
-            "soft_distance"): dispatched to rasterize.rasterize() as before,
-            a single distance-and-filter-independent 2D label broadcast
-            across every channel.
+            rasterize.py involved. "stream_detection" (2026-09-15 addition,
+            PLAN.md section 6.12): same per-channel stream-only raw count,
+            but hard-thresholded to a binary {0.0, 1.0} detection target
+            (`stream_raw > count_threshold`) instead of returned as a literal
+            count -- pairs with UNet(head="sigmoid") and a bounded
+            segmentation loss (models.losses.DiceLoss/BCEWithLogitsLoss/...)
+            rather than a regression loss, sidestepping stream_count's
+            amplitude-under-recovery problem (the actual goal is "is there a
+            stream here", not the exact count). Otherwise ("binary"/
+            "density"/"soft_distance"): dispatched to rasterize.rasterize()
+            as before, a single distance-and-filter-independent 2D label
+            broadcast across every channel.
         label_config: Extra rasterize.rasterize() kwargs, matching
             StreamConfig's YAML `label:` block (decision 9): "dilate_to_width"
             (binary), "normalization" (density), "smooth_sigma_deg" (density).
-            Unused when label_policy is "stream_count".
+            Unused when label_policy is "stream_count" or "stream_detection".
+        count_threshold: Only used when label_policy="stream_detection" --
+            the per-pixel stream-only raw star count above which that pixel
+            is labeled a detection (default 10.0 stars). Chosen per
+            (filter, distance) channel, same as the count itself -- a decoy
+            filter's near-zero stream_raw at a pixel a real stream crosses
+            stays below threshold, preserving the 2026-09-09 pivot's
+            filter-dependence property.
         finalize_cfg: Passed to matched_filter.finalize_full() when
             combining background + stream maps -- must match whatever
             `background` was cached with, or the combined map wouldn't be
@@ -296,6 +316,7 @@ class StreamInjector:
         label_policy: str = "stream_count",
         label_config: dict | None = None,
         finalize_cfg: dict | None = None,
+        count_threshold: float = 10.0,
     ):
         """Initialize injector.
 
@@ -315,11 +336,13 @@ class StreamInjector:
                 `background`/`matched_filters`.
             bands: The two bands injected/selected on.
             richness_kind: Unit of params['richness'].
-            label_policy: "stream_count" (default) or a rasterize.py policy
-                (see class docstring).
+            label_policy: "stream_count" (default), "stream_detection", or a
+                rasterize.py policy (see class docstring).
             label_config: Extra rasterize.rasterize() kwargs (see class docstring).
             finalize_cfg: Finalization config, matching whatever
                 `background` was cached with.
+            count_threshold: Only used when label_policy="stream_detection"
+                (see class docstring).
         """
         self.background = background
         self.matched_filters = matched_filters
@@ -335,6 +358,7 @@ class StreamInjector:
         self.label_policy = label_policy
         self.label_config = label_config or {}
         self.finalize_cfg = finalize_cfg
+        self.count_threshold = count_threshold
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
 
@@ -432,7 +456,10 @@ class StreamInjector:
         label_channels = []
         channels_meta = []
         valid_mask = None
-        use_stream_count_label = self.label_policy == "stream_count"
+        use_channelwise_label = self.label_policy in (
+            "stream_count",
+            "stream_detection",
+        )
 
         for dm in distance_moduli:
             for filter_name in self.filter_names:
@@ -455,15 +482,19 @@ class StreamInjector:
                 if valid_mask is None:
                     valid_mask = windowed_valid
 
-                if use_stream_count_label:
+                if use_channelwise_label:
                     windowed_label, _ = crop_window(
                         stream_raw, self.background.valid_mask_full, window, self.pix
                     )
+                    if self.label_policy == "stream_detection":
+                        windowed_label = (windowed_label > self.count_threshold).astype(
+                            windowed_label.dtype
+                        )
                     label_channels.append(windowed_label)
 
                 channels_meta.append({"filter": filter_name, "distance_modulus": dm})
 
-        if use_stream_count_label:
+        if use_channelwise_label:
             label_stack = np.stack(label_channels, axis=0)
         else:
             label_2d = rasterize.rasterize(
