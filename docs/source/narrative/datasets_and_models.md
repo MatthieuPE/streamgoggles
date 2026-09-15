@@ -35,11 +35,32 @@ sample_stream_window`), injects survey noise, then loops over every
 build each channel's crop (see {doc}`data_generation`). So for a single
 sample, window selection happens once, not once per channel — every
 channel is a different color-magnitude/distance cut of the same underlying
-window and stars, not an independently re-windowed draw.
+window and stars, not an independently re-windowed draw. "A training
+sample" always means: one stream population, one placement (random sky
+position + orientation), one window, one set of survey noise draws —
+projected into as many `(filter, distance)` channels as the config asks
+for, all channels sharing that same underlying realization.
 
-**Training: how many *distinct* samples get generated.** `steps_per_epoch`
-is a nominal per-`DataLoader`-epoch count, not the number of distinct
-samples that exist — `StreamMapDataset.rng` (an
+**One training step, concretely.** Say `richness` is `DISCRETE`
+`[31, 32, 33, 34]` and `DataLoader` is about to build the next batch.
+For each item in that batch, `StreamMapDataset.__getitem__` does, in
+order: (1) spawn a fresh child RNG, never used before and never reused
+again; (2) with probability `background_fraction`, generate a pure-
+background window instead and stop here; otherwise (3) draw *every* free
+parameter independently from that RNG — for `richness`, one of the 4
+values, each equally likely, independent of what any other batch or epoch
+drew; (4) call `injector.inject_single_stream(params, rng)`, which
+realizes a brand-new stream population at that richness, places it at a
+random sky position and orientation inside the footprint, rejection-samples
+one window containing enough of it, injects survey noise, and crops every
+channel from that one window/realization. The resulting `map_stack`/
+`label_stack` pair becomes one row of one batch, contributes to exactly
+one gradient update, and is then discarded — nothing about it is stored or
+referenced again.
+
+**Training: is a given input reused, across epochs or otherwise? No.**
+`steps_per_epoch` is a nominal per-`DataLoader`-epoch count, not the
+number of distinct samples that exist — `StreamMapDataset.rng` (an
 `np.random.Generator` created once, when the dataset object is
 constructed) is never reset between epochs, and every `__getitem__` call
 spawns a fresh, never-repeated child generator from it
@@ -49,41 +70,82 @@ training samples generated across a full `trainer.train(...)` run is
 `epochs * steps_per_epoch` (times `batch_size`, since a "step" here means
 one `__getitem__` call, and `DataLoader` calls `__getitem__` once per item
 in a batch) — e.g. `train_model.ipynb`'s `epochs=40`,
-`steps_per_epoch=30`, `batch_size=2` means 1200 independent, never-repeated
-draws over the course of training, not 30 samples replayed 40 times. Each
-free parameter (`config.params`, e.g. a `DISCRETE` `richness` spec) is
-sampled independently and uniformly at random *per draw*
-(`ParameterSpec.sample`, `rng.integers` for `DISCRETE`) — with multiple
-discrete values, a fixed total sample budget splits across them on
-average, not per-value; see {doc}`training_and_evaluation` for why this
-mattered for a real result (PLAN.md §6.13). Nothing is persisted to disk
-by default in training mode (`StreamConfig.persist=False` unless set) —
-every draw really is generated from scratch.
+`steps_per_epoch=30`, `batch_size=2` means **1200 independent,
+never-repeated draws** over the course of training, not 30 samples
+replayed 40 times, and not one fixed "training set" the way a typical
+image dataset (loaded once, iterated over repeatedly) would be — this
+dataset behaves like an infinite simulator you draw fresh from every step,
+closer in spirit to online/streaming training than to epoch-over-a-fixed-
+corpus training. Nothing is persisted to disk by default in training mode
+(`StreamConfig.persist=False` unless set) — every draw really is generated
+from scratch, window included. With multiple `DISCRETE` values, a fixed
+total sample budget splits across them *on average* (each draw picks one
+value independently, uniformly), not per-value — directly relevant to why
+a training budget that used to fully serve one fixed richness now only
+serves each of 4 values a quarter as often on average, see
+{doc}`training_and_evaluation` (PLAN.md §6.13).
 
-**Eval: how the grid is built, and why each point is exactly one fixed
-realization.** `config.build_eval_grid` enumerates the **Cartesian
-product** of every non-`FIXED` parameter's candidate values (`UNIFORM`/
-`LOG_UNIFORM`: `n_points_per_range` equally-spaced points, default 5;
-`DISCRETE`: every value, or up to `n_points_discrete` if capped) — e.g. a
-single free `DISCRETE` `richness` spec with 4 values produces exactly 4
-grid points, one per value (`train_model.ipynb`'s `[31, 32, 33, 34]` scan).
-Each point is assigned its own fixed integer seed, drawn deterministically
-from a single master `seed` (default 42) in enumeration order — so
-re-building the same `StreamConfig` always produces the same points *and*
-the same seeds. `StreamMapDataset._get_eval_sample` then calls
+### Eval grid: one fixed realization per point — a real limitation, not just a design note
+
+`config.build_eval_grid` enumerates the **Cartesian product** of every
+non-`FIXED` parameter's candidate values (`UNIFORM`/`LOG_UNIFORM`:
+`n_points_per_range` equally-spaced points, default 5; `DISCRETE`: every
+value, or up to `n_points_discrete` if capped) — e.g. a single free
+`DISCRETE` `richness` spec with 4 values produces exactly 4 grid points,
+one per value (`train_model.ipynb`'s `[31, 32, 33, 34]` scan). Each point
+is assigned its own fixed integer seed, drawn deterministically from a
+single master `seed` (default 42) in enumeration order — so re-building
+the same `StreamConfig` always produces the same points *and* the same
+seeds. `StreamMapDataset._get_eval_sample` then calls
 `inject_single_stream(params, np.random.default_rng(seed))` — **exactly
-one, fully deterministic realization per grid point**: same stream
-population, same placement, same window, same survey noise, every time.
-This is generated once and then cached: `SimulationStore.get_or_generate`
-checks whether a sample for that exact `params` dict already exists on
-disk first, and loads it if so instead of regenerating — so across a
-multi-epoch training run, each eval-grid point's sample is actually built
-by `inject_single_stream` only on the *first* validation pass; every later
-epoch's validation reuses the identical cached sample. There is no
-resampling, no averaging over multiple realizations per grid point, and no
-per-epoch window re-selection in eval mode — deliberately, so metrics
-computed on the same grid point across different epochs (or different
-runs) are directly comparable.
+one, fully deterministic realization per grid point**: one specific
+placement, one specific window (position *and* orientation), one specific
+draw of survey noise, every time. This is generated once and then cached
+(`SimulationStore.get_or_generate` loads the saved sample on every later
+call instead of regenerating), so a given grid point's realization is
+fixed not just within one run but across every epoch of it.
+
+**This means a per-richness metric (e.g. "Dice at surface_brightness=34")
+is a measurement on a sample size of exactly one placement/window/
+orientation, not an average over the many realizations a stream with those
+physical parameters could actually produce.** It does *not* marginalize
+over window position, orientation, or noise the way the metric's name
+("Dice at SB 34") suggests it might — a real gap between what the number
+sounds like it means and what it actually measures. This was a deliberate
+trade-off, not an oversight: fixing the realization per grid point makes
+validation-loss/metric curves *within* one training run directly
+comparable epoch to epoch (a Dice value going up or down between epoch 10
+and epoch 20 reflects the model improving or not, not a new random window
+also changing underneath it) — resampling a new window every epoch would
+make that curve noisy for a different reason, confounding "is the model
+learning" with "did this epoch happen to get an easier window."
+
+**The real cost: a result like PLAN.md §6.13's "SB 34 recovers 0.0 Dice"
+cannot currently distinguish "the network genuinely cannot detect streams
+this faint" from "this one particular window/orientation happened to be
+an unusually hard instance of SB 34."** Both are consistent with the same
+observed number. Resolving that ambiguity needs multiple independent
+realizations *at the same richness*, evaluated (with the same trained
+model) and compared — which `EvalGrid`/`build_eval_grid` doesn't currently
+support (`points`/`seeds` are one-to-one with distinct parameter
+combinations, not with replicate draws of the same combination). Two ways
+to get that:
+
+- **Ad hoc, no code change**: call `injector.inject_single_stream` several
+  times directly at a fixed `richness` with different explicit seeds
+  (bypassing `StreamMapDataset`/`EvalGrid` entirely for this one check),
+  run the already-trained model on each, and look at the spread of Dice
+  values — cheap (no retraining needed) and enough to answer "is SB 34's
+  zero consistent, or realization-specific" directly.
+- **A proper fix**: extend `EvalGrid` with an explicit replicate count (a
+  grid point becomes `(params, [seed_1, ..., seed_k])` instead of
+  `(params, seed)`), and have `evaluate_on_grid` report a mean *and*
+  spread per parameter combination instead of a single number. More
+  invasive (touches `EvalGrid`, `build_eval_grid`,
+  `StreamMapDataset._get_eval_sample`, `evaluate_on_grid`'s DataFrame
+  shape, and any code assuming one row per grid point), but turns every
+  future per-parameter recovery curve into a real statistical statement
+  rather than a single sample.
 
 ### `DataLoader` and `stream_map_collate_fn`
 
