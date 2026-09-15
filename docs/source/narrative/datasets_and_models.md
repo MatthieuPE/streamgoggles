@@ -43,8 +43,10 @@ batch anyway).
 - `RobustNormalizer` — per-channel `(x - mean) / std`, fit once on pooled
   training data, computed over *valid* pixels only so the fixed invalid-fill
   value never skews the statistics. Applied to `map_stack` only —
-  `label_stack` stays in raw count units throughout, since the loss
-  functions and evaluation metrics are defined against that literal scale.
+  `label_stack` is never normalized, whatever scale it's actually in (a
+  literal count under `label_policy="stream_count"`, already bounded `{0,
+  1}` under `label_policy="stream_detection"`), since the loss functions and
+  evaluation metrics are defined against that literal label scale.
 - `StreamMapTransform` — composes optional normalization with optional
   augmentation (random 90° rotations, horizontal/vertical flips), applied
   identically to `map_stack`, `label_stack`, and `valid_mask` so all three
@@ -52,9 +54,11 @@ batch anyway).
 
 No synthetic noise injection: this was in an earlier skeleton sketch, and
 was deliberately removed. `map_stack` is count data with its own realistic
-survey noise already baked in from injection, and the label is a literal
-star count — adding an uncorrelated Gaussian noise model on top would teach
-the network a noise model that doesn't match the real one.
+survey noise already baked in from injection, and the label is derived
+directly from the same underlying stream-only count (literal under
+`label_policy="stream_count"`, thresholded under `label_policy=
+"stream_detection"`) — adding an uncorrelated Gaussian noise model on top
+would teach the network a noise model that doesn't match the real one.
 
 ## The model ({py:mod}`streamgoggles.models.unet`)
 
@@ -75,11 +79,26 @@ project:
   any depth.
 
 Three output heads, tied to the label/loss in use: `"sigmoid"` (binary
-classification), `"identity"` (unconstrained regression), `"softplus"`
-(smooth non-negative regression — the natural fit for the current default
-`label_policy="stream_count"`, a literal non-negative count).
-`UNet.encoder()` exposes bottleneck features alone, for the Stage-2
-embedding work described in {doc}`overview`.
+classification — paired with `label_policy="stream_detection"`, this
+project's current default, see {doc}`ml_concepts`), `"identity"`
+(unconstrained regression), `"softplus"` (smooth non-negative regression —
+the natural fit for `label_policy="stream_count"`'s literal, non-negative
+count, still available but no longer the default). `UNet.encoder()` exposes
+bottleneck features alone, for the Stage-2 embedding work described in
+{doc}`overview`.
+
+**The output is always a continuous value, whichever head is used —
+never literally boolean, even for `head="sigmoid"`.** A sigmoid-activated
+output is a real number in `(0, 1)` at every pixel; nothing about the head,
+or about training against a binary target, collapses it to exactly `0` or
+`1`. This matters because `label_policy="stream_detection"`'s *label* is a
+hard 0/1 (see below) — it would be easy to assume that makes the *model's
+prediction* boolean too, but it doesn't: the label only shapes what the
+continuous output comes to mean (roughly, the estimated probability that
+the true detection condition holds, given the noisy input). Thresholding
+into a hard decision is something a caller does afterward (exactly what
+`evaluation.metrics`'s `threshold` parameter is for), not something baked
+into the model.
 
 ### Predictions are never automatically masked — you always must mask them
 
@@ -119,13 +138,20 @@ downweight — invalid pixels contribute exactly zero to the loss, computed
 via a masked sum divided by the valid pixel count (or, for
 `WeightedMSELoss`, by the mask-restricted weight sum).
 
-- `DiceLoss`, `FocalLoss`, `TverskyLoss`, `BCEWithLogitsLoss` — designed
-  for (and still valid for) the binary/density label options.
-- `MSELoss`, `WeightedMSELoss` — the primary pair for the current default
-  `label_policy="stream_count"`. `WeightedMSELoss` weights each pixel's
-  squared error by its own target count, so the (rare) high-count stream
-  pixels aren't drowned out by the much more common near-zero background
-  pixels.
+- `DiceLoss`, `FocalLoss`, `TverskyLoss`, `BCEWithLogitsLoss` — the primary
+  choices for the current default `label_policy="stream_detection"` (a
+  bounded `{0, 1}` per-pixel target; `DiceLoss` + `head="sigmoid"` is what
+  `train_model.ipynb` actually uses), and also still valid for the earlier
+  binary/density label options.
+- `MSELoss`, `WeightedMSELoss` — the primary pair for `label_policy=
+  "stream_count"` (a literal, unbounded count), still available but no
+  longer the default — see {doc}`ml_concepts` for why: MSE on that
+  heavy-tailed target reliably localized streams but badly under-recovered
+  their peak amplitude, which is what motivated the `stream_detection`
+  pivot in the first place. `WeightedMSELoss` weights each pixel's squared
+  error by its own target count, so the (rare) high-count stream pixels
+  aren't drowned out by the much more common near-zero background pixels —
+  see the real limitation below if reaching for it.
 
 **A real limitation, found while tuning `train_model.ipynb`, not a
 hypothetical:** `WeightedMSELoss`'s weight normalization

@@ -19,6 +19,13 @@ starting point for understanding exactly what one `Sample` contains and
 how it was built — see {doc}`data_generation` for the module-level version
 of the same story.
 
+Runs at `nside=512` (the standard resolution for stream search — see
+`PLAN.md` §6.12), with `label_policy="stream_detection"`: its §2.8
+walkthrough shows both the raw per-channel stream-only count and the
+hard-thresholded `{0, 1}` detection label built from it, side by side, so
+the mechanism stays visible even though the label actually used is the
+thresholded one.
+
 Its final section (§3.2) goes one step further than the raw `Sample`: it
 fits a `RobustNormalizer` and runs `StreamMapTransform` on
 `sample_minimal`, then plots the raw combined map next to the *actual*
@@ -35,30 +42,43 @@ end to end: `StreamMapDataset` (training + eval mode) →
 `StreamMapTransform`/`RobustNormalizer` → `UNet` → `PlainTrainer` →
 `evaluation/` (`evaluate_on_grid`, `build_baseline`,
 `plot_recovery_vs_parameter`). Small (small images, a small model, no GPU)
-but no longer trivially so — it went through two real rounds of tuning
-(not guesswork; see `PLAN.md`'s decision log entries for this notebook):
+but no longer trivially so — its current form is the `label_policy=
+"stream_detection"` pivot (`PLAN.md` §6.12), which itself replaced an
+earlier `label_policy="stream_count"` version that needed real tuning to
+get anywhere (log1p-space training target, data-informed bias init, a
+larger step budget — see the decision log for that history) and, even
+tuned, persistently under-recovered peak amplitude while still localizing
+streams well. Retargeting at a bounded detection label sidesteps that
+problem entirely:
 
-- **Richness bracket, 30–33 mag/arcsec² surface brightness**, not lower:
-  below SB 30 at this stream geometry the star count explodes (SB 28 →
-  ~1.1M stars) into physically implausible territory.
-- **Training target is `log1p(count)`, not raw counts**, via two small
-  notebook-local classes (`Log1pLabelDataset` wrapping the training/
-  validation label, `ExpM1Wrapper` inverting the trained model's output
-  back to real counts for everything downstream that wants physical
-  units). Raw-count losses at this brightness were numerically unstable
-  (millions, non-monotonic) and a small model couldn't learn from them in
-  any practical number of steps — the same reason astronomical magnitudes
-  are logarithmic. Combined with a **data-informed bias initialization**
-  (the output layer starts at the target's own scale, not near zero) and a
-  substantially larger step budget (~450 optimizer steps, up from an
-  initial 60 that showed no amplitude learning at all — confirmed
-  empirically, not assumed).
+- **`nside=512`** (the standard resolution for stream search), with
+  `pixel_scale_deg` never set by hand. `richness = [30.0]` (surface
+  brightness, a single fixed point rather than the earlier 30–33 scan):
+  at this finer native pixel scale, per-pixel star counts drop a lot for
+  the same total population, and `count_threshold=10`'s detection label
+  needs enough stars in *some* pixel to ever produce a positive label at
+  all — verified for real that 30 reliably does at this geometry and 31–33
+  do not (see §1's config cell for the exact numbers).
+- **`head="sigmoid"` + `loss_name="dice"`**, not `"softplus"` + `"mse"` in
+  `log1p` space — no longer needed, since a bounded `{0, 1}` target has no
+  large dynamic range to compress. The **data-informed bias
+  initialization** technique is kept, adapted rather than dropped: the
+  head's bias starts at the **logit of the per-channel positive-pixel
+  fraction** instead of the log1p-count mean, so the model begins
+  predicting close to the empirical class prior everywhere rather than a
+  default ~0.5.
 
-It plots a training/validation loss curve (in `log1p(count)` space), one
-prediction compared against its true label *and* the masked residual
-between them, and a completeness (Dice) curve against the network's free
-richness parameter, with the k·σ baseline overlaid for comparison. Scaling
-this up further (bigger images, a real GPU device, and eventually the
-`training/hyrax_runner.py` orchestration layer) is the natural next step
-once a scientifically meaningful run is wanted — this is still a real but
-modest training run, not a tuned model.
+It plots a training/validation loss curve, one prediction compared against
+its true detection label *and* the masked residual between them (fixed to
+`[-1, 1]`, the range a bounded target actually spans), and a completeness
+(Dice) evaluation against the k·σ baseline. **Worth reading honestly, not
+just as a success number**: at this richness/resolution the trivial
+baseline scores comparably well (~0.94 Dice, vs. ~0.12 for the earlier
+`stream_count` setup) — a real stream pixel is a large, sharp, easy-to-
+threshold excess here, and the baseline is handed the "good" channel
+directly, which the network has to identify on its own. The network's real
+advantage over a fixed threshold — fainter richness, rejecting the "decoy"
+channel without being told which is which — isn't demonstrated by this
+single-point smoke-scale eval grid yet. Scaling this up further (a richer
+eval grid, more steps/epochs, a real GPU device, and eventually the
+`training/hyrax_runner.py` orchestration layer) is the natural next step.

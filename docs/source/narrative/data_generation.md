@@ -258,16 +258,36 @@ against footprints this narrow) → run it through the survey's
 noise/detection model → apply the same cuts/clipping as the background →
 sample a window → for every `(distance, filter)` channel: select, make a
 raw count map, combine with the cached background, finalize, crop to the
-window — and separately crop the *stream-only* raw map as that channel's
-label. `inject_background_only` produces the shape-compatible negative
-case: no realization, no label computation, just the cached background
-cropped to a random window (used whenever
-`StreamConfig.background_fraction > 0`).
+window — and separately crop the *stream-only* raw map (`stream_raw`) as
+the basis for that channel's label. `inject_background_only` produces the
+shape-compatible negative case: no realization, no label computation, just
+the cached background cropped to a random window (used whenever
+`StreamConfig.background_fraction > 0`) — `label_stack` is all zeros, which
+is already correct under every label policy below (nothing ever passes a
+positive threshold at zero count).
 
-## Alternate labels ({py:mod}`streamgoggles.rasterize`)
+### Label policies (`StreamInjector.label_policy`)
 
-The pre-pivot label mechanism — `rasterize_binary`, `rasterize_density`, a
-`soft_distance` stub, dispatched via `StreamInjector.label_policy` — remains
-implemented and selectable, but is no longer the default (`"stream_count"`
-is, computed directly in `injector.py`, not routed through this module at
-all).
+- `"stream_count"` (the original 2026-09-09 pivot): `label_stack[c]` is
+  exactly that channel's cropped `stream_raw` — a literal, non-negative
+  star count. Computed directly in `injector.py`, not routed through
+  `rasterize.py` at all.
+- `"stream_detection"` (2026-09-15, current default): the same `stream_raw`
+  crop, hard-thresholded into a binary `{0, 1}` target
+  (`stream_raw > count_threshold`, a constructor argument, default 10
+  stars). Retargets the network at the actual detection goal instead of the
+  literal count — see {doc}`ml_concepts` and {doc}`datasets_and_models` for
+  why (count regression under a heavy-tailed target reliably localized
+  streams but badly under-recovered their peak amplitude). Both policies
+  share the same `stream_raw` computation; only the last step (return it
+  directly vs. threshold it) differs.
+- The pre-pivot mechanism ({py:mod}`streamgoggles.rasterize`) —
+  `rasterize_binary`, `rasterize_density`, a `soft_distance` stub — remains
+  implemented and selectable via the same `label_policy`, for a single
+  distance-and-filter-independent 2D label computed purely from
+  `phi1`/`phi2` geometry (no `stream_raw` involved at all). Not the default
+  under either pivot above: it throws away the filter-dependence
+  `label_policy="stream_count"`/`"stream_detection"` were specifically
+  designed to keep (a "bad" decoy filter should score near zero even at
+  pixels a real stream geometrically crosses, since it didn't actually
+  *select* real members there).

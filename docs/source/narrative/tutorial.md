@@ -104,15 +104,15 @@ from streamgoggles.models.losses import get_loss
 from streamgoggles.training.plain_runner import PlainTrainer
 from streamgoggles.storage import ModelStore
 
-model = UNet(in_channels=n_channels, out_channels=n_channels, base_width=12, depth=2, head="softplus")
+model = UNet(in_channels=n_channels, out_channels=n_channels, base_width=12, depth=2, head="sigmoid")
 optimizer = torch.optim.Adam(model.parameters(), lr=2e-3)
-trainer = PlainTrainer(model=model, optimizer=optimizer, loss_fn=get_loss("mse"))
+trainer = PlainTrainer(model=model, optimizer=optimizer, loss_fn=get_loss("dice"))
 
 model_store = ModelStore("data/models")  # a real, persistent directory -- not a tempdir, if you want the checkpoint to outlive this process
 result = trainer.train(
     train_dl, val_dl=val_dl, epochs=30,
     model_store=model_store,
-    config={"model_config": dict(in_channels=n_channels, out_channels=n_channels, base_width=12, depth=2, head="softplus")},
+    config={"model_config": dict(in_channels=n_channels, out_channels=n_channels, base_width=12, depth=2, head="sigmoid")},
 )
 ```
 
@@ -126,10 +126,17 @@ model reusable in a later process — see {doc}`training_and_evaluation`
 for `PlainTrainer`'s full contract (checkpointing, `save_every`, mixed
 precision).
 
-If your target's dynamic range spans orders of magnitude (bright,
-rich streams — see {doc}`notebooks`), plain raw-count regression may
-train poorly; the `log1p(count)` training-target technique described
-there is the fix, not a `models.losses`/`models.unet` change.
+`head="sigmoid"` + `loss_name="dice"` is this project's current default
+pairing, for the current default `label_policy="stream_detection"` (a
+bounded `{0, 1}` per-pixel target — see {doc}`data_generation`). If you
+specifically want `label_policy="stream_count"`'s literal count back
+instead, use `head="softplus"` + `get_loss("mse")`/`get_loss("weighted_mse")`
+— but be aware its dynamic range can span orders of magnitude for bright,
+rich streams, in which case plain raw-count regression trains poorly; the
+`log1p(count)` training-target technique described in {doc}`notebooks` (an
+earlier version of `train_model.ipynb`) is the fix for that specific case,
+not a `models.losses`/`models.unet` change. `stream_detection`'s bounded
+target doesn't need it.
 
 ## 4. Detecting streams across a HEALPix map
 

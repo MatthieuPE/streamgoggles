@@ -62,8 +62,11 @@ pattern allows.
 `iou`, `dice`, `precision_recall`, `mse`, `correlation`, `weighted_recall`
 — all pure-numpy, all `valid_mask`-aware (true exclusion, same convention
 as the losses), all operating on whatever scale `pred`/`target` are
-actually in (a `[0, 1]` probability for the binary/density label options,
-or a literal star count for `"stream_count"`).
+actually in: a `[0, 1]` probability for the binary/density label options
+and for the current default `"stream_detection"` (whose label is already
+`{0, 1}`, so `threshold=0.5` is a natural cut), or a literal star count for
+`"stream_count"` (where `threshold` should be chosen accordingly, e.g.
+`0.5` stars for "is there a true member here").
 
 Every metric with an undefined ratio — `iou`/`dice` with nothing predicted
 and nothing true, `precision` with no positive predictions, `correlation`
@@ -73,8 +76,11 @@ score. Aggregating code is expected to `.dropna()` explicitly.
 
 `weighted_recall` is worth calling out: it weights recall by the target's
 own magnitude, so missing a pixel with many true stream stars costs more
-than missing a nearly-empty one — a natural fit once the label is a literal
-count rather than a binary flag.
+than missing a nearly-empty one — a natural fit for the literal-count
+`"stream_count"` label; against `"stream_detection"`'s binary target it
+reduces to plain recall (every true pixel weighs the same, `1`), which is
+still a well-defined, useful number, just not doing anything extra beyond
+ordinary recall in that case.
 
 ### Baseline ({py:mod}`streamgoggles.evaluation.baseline_threshold`)
 
