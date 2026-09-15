@@ -79,28 +79,38 @@ problem entirely:
 It plots a training/validation loss curve, one prediction compared against
 its true detection label *and* the masked residual between them (fixed to
 `[-1, 1]`, the range a bounded target actually spans), and a completeness
-(Dice) curve across the 4-point richness scan against the k·σ baseline.
-**Read honestly, not just as a success number** — real results, from §7's
-actual output:
+(Dice) curve across the 4-point richness scan against the k·σ baseline —
+1200 training samples (`epochs=40`, `steps_per_epoch=30`), 4x the budget
+a single-richness run used. **Read honestly, not just as a success
+number** — real results, from §7's actual output:
 
 | surface_brightness | Dice | IoU | baseline Dice |
 |---|---|---|---|
-| 31 | 0.811 | 0.681 | 0.638 |
-| 32 | 0.683 | 0.519 | 0.275 |
-| 33 | 0.285 | 0.166 | 0.118 |
-| 34 | **0.000** | **0.000** | 0.044 |
+| 31 | 0.759 | 0.612 | 0.620 |
+| 32 | 0.511 | 0.343 | 0.282 |
+| 33 | 0.529 | 0.359 | 0.091 |
+| 34 | **0.000** | **0.000** | 0.007 |
 
-Performance degrades steeply and monotonically with richness, and **SB 34
-is not recovered at all** — Dice and IoU both exactly zero, not a
-near-miss. The trivial baseline also collapses there (0.044), so this
-richness point is hard in an absolute sense at this configuration, not
-uniquely a network failure — it isn't yet possible to tell whether more
-training would let the network beat the baseline at SB 34, or whether it's
-out of reach entirely at this window/threshold. The Summary section (end
-of the notebook) walks through three plausible, not-yet-tested causes
-(training budget split four ways instead of concentrated on one richness;
-a bias-init calibrated to the pooled average class prior rather than each
-richness's own; SB 34 genuinely needing more steps/capacity) — none
-confirmed yet. Scaling this up further (more steps/epochs targeted at the
-faint end specifically, a real GPU device, and eventually the
-`training/hyrax_runner.py` orchestration layer) is the natural next step.
+At face value this says the extra budget didn't help SB 34 at all (still
+exactly 0.0, the same as a 300-sample run), and barely moved the overall
+mean. **§8 shows that reading is wrong, or at least incomplete** — because
+every eval-grid point is exactly *one* fixed realization (one window, one
+orientation, one noise draw — see {doc}`datasets_and_models`'s "Eval grid:
+one fixed realization per point" section), "0.0 Dice at SB 34" is a
+measurement on a sample size of one, not an average over what a stream at
+that richness typically looks like. §8 tests this directly: running the
+*same trained model* (no retraining) against 8 independent SB 34
+realizations finds the true behavior is **bimodal** — about half
+confidently detect the stream (predicted probability ~1.0 at the true
+location, real non-zero Dice), about half never activate at all
+(probability stuck at ~0.006, flat background level, Dice=0.0). SB 33,
+checked the same way, detects confidently on *every* realization tried.
+So SB 34 sits right at a genuine sensitivity edge for this model/budget,
+not below it entirely — and the training-budget question this run set out
+to answer is actually still open, since a single fixed eval point can't
+tell "budget doesn't help" apart from "budget shifts the success fraction
+across realizations." Scaling this up further (an eval grid with
+replicate realizations per point — not built yet, see
+{doc}`datasets_and_models` — more steps/epochs, a real GPU device, and
+eventually the `training/hyrax_runner.py` orchestration layer) is the
+natural next step.
