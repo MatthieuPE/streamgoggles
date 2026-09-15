@@ -52,13 +52,21 @@ streams well. Retargeting at a bounded detection label sidesteps that
 problem entirely:
 
 - **`nside=512`** (the standard resolution for stream search), with
-  `pixel_scale_deg` never set by hand. `richness = [30.0]` (surface
-  brightness, a single fixed point rather than the earlier 30–33 scan):
-  at this finer native pixel scale, per-pixel star counts drop a lot for
-  the same total population, and `count_threshold=10`'s detection label
-  needs enough stars in *some* pixel to ever produce a positive label at
-  all — verified for real that 30 reliably does at this geometry and 31–33
-  do not (see §1's config cell for the exact numbers).
+  `pixel_scale_deg` never set by hand, and **`count_threshold=1.0`**
+  (`StreamInjector`'s own default, PLAN.md §6.13) — calibrated
+  empirically, not guessed: sweeping both the threshold and stream
+  richness found a genuine trade-off (too high a threshold leaves faint
+  streams with an entirely empty label; too low, and the "decoy" filter's
+  own positive-pixel count becomes a substantial fraction of the real
+  filter's at the bright end), and 1.0 is the lowest value that keeps
+  every richness point in this project's working range non-empty. See
+  `create_data.ipynb`'s "Calibrating count_threshold empirically" section
+  (§4) for the full sweep and code. `richness = [31.0, 32.0, 33.0, 34.0]`
+  (surface brightness, DISCRETE, an eval-grid point per value) — the
+  bright end (SB 30) is dropped from this scan since it's both the
+  easiest case for the network and the worst for decoy contamination, so
+  it has the least to teach; whether the faintest point (SB 34) is
+  recovered well is exactly what §7's per-richness Dice curve checks.
 - **`head="sigmoid"` + `loss_name="dice"`**, not `"softplus"` + `"mse"` in
   `log1p` space — no longer needed, since a bounded `{0, 1}` target has no
   large dynamic range to compress. The **data-informed bias
@@ -71,14 +79,28 @@ problem entirely:
 It plots a training/validation loss curve, one prediction compared against
 its true detection label *and* the masked residual between them (fixed to
 `[-1, 1]`, the range a bounded target actually spans), and a completeness
-(Dice) evaluation against the k·σ baseline. **Worth reading honestly, not
-just as a success number**: at this richness/resolution the trivial
-baseline scores comparably well (~0.94 Dice, vs. ~0.12 for the earlier
-`stream_count` setup) — a real stream pixel is a large, sharp, easy-to-
-threshold excess here, and the baseline is handed the "good" channel
-directly, which the network has to identify on its own. The network's real
-advantage over a fixed threshold — fainter richness, rejecting the "decoy"
-channel without being told which is which — isn't demonstrated by this
-single-point smoke-scale eval grid yet. Scaling this up further (a richer
-eval grid, more steps/epochs, a real GPU device, and eventually the
+(Dice) curve across the 4-point richness scan against the k·σ baseline.
+**Read honestly, not just as a success number** — real results, from §7's
+actual output:
+
+| surface_brightness | Dice | IoU | baseline Dice |
+|---|---|---|---|
+| 31 | 0.811 | 0.681 | 0.638 |
+| 32 | 0.683 | 0.519 | 0.275 |
+| 33 | 0.285 | 0.166 | 0.118 |
+| 34 | **0.000** | **0.000** | 0.044 |
+
+Performance degrades steeply and monotonically with richness, and **SB 34
+is not recovered at all** — Dice and IoU both exactly zero, not a
+near-miss. The trivial baseline also collapses there (0.044), so this
+richness point is hard in an absolute sense at this configuration, not
+uniquely a network failure — it isn't yet possible to tell whether more
+training would let the network beat the baseline at SB 34, or whether it's
+out of reach entirely at this window/threshold. The Summary section (end
+of the notebook) walks through three plausible, not-yet-tested causes
+(training budget split four ways instead of concentrated on one richness;
+a bias-init calibrated to the pooled average class prior rather than each
+richness's own; SB 34 genuinely needing more steps/capacity) — none
+confirmed yet. Scaling this up further (more steps/epochs targeted at the
+faint end specifically, a real GPU device, and eventually the
 `training/hyrax_runner.py` orchestration layer) is the natural next step.

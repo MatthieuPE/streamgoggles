@@ -274,13 +274,32 @@ positive threshold at zero count).
   `rasterize.py` at all.
 - `"stream_detection"` (2026-09-15, current default): the same `stream_raw`
   crop, hard-thresholded into a binary `{0, 1}` target
-  (`stream_raw > count_threshold`, a constructor argument, default 10
-  stars). Retargets the network at the actual detection goal instead of the
+  (`stream_raw > count_threshold`, a constructor argument, default 1.0).
+  Retargets the network at the actual detection goal instead of the
   literal count — see {doc}`ml_concepts` and {doc}`datasets_and_models` for
   why (count regression under a heavy-tailed target reliably localized
   streams but badly under-recovered their peak amplitude). Both policies
   share the same `stream_raw` computation; only the last step (return it
   directly vs. threshold it) differs.
+
+  `count_threshold` is not a literal integer star count, despite the name:
+  `crop_window` projects `stream_raw` through bilinear interpolation
+  (`matched_filter.py`'s `project()`, `interpolate=True` by default), so
+  its nonzero values are near-universally non-integer (>99%, confirmed for
+  real) — it's a threshold on interpolated local density, in star-count
+  units, not "at least N stars landed exactly here." The default (1.0,
+  PLAN.md §6.13) was picked empirically by sweeping both the threshold and
+  stream richness and comparing the "good" filter's positive-pixel count
+  against the "decoy" filter's at each combination
+  (`create_data.ipynb`'s "Calibrating count_threshold empirically"
+  section) — the finding was a genuine, irreducible trade-off: too high a
+  threshold leaves this project's faintest working streams
+  (surface_brightness up to 35) with an entirely empty label; too low, and
+  the decoy filter's own positive-pixel count becomes a substantial
+  fraction of the real filter's at the bright end. 1.0 is the lowest value
+  that keeps every richness point non-empty, accepting real (not fully
+  suppressed) decoy contamination at the bright end in exchange for
+  faint-end sensitivity.
 - The pre-pivot mechanism ({py:mod}`streamgoggles.rasterize`) —
   `rasterize_binary`, `rasterize_density`, a `soft_distance` stub — remains
   implemented and selectable via the same `label_policy`, for a single
