@@ -271,6 +271,46 @@ def test_eval_grid_mismatched_lengths_raises():
         EvalGrid(points=[{"a": 1}], seeds=[1, 2])
 
 
+def test_eval_grid_replicates_default_to_zeros():
+    """Grids built without replicates (the historical two-argument form)
+    stay valid and behave as one realization per point."""
+    grid = EvalGrid(points=[{"a": 1}, {"a": 2}], seeds=[1, 2])
+    assert grid.replicates == [0, 0]
+
+
+def test_eval_grid_mismatched_replicates_length_raises():
+    with pytest.raises(ValueError):
+        EvalGrid(points=[{"a": 1}], seeds=[1], replicates=[0, 1])
+
+
+def test_build_eval_grid_replicates_expand_each_combination(write_yaml):
+    path = write_yaml({"age": {"values": [10.0, 12.0]}})
+    config = StreamConfig.load(path)
+    grid = build_eval_grid(config, n_replicates=3)
+
+    assert len(grid.points) == 2 * 3
+    assert grid.replicates == [0, 1, 2, 0, 1, 2]
+    assert [point["age"] for point in grid.points] == [10.0] * 3 + [12.0] * 3
+    # The whole point of a replicate: same parameters, DIFFERENT realization,
+    # which only happens if the seeds actually differ.
+    assert len(set(grid.seeds)) == len(grid.seeds)
+
+
+def test_build_eval_grid_default_is_one_replicate(write_yaml):
+    path = write_yaml({"age": {"values": [10.0, 12.0]}})
+    config = StreamConfig.load(path)
+    grid = build_eval_grid(config)
+    assert len(grid.points) == 2
+    assert grid.replicates == [0, 0]
+
+
+def test_build_eval_grid_rejects_zero_replicates(write_yaml):
+    path = write_yaml({"age": {"values": [10.0, 12.0]}})
+    config = StreamConfig.load(path)
+    with pytest.raises(ValueError):
+        build_eval_grid(config, n_replicates=0)
+
+
 def test_build_eval_grid_no_free_parameters_raises(write_yaml):
     path = write_yaml({"width": 0.2, "age": 12.0})
     config = StreamConfig.load(path)

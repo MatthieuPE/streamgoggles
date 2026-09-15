@@ -22,11 +22,13 @@ from streamgoggles.config import DistributionType, ParameterSpec, StreamConfig
 from streamgoggles.datasets.stream_map_dataset import StreamMapDataset
 from streamgoggles.evaluation.baseline_threshold import build_baseline
 from streamgoggles.evaluation.completeness_purity import (
+    aggregate_over_replicates,
     compute_completeness_purity,
     evaluate_on_grid,
     plot_recovery_vs_parameter,
 )
 from streamgoggles.evaluation.metrics import (
+    confusion_matrix,
     correlation,
     dice,
     iou,
@@ -151,6 +153,133 @@ def test_recall_nan_when_no_true_positives_exist():
     precision, recall = precision_recall(pred, target)
     assert precision == pytest.approx(0.0)
     assert np.isnan(recall)
+
+
+# ---------------------------------------------------------------------------
+# confusion_matrix
+# ---------------------------------------------------------------------------
+
+
+def test_confusion_matrix_hand_computed():
+    pred = np.array([[1.0, 1.0], [0.0, 1.0]])
+    target = np.array([[1.0, 0.0], [0.0, 1.0]])
+    # tp={(0,0),(1,1)}, fp={(0,1)}, tn={(1,0)}, fn={}
+    assert confusion_matrix(pred, target) == {"tp": 2, "fp": 1, "tn": 1, "fn": 0}
+
+
+def test_confusion_matrix_counts_sum_to_valid_pixel_count():
+    rng = np.random.default_rng(0)
+    pred = rng.random((6, 6))
+    target = (rng.random((6, 6)) > 0.7).astype(float)
+    valid_mask = rng.random((6, 6)) > 0.3
+    counts = confusion_matrix(pred, target, valid_mask)
+    assert sum(counts.values()) == int(valid_mask.sum())
+
+
+def test_confusion_matrix_excludes_invalid_pixels_from_true_negatives():
+    """Invalid pixels must not be counted as TN -- otherwise everything
+    outside the footprint silently inflates it (and any TN-based rate)."""
+    pred = np.zeros((2, 2))
+    target = np.zeros((2, 2))
+    valid_mask = np.array([[True, False], [False, False]])
+    assert confusion_matrix(pred, target, valid_mask) == {
+        "tp": 0,
+        "fp": 0,
+        "tn": 1,
+        "fn": 0,
+    }
+
+
+def test_confusion_matrix_agrees_with_precision_recall():
+    rng = np.random.default_rng(3)
+    pred = rng.random((8, 8))
+    target = (rng.random((8, 8)) > 0.6).astype(float)
+    valid_mask = rng.random((8, 8)) > 0.2
+    counts = confusion_matrix(pred, target, valid_mask)
+    precision, recall = precision_recall(pred, target, valid_mask)
+    assert precision == pytest.approx(counts["tp"] / (counts["tp"] + counts["fp"]))
+    assert recall == pytest.approx(counts["tp"] / (counts["tp"] + counts["fn"]))
+
+
+def test_confusion_matrix_accepts_multichannel_input():
+    pred = np.stack([np.ones((2, 2)), np.zeros((2, 2))])
+    target = np.stack([np.ones((2, 2)), np.ones((2, 2))])
+    counts = confusion_matrix(pred, target)
+    assert counts == {"tp": 4, "fp": 0, "tn": 0, "fn": 4}
+
+
+# ---------------------------------------------------------------------------
+# aggregate_over_replicates
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_over_replicates_mean_std_and_count():
+    results = pd.DataFrame(
+        {
+            "richness": [31.0, 31.0, 32.0, 32.0],
+            "replicate": [0, 1, 0, 1],
+            "id": [0, 1, 2, 3],
+            "dice": [0.2, 0.6, 0.5, 0.5],
+        }
+    )
+    aggregated = aggregate_over_replicates(results, metrics=["dice"])
+    assert list(aggregated["richness"]) == [31.0, 32.0]
+    assert aggregated["dice_mean"].tolist() == pytest.approx([0.4, 0.5])
+    assert aggregated["dice_n"].tolist() == [2, 2]
+    # std is the point of aggregating at all: identical replicates give 0,
+    # spread-out ones must not be reported as if they were a clean number.
+    assert aggregated["dice_std"].tolist() == pytest.approx(
+        [np.std([0.2, 0.6], ddof=1), 0.0]
+    )
+
+
+def test_aggregate_over_replicates_excludes_nan_per_metric():
+    """A NaN metric (evaluation.metrics' undefined-ratio convention) must
+    drop out of its own group's mean without poisoning it, and must be
+    visible in the count rather than silently assumed present."""
+    results = pd.DataFrame(
+        {
+            "richness": [31.0, 31.0, 31.0],
+            "replicate": [0, 1, 2],
+            "id": [0, 1, 2],
+            "dice": [0.4, np.nan, 0.6],
+        }
+    )
+    aggregated = aggregate_over_replicates(results, metrics=["dice"])
+    assert aggregated["dice_mean"].tolist() == pytest.approx([0.5])
+    assert aggregated["dice_n"].tolist() == [2]
+
+
+def test_aggregate_over_replicates_single_replicate_has_undefined_std():
+    results = pd.DataFrame(
+        {"richness": [31.0], "replicate": [0], "id": [0], "dice": [0.4]}
+    )
+    aggregated = aggregate_over_replicates(results, metrics=["dice"])
+    assert aggregated["dice_mean"].tolist() == pytest.approx([0.4])
+    assert np.isnan(aggregated["dice_std"].iloc[0])
+
+
+def test_aggregate_over_replicates_explicit_group_by():
+    results = pd.DataFrame(
+        {
+            "richness": [31.0, 31.0],
+            "width": [0.2, 0.3],
+            "replicate": [0, 0],
+            "id": [0, 1],
+            "dice": [0.2, 0.8],
+        }
+    )
+    aggregated = aggregate_over_replicates(
+        results, metrics=["dice"], group_by=["richness"]
+    )
+    assert len(aggregated) == 1
+    assert aggregated["dice_mean"].tolist() == pytest.approx([0.5])
+
+
+def test_aggregate_over_replicates_unknown_metric_raises():
+    results = pd.DataFrame({"richness": [31.0], "id": [0], "dice": [0.4]})
+    with pytest.raises(KeyError):
+        aggregate_over_replicates(results, metrics=["not_a_metric"])
 
 
 # ---------------------------------------------------------------------------

@@ -391,19 +391,44 @@ class EvalGrid:
     Attributes:
         points: list of dicts, each mapping param_name -> value
         seeds: list of int, one seed per point for reproducibility
+        replicates: list of int, the replicate index of each entry (0-based).
+            With `build_eval_grid(..., n_replicates=k)`, each distinct
+            parameter combination appears k times -- same `points` dict,
+            different `seeds` -- so one "grid point" becomes k independent
+            realizations (different placement/window/orientation/noise) of
+            the same physical parameters. Defaults to all-zeros (one
+            realization per combination) when not given, which is the
+            historical behavior.
 
     Rationale: Stores the fixed evaluation set separately from training, ensuring
-    consistent evaluation across runs.
+    consistent evaluation across runs. Replicates exist because a single
+    realization per parameter combination measures one specific
+    window/orientation/noise draw, not the distribution of outcomes at those
+    parameters -- see the "Eval grid" section of the datasets_and_models
+    guide page for the real result that motivated adding them.
     """
 
     points: list[dict]
     seeds: list[int]
+    replicates: list[int] | None = None
 
     def __post_init__(self):
-        """Validate points and seeds have same length."""
+        """Validate points/seeds/replicates have the same length.
+
+        `replicates` defaults to all-zeros (one realization per parameter
+        combination) so grids built before replicates existed, or by callers
+        that don't care about them, stay valid unchanged.
+        """
         if len(self.points) != len(self.seeds):
             raise ValueError(
                 f"EvalGrid: {len(self.points)} points but {len(self.seeds)} seeds"
+            )
+        if self.replicates is None:
+            self.replicates = [0] * len(self.points)
+        elif len(self.replicates) != len(self.points):
+            raise ValueError(
+                f"EvalGrid: {len(self.points)} points but "
+                f"{len(self.replicates)} replicates"
             )
 
 
@@ -439,6 +464,7 @@ def build_eval_grid(
     n_points_per_range: int = 5,
     n_points_discrete: int | None = None,
     seed: int = 42,
+    n_replicates: int = 1,
 ) -> EvalGrid:
     """Build evaluation grid from free parameters (Cartesian product).
 
@@ -447,21 +473,33 @@ def build_eval_grid(
         n_points_per_range: number of equally-spaced points per uniform/log-uniform range.
         n_points_discrete: if specified, enumerate at most this many points per discrete set.
         seed: RNG seed for grid enumeration (ensures reproducibility).
+        n_replicates: independent realizations per parameter combination
+            (default 1 -- the historical behavior). With k > 1, each
+            combination is emitted k times with k *different* seeds, so
+            evaluating the grid measures the spread across
+            placement/window/orientation/noise at fixed physical parameters
+            instead of one arbitrary draw of it. Total grid length is
+            `k * (number of parameter combinations)`.
 
     Returns:
-        EvalGrid with enumerated points and fixed seeds.
+        EvalGrid with enumerated points, fixed seeds, and each entry's
+        replicate index.
 
     Rationale: Enumeration is deterministic and reproducible. Grid size grows as
-    Cartesian product of per-parameter sizes, which is expected and documented.
+    Cartesian product of per-parameter sizes (times `n_replicates`), which is
+    expected and documented.
 
     Raises:
-        ValueError if all parameters are fixed (no grid to build).
+        ValueError if all parameters are fixed (no grid to build), or if
+            n_replicates < 1.
     """
     free_names = config.free_parameters()
     if not free_names:
         raise ValueError(
             "No free parameters in config; nothing to build an eval grid from."
         )
+    if n_replicates < 1:
+        raise ValueError(f"n_replicates must be >= 1, got {n_replicates}")
 
     axis_values = {
         name: _eval_grid_axis(
@@ -471,9 +509,18 @@ def build_eval_grid(
     }
 
     combos = itertools.product(*(axis_values[name] for name in free_names))
-    points = [dict(zip(free_names, combo)) for combo in combos]
+    combo_points = [dict(zip(free_names, combo)) for combo in combos]
+
+    # Replicates are expanded inline (the same point dict repeated, one entry
+    # per replicate) rather than nesting seeds per point: that keeps
+    # EvalGrid's "one index -> one sample" contract, and therefore
+    # StreamMapDataset.__getitem__/evaluate_on_grid's own shapes, completely
+    # unchanged -- replicate entries are just more rows, distinguishable by
+    # the `replicates` list (and by `id` in evaluate_on_grid's DataFrame).
+    points = [point for point in combo_points for _ in range(n_replicates)]
+    replicates = [r for _ in combo_points for r in range(n_replicates)]
 
     rng = np.random.default_rng(seed)
     seeds = [int(rng.integers(0, 2**31 - 1)) for _ in points]
 
-    return EvalGrid(points=points, seeds=seeds)
+    return EvalGrid(points=points, seeds=seeds, replicates=replicates)

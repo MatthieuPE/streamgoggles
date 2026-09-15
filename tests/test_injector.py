@@ -603,7 +603,19 @@ def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_
     )
     sample_strict = strict.inject_single_stream(stream_params, np.random.default_rng(9))
 
-    assert sample_strict.map_stack.sum() < sample_lenient.map_stack.sum()
+    # Asserted on label_stack (the STREAM-ONLY count), not map_stack.
+    # map_stack is background + stream, and the background dominates it by
+    # ~3 orders of magnitude; worse, the two runs get *different windows*
+    # (sample_stream_window is driven by the detected stream stars, which
+    # the strict cut changes), so comparing map_stack sums really compares
+    # two unrelated background patches. Measured directly: strict < lenient
+    # on map_stack came out True/False/False across three seeds -- a coin
+    # flip that had nothing to do with cuts, and the source of a long-running
+    # intermittent failure here (PLAN.md section 6.15). On the stream-only
+    # label the effect is unambiguous: a g < 18 cut removes essentially
+    # every stream star at this distance modulus.
+    assert sample_lenient.label_stack.sum() > 0.0
+    assert sample_strict.label_stack.sum() < sample_lenient.label_stack.sum()
 
 
 def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
