@@ -25,6 +25,66 @@ two modes:
   `StreamConfig.persist`, since an evaluation set has to be reproducible
   across runs.
 
+### Exactly how many samples, and how each one is built
+
+Both modes ultimately call `StreamInjector.inject_single_stream(params,
+rng)` exactly **once** per sample — one call realizes the stream
+population, places it, samples **one** window (`windows.
+sample_stream_window`), injects survey noise, then loops over every
+`(distance, filter)` channel *reusing that same window and realization* to
+build each channel's crop (see {doc}`data_generation`). So for a single
+sample, window selection happens once, not once per channel — every
+channel is a different color-magnitude/distance cut of the same underlying
+window and stars, not an independently re-windowed draw.
+
+**Training: how many *distinct* samples get generated.** `steps_per_epoch`
+is a nominal per-`DataLoader`-epoch count, not the number of distinct
+samples that exist — `StreamMapDataset.rng` (an
+`np.random.Generator` created once, when the dataset object is
+constructed) is never reset between epochs, and every `__getitem__` call
+spawns a fresh, never-repeated child generator from it
+(`Generator.spawn(1)`) before sampling that call's own random `params` and
+handing them to `inject_single_stream`. So the true number of distinct
+training samples generated across a full `trainer.train(...)` run is
+`epochs * steps_per_epoch` (times `batch_size`, since a "step" here means
+one `__getitem__` call, and `DataLoader` calls `__getitem__` once per item
+in a batch) — e.g. `train_model.ipynb`'s `epochs=40`,
+`steps_per_epoch=30`, `batch_size=2` means 1200 independent, never-repeated
+draws over the course of training, not 30 samples replayed 40 times. Each
+free parameter (`config.params`, e.g. a `DISCRETE` `richness` spec) is
+sampled independently and uniformly at random *per draw*
+(`ParameterSpec.sample`, `rng.integers` for `DISCRETE`) — with multiple
+discrete values, a fixed total sample budget splits across them on
+average, not per-value; see {doc}`training_and_evaluation` for why this
+mattered for a real result (PLAN.md §6.13). Nothing is persisted to disk
+by default in training mode (`StreamConfig.persist=False` unless set) —
+every draw really is generated from scratch.
+
+**Eval: how the grid is built, and why each point is exactly one fixed
+realization.** `config.build_eval_grid` enumerates the **Cartesian
+product** of every non-`FIXED` parameter's candidate values (`UNIFORM`/
+`LOG_UNIFORM`: `n_points_per_range` equally-spaced points, default 5;
+`DISCRETE`: every value, or up to `n_points_discrete` if capped) — e.g. a
+single free `DISCRETE` `richness` spec with 4 values produces exactly 4
+grid points, one per value (`train_model.ipynb`'s `[31, 32, 33, 34]` scan).
+Each point is assigned its own fixed integer seed, drawn deterministically
+from a single master `seed` (default 42) in enumeration order — so
+re-building the same `StreamConfig` always produces the same points *and*
+the same seeds. `StreamMapDataset._get_eval_sample` then calls
+`inject_single_stream(params, np.random.default_rng(seed))` — **exactly
+one, fully deterministic realization per grid point**: same stream
+population, same placement, same window, same survey noise, every time.
+This is generated once and then cached: `SimulationStore.get_or_generate`
+checks whether a sample for that exact `params` dict already exists on
+disk first, and loads it if so instead of regenerating — so across a
+multi-epoch training run, each eval-grid point's sample is actually built
+by `inject_single_stream` only on the *first* validation pass; every later
+epoch's validation reuses the identical cached sample. There is no
+resampling, no averaging over multiple realizations per grid point, and no
+per-epoch window re-selection in eval mode — deliberately, so metrics
+computed on the same grid point across different epochs (or different
+runs) are directly comparable.
+
 ### `DataLoader` and `stream_map_collate_fn`
 
 Wrapping this dataset in a real `torch.utils.data.DataLoader` needs a
