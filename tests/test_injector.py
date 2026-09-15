@@ -629,6 +629,28 @@ def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
         injector.inject_single_stream(stream_params, np.random.default_rng(3))
 
 
+def test_injector_default_count_threshold_is_one(real_background):
+    """Default count_threshold=1.0 (PLAN.md section 6.13), calibrated
+    empirically against nside=512 -- the lowest threshold that still
+    detects the faintest streams in this project's working richness range
+    (surface_brightness up to 35, where count_threshold>=2 already leaves
+    the label entirely empty; see create_data.ipynb's calibration section
+    (§4) for the full sweep)."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+    )
+    assert injector.count_threshold == 1.0
+
+
 def test_inject_single_stream_detection_policy_label_is_binary(
     real_background, stream_params
 ):

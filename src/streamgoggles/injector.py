@@ -287,11 +287,44 @@ class StreamInjector:
             Unused when label_policy is "stream_count" or "stream_detection".
         count_threshold: Only used when label_policy="stream_detection" --
             the per-pixel stream-only raw star count above which that pixel
-            is labeled a detection (default 10.0 stars). Chosen per
-            (filter, distance) channel, same as the count itself -- a decoy
-            filter's near-zero stream_raw at a pixel a real stream crosses
-            stays below threshold, preserving the 2026-09-09 pivot's
+            is labeled a detection (default 1.0 star). Chosen per (filter,
+            distance) channel, same as the count itself -- a decoy filter's
+            near-zero stream_raw at a pixel a real stream crosses stays
+            below threshold, preserving the 2026-09-09 pivot's
             filter-dependence property.
+
+            NOT a literal integer star count, despite the name: `stream_raw`
+            is projected through crop_window's bilinear interpolation
+            (matched_filter.py's project(), interpolate=True by default), so
+            the value at any given output pixel is a smoothed blend of
+            neighboring native HEALPix pixel counts, not the discrete count
+            of stars landing in that exact pixel -- confirmed for real
+            (>99% of nonzero values are non-integer to within 1e-3).
+            `count_threshold` should be read as "interpolated local density,
+            in star-count units," not literally "at least N stars here."
+
+            Default 1.0 (2026-09-15, PLAN.md section 6.13): calibrated
+            empirically against this project's real geometry (width=0.2,
+            length=8.0 deg) at nside=512, sweeping both count_threshold and
+            stream surface_brightness (30-35 mag/arcsec^2) and comparing the
+            "good" (real isochrone) filter's positive-pixel count against
+            the "decoy" (shifted color-box) filter's at the same threshold --
+            see create_data.ipynb's "Calibrating count_threshold empirically"
+            section (§4) for the exact code and the full result table (exact
+            figures are somewhat sensitive to cuts_cfg/clipping_cfg, which
+            differ slightly between create_data.ipynb and train_model.ipynb;
+            the conclusion below was checked against both). Thresholds >=2
+            already leave the faintest streams in this range
+            (surface_brightness 35) completely undetected (an entirely
+            empty label, not just a fainter tail trimmed); 1.0 is the
+            lowest threshold where every richness point 30-35 stays
+            non-empty. The real cost: at the bright end (SB 30-31), the
+            decoy filter's positive-pixel count reaches roughly two-thirds
+            of the "good" filter's at threshold=1.0 -- real contamination,
+            not fully suppressed the way a higher threshold would, falling
+            to a few percent by SB 33 and above (see PLAN.md section 6.13
+            for the full threshold-vs-richness table and the reasoning for
+            accepting this trade-off).
         finalize_cfg: Passed to matched_filter.finalize_full() when
             combining background + stream maps -- must match whatever
             `background` was cached with, or the combined map wouldn't be
@@ -316,7 +349,7 @@ class StreamInjector:
         label_policy: str = "stream_count",
         label_config: dict | None = None,
         finalize_cfg: dict | None = None,
-        count_threshold: float = 10.0,
+        count_threshold: float = 1.0,
     ):
         """Initialize injector.
 
