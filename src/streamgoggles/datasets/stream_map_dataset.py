@@ -110,6 +110,59 @@ def default_num_workers(max_workers: int = 4, reserve: int = 2) -> int:
     return max(0, min(max_workers, available - reserve))
 
 
+class TransformedDataset:
+    """Applies a transform to every item of a dataset, forwarding any other
+    attribute access (e.g. `eval_mode`, `eval_grid`) to the wrapped dataset.
+
+    Lives here rather than being defined where it is used because
+    `DataLoader(num_workers>0)` must be able to *import* it. Under the
+    "spawn" start method (the default on macOS and Windows) workers receive
+    the dataset by pickle, and a class defined in a notebook cell or a
+    `__main__` script cannot be unpickled there -- it fails with
+    `AttributeError: Can't get attribute '...' on <module '__main__'>`,
+    which is how this was found: enabling workers broke the training
+    notebook outright.
+
+    Attributes:
+        base: the wrapped dataset.
+        transform: callable applied to each item returned by `base`.
+    """
+
+    def __init__(self, base, transform):
+        """Initialize.
+
+        Parameters:
+            base: dataset supporting `__len__`/`__getitem__`.
+            transform: callable applied to every item.
+        """
+        self.base = base
+        self.transform = transform
+
+    def __len__(self) -> int:
+        """Length of the wrapped dataset."""
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        """Return the wrapped dataset's item at `idx`, transformed."""
+        return self.transform(self.base[idx])
+
+    def __getattr__(self, name):
+        """Forward unknown attributes to the wrapped dataset.
+
+        `base`/`transform` are refused explicitly rather than forwarded, and
+        that guard is load-bearing, not defensive noise: unpickling creates
+        the instance WITHOUT calling `__init__`, so `__dict__` is empty and
+        pickle's own probing (`__setstate__`, `__reduce_ex__`, ...) lands
+        here; forwarding would then look up `self.base`, which is itself
+        missing, and recurse until `RecursionError`. Since DataLoader
+        workers under "spawn" transfer this object by pickle, that would
+        break exactly the case this class was moved here to support.
+        """
+        if name in ("base", "transform"):
+            raise AttributeError(name)
+        return getattr(self.base, name)
+
+
 def stream_map_collate_fn(batch: list[dict]) -> dict:
     """DataLoader collate_fn for batches of `StreamMapDataset` items.
 

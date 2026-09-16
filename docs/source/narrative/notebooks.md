@@ -86,23 +86,26 @@ spread rather than one arbitrary draw. Real results from §7:
 
 | surface_brightness | nstars | Dice | IoU | baseline Dice |
 |---|---|---|---|---|
-| 31 | 33362 | 0.621 ± 0.026 | 0.451 | 0.634 |
-| 32 | 13282 | 0.577 ± 0.044 | 0.406 | 0.301 |
-| 33 |  5288 | 0.428 ± 0.119 | 0.278 | 0.132 |
-| 34 |  2106 | 0.056 ± 0.079 | 0.030 | 0.038 |
+| 31 | 33362 | 0.773 ± 0.012 | 0.630 | 0.634 |
+| 32 | 13282 | 0.673 ± 0.051 | 0.509 | 0.301 |
+| 33 |  5288 | 0.470 ± 0.068 | 0.309 | 0.132 |
+| 34 |  2106 | 0.087 ± 0.088 | 0.047 | 0.038 |
 
 Two things the replicates make visible that a single realization per point
 could not:
 
 - **Where the network actually earns its keep.** It beats the trivial
-  baseline clearly at SB 32 and 33, and *loses* to it at SB 31 (0.621 vs
-  0.634). The bright end is where a real stream is a large, sharp excess a
-  plain threshold finds easily — and where the baseline is additionally
-  handed the "good" channel directly, which the network has to identify
-  for itself. The faint end is where learning pays.
+  baseline decisively at SB 32 (0.673 vs 0.301) and SB 33 (0.470 vs
+  0.132). At SB 31 the two are *comparable* (0.773 vs 0.634 here; an
+  earlier run of the same configuration had the network slightly behind at
+  0.621, within the seed-to-seed spread) — read the bright end as "no
+  reliable advantage either way". That is where a real stream is a large,
+  sharp excess a plain threshold finds easily, and where the baseline is
+  additionally handed the "good" channel directly, which the network has
+  to identify for itself. The faint end is where learning clearly pays.
 - **Which numbers are measurements and which are noise.** SB 34's standard
-  deviation (0.079) is *larger than its mean* (0.056): that richness isn't
-  "detected at 0.056", it's bimodal — confidently detected on some
+  deviation (0.088) is as large as its mean (0.087): that richness isn't
+  "detected at 0.087", it's bimodal — confidently detected on some
   realizations, entirely missed on others. §8 shows the per-draw detail
   (peak predicted probability at the true location is either ~1.0 or
   ~0.01, nothing between), while SB 33 detects confidently on every

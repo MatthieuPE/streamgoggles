@@ -22,6 +22,7 @@ from streamgoggles.background_sources import StreamObsLightBackgroundSource, Stu
 from streamgoggles.config import DistributionType, EvalGrid, ParameterSpec, StreamConfig
 from streamgoggles.datasets.stream_map_dataset import (
     StreamMapDataset,
+    TransformedDataset,
     default_num_workers,
     stream_map_collate_fn,
 )
@@ -1059,3 +1060,39 @@ def test_default_num_workers_prefers_allocation_over_machine_size(monkeypatch):
     )
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
     assert default_num_workers(max_workers=64, reserve=2) == 2
+
+
+def _times_ten(value):
+    return value * 10
+
+
+def test_transformed_dataset_is_importable_and_picklable():
+    """The regression this guards: `TransformedDataset` used to be defined
+    in a notebook cell, and under the "spawn" start method (macOS/Windows
+    default) DataLoader workers receive the dataset by pickle and must
+    IMPORT its class. A `__main__`-defined class fails there with
+    `AttributeError: Can't get attribute ... on <module '__main__'>`, which
+    broke the training notebook the moment workers were enabled -- while
+    every unit test still passed, because none of them pickled it."""
+    import pickle
+
+    # A module-level callable, not a lambda: the real transform
+    # (StreamMapTransform) is a package class, and a lambda would fail
+    # pickling for its own unrelated reason and mask what is under test.
+    dataset = TransformedDataset([1, 2, 3], _times_ten)
+    assert TransformedDataset.__module__ != "__main__"
+
+    restored = pickle.loads(pickle.dumps(dataset))
+    assert len(restored) == 3
+    assert restored[0] == 10
+
+
+def test_transformed_dataset_applies_transform_and_forwards_attributes():
+    class _Base(list):
+        eval_mode = True
+
+    wrapped = TransformedDataset(_Base([1, 2]), lambda x: x + 100)
+    assert [wrapped[i] for i in range(len(wrapped))] == [101, 102]
+    # Unknown attributes fall through to the wrapped dataset, which is how
+    # evaluate_on_grid reads `eval_mode`/`eval_grid` through the wrapper.
+    assert wrapped.eval_mode is True
