@@ -658,3 +658,141 @@ def crop_window(
         rotation_deg=window.rotation_deg,
     )
     return project(finalized_full, valid_mask_full, window_pix)
+
+
+def window_to_healpix_indices(
+    window: "Window", pix: PixelizationSpec, nside: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Map every HEALPix pixel this window covers to an image pixel.
+
+    The inverse direction of `project`/`crop_window`: instead of asking
+    "what sky position does each image pixel look at", this asks "which
+    image pixel does each HEALPix pixel fall into". Iterating over HEALPix
+    pixels rather than image pixels is what makes the result gap-free --
+    walking image pixels instead would leave unfilled HEALPix pixels
+    wherever the HEALPix grid is finer than the image grid.
+
+    Sampling is nearest-neighbour, deliberately: this exists to put model
+    predictions back on the sky, and interpolating probabilities across
+    neighbouring pixels would blur a per-pixel number the whole
+    `stream_detection` design intends to be read (and thresholded) as-is.
+
+    Parameters:
+        window: the Window the image was cropped to.
+        pix: PixelizationSpec the image was produced with (its
+            `image_size_pix`/`pixel_scale_deg` define the image grid; its
+            own center/rotation are ignored in favour of `window`'s, exactly
+            as `crop_window` does).
+        nside: HEALPix resolution of the output map.
+
+    Returns:
+        Tuple `(healpix_indices, rows, cols, edge_margin_deg)`, all 1-D and
+        the same length:
+
+        - `healpix_indices`: HEALPix pixel ids covered by this window,
+        - `rows`, `cols`: the image pixel each one samples,
+        - `edge_margin_deg`: how far inside the window each one sits
+          (0 at the border, largest at the center). `stitch_windows_to_healpix`
+          uses it to choose between overlapping windows.
+    """
+    ny, nx = pix.image_size_pix
+    scale = pix.pixel_scale_deg
+    half_y = (ny - 1) / 2.0 * scale
+    half_x = (nx - 1) / 2.0 * scale
+
+    # A disc comfortably containing the window's corners; the tangent-plane
+    # test below does the exact selection.
+    radius_deg = float(np.hypot(half_x, half_y)) + scale
+    center_vec = hp.ang2vec(window.center_ra, window.center_dec, lonlat=True)
+    candidates = hp.query_disc(
+        nside, center_vec, np.radians(radius_deg), inclusive=True
+    )
+    if candidates.size == 0:
+        empty_i = np.empty(0, dtype=int)
+        return empty_i, empty_i, empty_i, np.empty(0, dtype=float)
+
+    ra, dec = hp.pix2ang(nside, candidates, lonlat=True)
+    xi_deg, eta_deg = world_to_tangent_plane(
+        ra, dec, window.center_ra, window.center_dec, window.rotation_deg
+    )
+
+    cols = np.rint(xi_deg / scale + (nx - 1) / 2.0).astype(int)
+    rows = np.rint(eta_deg / scale + (ny - 1) / 2.0).astype(int)
+    inside = (rows >= 0) & (rows < ny) & (cols >= 0) & (cols < nx)
+
+    candidates, rows, cols = candidates[inside], rows[inside], cols[inside]
+    margin = np.minimum(
+        half_x - np.abs(xi_deg[inside]), half_y - np.abs(eta_deg[inside])
+    )
+    return candidates, rows, cols, margin
+
+
+def stitch_windows_to_healpix(
+    images: list[np.ndarray],
+    windows: list["Window"],
+    pix: PixelizationSpec,
+    nside: int,
+    fill_value: float = np.nan,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Place per-window images back onto one full-sky HEALPix map.
+
+    Overlapping windows are resolved by **keeping the value from the window
+    in which each pixel sits furthest from an edge** -- the "overlap-tile"
+    strategy from the original U-Net paper -- rather than averaging the
+    overlaps.
+
+    Averaging would be the obvious alternative and is the wrong one here:
+    the model's output is a per-pixel probability meant to be thresholded by
+    whoever reads it, and the mean of 0.9 and 0.1 is 0.5, which is not the
+    same claim as a genuine 0.5. Choosing a single window per pixel keeps
+    every value one the model actually produced. It also picks the *best*
+    such value, since a pixel near a window's edge was predicted with less
+    surrounding context than one at its center.
+
+    Parameters:
+        images: one 2-D image per window, each shaped `pix.image_size_pix`.
+        windows: the windows those images were cropped to, same order.
+        pix: PixelizationSpec defining the image grid.
+        nside: HEALPix resolution of the output map.
+        fill_value: value for HEALPix pixels no window covers.
+
+    Returns:
+        Tuple `(healpix_map, covered_mask)`: the stitched map (`npix`,) and
+        a bool mask of which pixels any window actually covered -- pixels
+        outside it hold `fill_value` and must not be read as data.
+
+    Raises:
+        ValueError if `images` and `windows` differ in length, or an image's
+            shape doesn't match `pix.image_size_pix`.
+    """
+    if len(images) != len(windows):
+        raise ValueError(
+            f"{len(images)} images but {len(windows)} windows; they must correspond"
+        )
+
+    npix = hp.nside2npix(nside)
+    out = np.full(npix, fill_value, dtype=float)
+    best_margin = np.full(npix, -np.inf, dtype=float)
+    covered = np.zeros(npix, dtype=bool)
+
+    for image, window in zip(images, windows):
+        image = np.asarray(image)
+        if image.shape != tuple(pix.image_size_pix):
+            raise ValueError(
+                f"image shape {image.shape} != pix.image_size_pix "
+                f"{tuple(pix.image_size_pix)}"
+            )
+        healpix_indices, rows, cols, margin = window_to_healpix_indices(
+            window, pix, nside
+        )
+        if healpix_indices.size == 0:
+            continue
+        # Only overwrite where this window sees the pixel more centrally
+        # than any window already did.
+        wins = margin > best_margin[healpix_indices]
+        chosen = healpix_indices[wins]
+        out[chosen] = image[rows[wins], cols[wins]]
+        best_margin[chosen] = margin[wins]
+        covered[chosen] = True
+
+    return out, covered

@@ -428,3 +428,38 @@ def test_tile_footprint_windows_overlap_footprint(footprint):
     tiles = tile_footprint(footprint["mask"], footprint["nside"], tile_size_deg=15.0)
     for w in tiles:
         assert _window_overlaps_footprint(w, footprint["mask"], footprint["nside"])
+
+
+def test_tile_footprint_stride_produces_overlapping_tiles():
+    """Overlapping tiles are what give stitch_windows_to_healpix a choice of
+    source window per sky pixel; with the default (abutting) tiles every
+    pixel has exactly one source, edge pixels included."""
+    nside = 64
+    footprint = np.zeros(hp.nside2npix(nside), dtype=bool)
+    ra, dec = hp.pix2ang(nside, np.arange(footprint.size), lonlat=True)
+    footprint[(np.abs(dec + 30.0) < 8.0) & (np.abs(ra - 20.0) < 12.0)] = True
+
+    abutting = tile_footprint(footprint, nside, tile_size_deg=5.0)
+    overlapping = tile_footprint(footprint, nside, tile_size_deg=5.0, stride_deg=2.5)
+
+    assert len(overlapping) > len(abutting)
+    # Halving the stride roughly quadruples the tile count in 2-D.
+    assert len(overlapping) > 2 * len(abutting)
+
+
+def test_tile_footprint_default_stride_is_unchanged():
+    nside = 64
+    footprint = np.zeros(hp.nside2npix(nside), dtype=bool)
+    ra, dec = hp.pix2ang(nside, np.arange(footprint.size), lonlat=True)
+    footprint[(np.abs(dec + 30.0) < 8.0) & (np.abs(ra - 20.0) < 12.0)] = True
+
+    assert tile_footprint(footprint, nside, tile_size_deg=5.0) == tile_footprint(
+        footprint, nside, tile_size_deg=5.0, stride_deg=5.0
+    )
+
+
+def test_tile_footprint_rejects_a_non_positive_stride():
+    nside = 64
+    footprint = np.ones(hp.nside2npix(nside), dtype=bool)
+    with pytest.raises(ValueError, match="stride_deg"):
+        tile_footprint(footprint, nside, tile_size_deg=5.0, stride_deg=0.0)

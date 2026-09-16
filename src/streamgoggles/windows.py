@@ -253,8 +253,9 @@ def tile_footprint(
     nside: int,
     tile_size_deg: float = 12.8,
     tilt_deg: float = 0.0,
+    stride_deg: float | None = None,
 ) -> list[Window]:
-    """Generate regular grid of non-overlapping tiles covering footprint.
+    """Generate a regular grid of tiles covering the footprint.
 
     Tiles the background footprint with a regular grid (fixed tilt).
     This is for full-survey inference (Phase 2-adjacent), NOT for labeled
@@ -265,6 +266,13 @@ def tile_footprint(
         nside: HEALPix NSIDE parameter.
         tile_size_deg: Tile size (degrees).
         tilt_deg: Fixed position angle for all tiles (degrees).
+        stride_deg: Spacing between tile centers (degrees). Defaults to
+            `tile_size_deg`, i.e. tiles that abut without overlapping.
+            Pass something smaller to make them **overlap**, which is what
+            `matched_filter.stitch_windows_to_healpix` needs in order to
+            have a choice of window per sky pixel: with abutting tiles every
+            pixel has exactly one source, including the edge pixels that
+            were predicted with the least surrounding context.
 
     Returns:
         List of Window objects tiling the footprint.
@@ -278,6 +286,10 @@ def tile_footprint(
     tiled correctly — not handled here, matching the same documented
     limitation as the study-region centroid (PLAN.md).
     """
+    step_deg = tile_size_deg if stride_deg is None else stride_deg
+    if step_deg <= 0:
+        raise ValueError(f"stride_deg must be > 0, got {step_deg}")
+
     valid_pixels = np.flatnonzero(background_footprint)
     if valid_pixels.size == 0:
         return []
@@ -291,7 +303,7 @@ def tile_footprint(
         band_mask = np.abs(dec - dec_center) <= tile_size_deg / 2.0
         if band_mask.any():
             cos_dec = max(np.cos(np.radians(dec_center)), 1e-6)
-            ra_step = tile_size_deg / cos_dec
+            ra_step = step_deg / cos_dec
             ra_band = ra[band_mask]
             ra_min, ra_max = float(ra_band.min()), float(ra_band.max())
 
@@ -310,6 +322,6 @@ def tile_footprint(
                     )
                 ra_center += ra_step
 
-        dec_center += tile_size_deg
+        dec_center += step_deg
 
     return windows

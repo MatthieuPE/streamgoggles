@@ -17,8 +17,11 @@ from streamgoggles.matched_filter import (
     make_raw_map,
     native_pixel_scale_deg,
     project,
+    stitch_windows_to_healpix,
+    window_to_healpix_indices,
     world_to_tangent_plane,
 )
+from streamgoggles.windows import Window
 
 pytestmark = pytest.mark.matched_filter
 
@@ -574,3 +577,138 @@ def test_crop_window_matches_manual_project_with_overrides():
 
     np.testing.assert_array_equal(image, expected_image)
     np.testing.assert_array_equal(image_valid_mask, expected_valid_mask)
+
+
+# ---------------------------------------------------------------------------
+# Deprojection back to HEALPix, and crop-and-stitch (PLAN.md section 6.19)
+# ---------------------------------------------------------------------------
+
+
+def _smooth_sky_field(nside):
+    """A position-dependent field, so any mis-mapping shows up as error
+    rather than hiding inside a constant."""
+    ra, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    return (np.sin(np.radians(ra) * 3) * np.cos(np.radians(dec) * 2)).astype(float)
+
+
+@pytest.mark.parametrize("rotation_deg", [0.0, 37.0])
+def test_stitch_round_trips_a_projected_window(rotation_deg):
+    """crop_window projects HEALPix -> image; stitching must put it back
+    where it came from. Checked with a rotated window too, since rotation is
+    folded into the projection rather than applied afterwards -- an inverse
+    that ignored it would round-trip fine at 0 deg and be silently wrong
+    everywhere else."""
+    nside = 256
+    full = _smooth_sky_field(nside)
+    valid = np.ones(hp.nside2npix(nside), dtype=bool)
+    pix = PixelizationSpec(nside=nside, image_size_pix=(48, 48))
+    size = 48 * pix.pixel_scale_deg
+    window = Window(
+        center_ra=30.0,
+        center_dec=-20.0,
+        rotation_deg=rotation_deg,
+        width_deg=size,
+        height_deg=size,
+    )
+
+    image, _ = crop_window(full, valid, window, pix)
+    restored, covered = stitch_windows_to_healpix([image], [window], pix, nside)
+
+    assert covered.sum() > 1000
+    # Nearest-neighbour sampling at comparable image/HEALPix resolution, so
+    # a small discrepancy is expected; a wrong mapping would be order-1 on
+    # this field, which spans [-1, 1].
+    assert np.abs(restored[covered] - full[covered]).max() < 0.05
+
+
+def test_stitch_leaves_uncovered_pixels_as_fill():
+    nside = 128
+    pix = PixelizationSpec(nside=nside, image_size_pix=(16, 16))
+    window = Window(center_ra=10.0, center_dec=0.0, width_deg=3.0, height_deg=3.0)
+    image = np.ones((16, 16))
+
+    restored, covered = stitch_windows_to_healpix([image], [window], pix, nside)
+
+    assert covered.any()
+    assert not covered.all(), "one small window cannot cover the whole sky"
+    assert np.all(np.isnan(restored[~covered])), (
+        "uncovered pixels must be fill, never silently 0.0 -- a caller "
+        "reading them as data would see a sky full of confident non-detections"
+    )
+
+
+def test_stitch_never_averages_overlapping_windows():
+    """The point of crop-and-stitch: the model's output is a probability
+    meant to be thresholded, and the mean of 0.9 and 0.1 is 0.5, which is a
+    different claim from a genuine 0.5. Every stitched value must be one a
+    window actually produced."""
+    nside = 256
+    pix = PixelizationSpec(nside=nside, image_size_pix=(48, 48))
+    left = Window(center_ra=30.0, center_dec=-20.0, width_deg=5.0, height_deg=5.0)
+    right = Window(center_ra=31.0, center_dec=-20.0, width_deg=5.0, height_deg=5.0)
+
+    restored, covered = stitch_windows_to_healpix(
+        [np.full((48, 48), 1.0), np.full((48, 48), 2.0)], [left, right], pix, nside
+    )
+
+    assert set(np.unique(restored[covered])) <= {1.0, 2.0}
+
+
+def test_stitch_prefers_the_window_where_a_pixel_is_most_central():
+    """Overlaps are resolved by edge margin: a pixel is taken from the
+    window that saw it with the most surrounding context."""
+    nside = 256
+    pix = PixelizationSpec(nside=nside, image_size_pix=(48, 48))
+    left = Window(center_ra=30.0, center_dec=-20.0, width_deg=5.0, height_deg=5.0)
+    right = Window(center_ra=31.0, center_dec=-20.0, width_deg=5.0, height_deg=5.0)
+
+    idx_l, _, _, margin_l = window_to_healpix_indices(left, pix, nside)
+    idx_r, _, _, margin_r = window_to_healpix_indices(right, pix, nside)
+    shared = np.intersect1d(idx_l, idx_r)
+    assert shared.size > 0, "windows must overlap for this to mean anything"
+
+    restored, _ = stitch_windows_to_healpix(
+        [np.full((48, 48), 1.0), np.full((48, 48), 2.0)], [left, right], pix, nside
+    )
+
+    probe = shared[shared.size // 2]
+    expected = (
+        1.0
+        if margin_l[np.searchsorted(idx_l, probe)]
+        > margin_r[np.searchsorted(idx_r, probe)]
+        else 2.0
+    )
+    assert restored[probe] == expected
+
+
+def test_stitch_rejects_mismatched_inputs():
+    nside = 128
+    pix = PixelizationSpec(nside=nside, image_size_pix=(16, 16))
+    window = Window(center_ra=10.0, center_dec=0.0, width_deg=3.0, height_deg=3.0)
+
+    with pytest.raises(ValueError, match="correspond"):
+        stitch_windows_to_healpix([np.ones((16, 16))], [window, window], pix, nside)
+    with pytest.raises(ValueError, match="image shape"):
+        stitch_windows_to_healpix([np.ones((8, 8))], [window], pix, nside)
+
+
+def test_window_to_healpix_indices_are_unique_and_inside_the_image():
+    """Each HEALPix pixel must map to exactly one image pixel -- iterating
+    HEALPix-side (rather than image-side) is what keeps the result gap-free
+    and duplicate-free."""
+    nside = 256
+    pix = PixelizationSpec(nside=nside, image_size_pix=(32, 32))
+    window = Window(
+        center_ra=45.0,
+        center_dec=10.0,
+        rotation_deg=15.0,
+        width_deg=6.0,
+        height_deg=6.0,
+    )
+
+    indices, rows, cols, margin = window_to_healpix_indices(window, pix, nside)
+
+    assert indices.size == np.unique(indices).size
+    assert rows.min() >= 0 and rows.max() < 32
+    assert cols.min() >= 0 and cols.max() < 32
+    assert margin.max() > margin.min(), "margin must vary from edge to centre"
