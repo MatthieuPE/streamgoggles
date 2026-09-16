@@ -4,6 +4,10 @@ import functools
 import numpy as np
 import ugali.isochrone
 
+# Attribute used to tag isochrones this module built, so their cached
+# sample() results can be found again.
+_PARAMS_KEY_ATTR = "_streamgoggles_params_key"
+
 
 @functools.lru_cache(maxsize=32)
 def _isochrone_factory_cached(params_key):
@@ -68,7 +72,59 @@ def _build_isochrone(iso_sub_params):
         # object.__setattr__ bypasses ugali's overridden __setattr__, which
         # would route a name that is itself a parameter key into setp().
         object.__setattr__(isochrone, name, copies_by_id[id(source)])
+    # Lets sample_isochrone() below find this instance's cache entry.
+    object.__setattr__(isochrone, _PARAMS_KEY_ATTR, params_key)
     return isochrone
+
+
+@functools.lru_cache(maxsize=64)
+def _isochrone_sample_cached(params_key, mass_steps):
+    """`isochrone.sample(mass_steps)` memoized on the isochrone's identity.
+
+    Safe because `sample()` is deterministic (verified: two calls return
+    bit-identical arrays) and **independent of `distance_modulus`** --
+    ugali's `sample()` returns absolute magnitudes and
+    `convert_N_to_luminosity` adds the distance modulus afterwards, so the
+    same cached result is correct at every distance (also verified
+    directly: sample() output is identical for dm=16 and dm=25). The
+    distance modulus therefore must NOT be part of this key -- while it
+    very much does change the *conversion* result, which is why nothing
+    here caches that.
+
+    Worth caching because `convert_SurfaceBrightness_to_N`'s brentq
+    inversion calls this 44 times per conversion with an isochrone that
+    never changes during the inversion, at ~1.3ms each (~57ms of a ~73ms
+    conversion). Unlike the factory cache this pays off even when
+    (age, z) never repeat, which is the case that matters for scanning a
+    full parameter grid.
+
+    Returned arrays are marked read-only: they are shared between callers,
+    so an in-place modification would silently corrupt every later use.
+    """
+    sampled = _isochrone_factory_cached(params_key).sample(mass_steps=mass_steps)
+    # ugali returns ONE 2-D array here, not a tuple of five: iterating it and
+    # marking each row read-only would only flag throwaway views and leave
+    # the shared base writable (a test caught exactly that). Flag the base.
+    if isinstance(sampled, np.ndarray):
+        sampled.flags.writeable = False
+    else:
+        for array in sampled:
+            if isinstance(array, np.ndarray):
+                array.flags.writeable = False
+    return sampled
+
+
+def sample_isochrone(isochrone, mass_steps):
+    """`isochrone.sample(mass_steps)`, served from cache when possible.
+
+    Falls back to calling through for any isochrone this module did not
+    build (it carries no cache key), so behavior is unchanged for callers
+    passing their own object.
+    """
+    params_key = getattr(isochrone, _PARAMS_KEY_ATTR, None)
+    if params_key is None:
+        return isochrone.sample(mass_steps=mass_steps)
+    return _isochrone_sample_cached(params_key, mass_steps)
 
 
 def convert_N_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream_length=None, stream_width = None, isochrone_config_path =None,
@@ -114,7 +170,7 @@ def convert_N_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream
 
 
 def convert_N_to_luminosity(N, isochrone, mag_bounds= (None,24),verbose=False, band= 'r'):
-    mass_init, mass_pdf, mass_act, mag_g, mag_r = isochrone.sample(mass_steps=10000)
+    mass_init, mass_pdf, mass_act, mag_g, mag_r = sample_isochrone(isochrone, 10000)
     mag_g, mag_r = mag_g + isochrone.distance_modulus, mag_r + isochrone.distance_modulus
     if band == 'g':
         mag1 = mag_g

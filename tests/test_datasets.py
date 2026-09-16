@@ -12,6 +12,8 @@ survey noise already; synthetic Gaussian noise would teach a mismatched
 noise model for a counting/denoising target).
 """
 
+import os
+
 import numpy as np
 import pytest
 
@@ -20,6 +22,8 @@ from streamgoggles.background_sources import StreamObsLightBackgroundSource, Stu
 from streamgoggles.config import DistributionType, EvalGrid, ParameterSpec, StreamConfig
 from streamgoggles.datasets.stream_map_dataset import (
     StreamMapDataset,
+    TransformedDataset,
+    default_num_workers,
     stream_map_collate_fn,
 )
 from streamgoggles.datasets.transforms import RobustNormalizer, StreamMapTransform
@@ -888,3 +892,207 @@ def test_real_prepared_data_stays_masked_after_augmentation(
         for c in range(prepared["map_stack"].shape[0]):
             assert np.all(prepared["map_stack"][c][invalid] == 0.0)
     assert saw_any_invalid  # otherwise this test checked nothing meaningful
+
+
+# ---------------------------------------------------------------------------
+# DataLoader workers (PLAN.md section 6.18)
+# ---------------------------------------------------------------------------
+
+
+class _FakeWorkerInfo:
+    def __init__(self, worker_id, num_workers):
+        self.id = worker_id
+        self.num_workers = num_workers
+
+
+def test_dataloader_workers_get_distinct_rng_streams(
+    monkeypatch, real_background, injector, fixed_config, sim_store
+):
+    """The silent failure this guards against: DataLoader workers each get a
+    copy of the dataset carrying `rng` in the parent's exact state, so every
+    worker spawns the same children and generates IDENTICAL samples --
+    measured 2 unique out of 8 at num_workers=4, with no error and no
+    slowdown to reveal it. Simulated here rather than spawning real workers,
+    which costs ~12s of process startup for the same assertion."""
+    bg, _filters, _pix = real_background
+
+    def draws_for_worker(worker_id):
+        dataset = StreamMapDataset(
+            config=fixed_config,
+            background=bg,
+            injector=injector,
+            store=sim_store,
+            eval_mode=False,
+            steps_per_epoch=4,
+            rng=np.random.default_rng(1234),
+        )
+        monkeypatch.setattr(
+            "streamgoggles.datasets.stream_map_dataset._torch_worker_info",
+            lambda: _FakeWorkerInfo(worker_id, 3),
+        )
+        dataset._ensure_worker_local_rng()
+        return [int(dataset.rng.spawn(1)[0].integers(0, 10**9)) for _ in range(3)]
+
+    per_worker = [draws_for_worker(i) for i in range(3)]
+    flat = [value for draws in per_worker for value in draws]
+    assert len(set(flat)) == len(flat), (
+        f"workers produced overlapping streams: {per_worker}"
+    )
+
+
+def test_rng_untouched_outside_a_dataloader_worker(
+    real_background, injector, fixed_config, sim_store
+):
+    """Outside a worker there is nothing to disambiguate, so the RNG must be
+    left exactly as the caller provided it -- single-process runs stay
+    bit-for-bit reproducible."""
+    bg, _filters, _pix = real_background
+    dataset = StreamMapDataset(
+        config=fixed_config,
+        background=bg,
+        injector=injector,
+        store=sim_store,
+        eval_mode=False,
+        steps_per_epoch=4,
+        rng=np.random.default_rng(7),
+    )
+    before = dataset.rng
+    dataset._ensure_worker_local_rng()
+    assert dataset.rng is before
+
+
+def test_default_num_workers_never_takes_the_whole_machine(monkeypatch):
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert default_num_workers(max_workers=64, reserve=2) <= (os.cpu_count() or 1) - 2
+
+
+def test_default_num_workers_respects_explicit_override(monkeypatch):
+    monkeypatch.setenv("STREAMGOGGLES_NUM_WORKERS", "3")
+    assert default_num_workers() == 3
+    # 0 must be honored too: it is how a job script disables workers.
+    monkeypatch.setenv("STREAMGOGGLES_NUM_WORKERS", "0")
+    assert default_num_workers() == 0
+
+
+def test_default_num_workers_ignores_a_malformed_override(monkeypatch):
+    monkeypatch.setenv("STREAMGOGGLES_NUM_WORKERS", "lots")
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    assert default_num_workers() >= 0  # falls through instead of raising
+
+
+def test_default_num_workers_respects_a_slurm_allocation(monkeypatch):
+    """A job given 4 CPUs on a 128-core node must not start 126 workers."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
+    assert default_num_workers(max_workers=64, reserve=2) == 2
+
+
+def test_default_num_workers_returns_zero_on_a_tiny_allocation(monkeypatch):
+    """One CPU means nothing to spare -- 0 makes DataLoader load in the main
+    process, which is correct rather than an error."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "1")
+    assert default_num_workers() == 0
+
+
+class _CountableToyDataset:
+    """Module-level (therefore picklable under the "spawn" start method) toy
+    dataset, so the worker-count test doesn't pay streamobs import costs in
+    every spawned process."""
+
+    def __len__(self):
+        return 8
+
+    def __getitem__(self, idx):
+        return np.float32(idx)
+
+
+@pytest.mark.parametrize("requested", [0, 1, 2])
+def test_dataloader_creates_exactly_the_requested_workers(requested):
+    """The resource claim, checked against reality rather than the argument
+    we passed: a DataLoader must spin up exactly `num_workers` processes --
+    no hidden extras, and none at all when it is 0."""
+    import multiprocessing
+
+    from torch.utils.data import DataLoader
+
+    before = set(multiprocessing.active_children())
+    kwargs = {"persistent_workers": True} if requested else {}
+    loader = DataLoader(
+        _CountableToyDataset(), batch_size=1, num_workers=requested, **kwargs
+    )
+    iterator = iter(loader)
+    next(iterator)
+    try:
+        spawned = set(multiprocessing.active_children()) - before
+        assert len(spawned) == requested
+    finally:
+        del iterator, loader
+
+
+def test_default_num_workers_respects_cpu_affinity(monkeypatch):
+    """A container or `taskset` confines the process to a subset of the
+    machine's cores; os.cpu_count() cannot see that, sched_getaffinity can.
+    Pinned to 6 cores of a bigger machine -> 6-2 = 4, not the machine's count."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda pid: set(range(6)), raising=False
+    )
+    assert default_num_workers(max_workers=64, reserve=2) == 4
+
+
+def test_default_num_workers_caps_on_a_large_machine(monkeypatch):
+    """The cap is what stops a 128-core node from getting 126 workers even
+    when the whole node really is allocated."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "128")
+    assert default_num_workers(max_workers=4, reserve=2) == 4
+
+
+def test_default_num_workers_prefers_allocation_over_machine_size(monkeypatch):
+    """Priority order matters: a SLURM allocation must win over the physical
+    machine, or a small job on a big node oversubscribes it."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda pid: set(range(128)), raising=False
+    )
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
+    assert default_num_workers(max_workers=64, reserve=2) == 2
+
+
+def _times_ten(value):
+    return value * 10
+
+
+def test_transformed_dataset_is_importable_and_picklable():
+    """The regression this guards: `TransformedDataset` used to be defined
+    in a notebook cell, and under the "spawn" start method (macOS/Windows
+    default) DataLoader workers receive the dataset by pickle and must
+    IMPORT its class. A `__main__`-defined class fails there with
+    `AttributeError: Can't get attribute ... on <module '__main__'>`, which
+    broke the training notebook the moment workers were enabled -- while
+    every unit test still passed, because none of them pickled it."""
+    import pickle
+
+    # A module-level callable, not a lambda: the real transform
+    # (StreamMapTransform) is a package class, and a lambda would fail
+    # pickling for its own unrelated reason and mask what is under test.
+    dataset = TransformedDataset([1, 2, 3], _times_ten)
+    assert TransformedDataset.__module__ != "__main__"
+
+    restored = pickle.loads(pickle.dumps(dataset))
+    assert len(restored) == 3
+    assert restored[0] == 10
+
+
+def test_transformed_dataset_applies_transform_and_forwards_attributes():
+    class _Base(list):
+        eval_mode = True
+
+    wrapped = TransformedDataset(_Base([1, 2]), lambda x: x + 100)
+    assert [wrapped[i] for i in range(len(wrapped))] == [101, 102]
+    # Unknown attributes fall through to the wrapped dataset, which is how
+    # evaluate_on_grid reads `eval_mode`/`eval_grid` through the wrapper.
+    assert wrapped.eval_mode is True

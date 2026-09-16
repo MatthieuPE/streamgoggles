@@ -8,6 +8,7 @@ inverse would silently corrupt config.py's richness_kind resolution
 (injector.py's resolve_richness_to_nstars).
 """
 
+import numpy as np
 import pytest
 import ugali.isochrone
 
@@ -305,3 +306,180 @@ def test_cached_conversions_differ_across_age_and_metallicity(isochrone_params):
     # Interleaving must not contaminate: re-asking gives the same answers.
     assert n_for(10.0, 0.0004) == a
     assert n_for(13.0, 0.0004) == b
+
+
+# ---------------------------------------------------------------------------
+# isochrone.sample() cache (PLAN.md section 6.18)
+# ---------------------------------------------------------------------------
+
+
+def test_sample_isochrone_is_cached_within_and_across_conversions(isochrone_params):
+    """brentq calls sample() 44x per conversion with an isochrone that never
+    changes during the inversion, at ~1.3ms each. Caching it pays off even
+    when (age, z) never repeat -- the case that matters for a grid scan."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    inject_utils._isochrone_sample_cached.cache_clear()
+
+    inject_utils.convert_SurfaceBrightness_to_N(
+        32.0,
+        stream_length=8.0,
+        stream_width=0.2,
+        isochrone_params=isochrone_params,
+        band="r",
+    )
+
+    info = inject_utils._isochrone_sample_cached.cache_info()
+    assert info.misses == 1, "sample() should be computed once per isochrone"
+    assert info.hits > 10, "the rest of the inversion should hit the cache"
+
+
+def test_sample_isochrone_cache_is_independent_of_distance_modulus(isochrone_params):
+    """The subtle half of the key design: ugali's sample() returns absolute
+    magnitudes and the distance modulus is added afterwards, so dm must NOT
+    be part of the sample() cache key -- while it must still change the
+    conversion result. Both halves are asserted here, because getting either
+    backwards is silent."""
+    cfg = isochrone_params["isochrone"]
+    isochrone = inject_utils._build_isochrone(cfg)
+
+    isochrone.distance_modulus = 16.0
+    near = inject_utils.sample_isochrone(isochrone, 10000)
+    isochrone.distance_modulus = 19.0
+    far = inject_utils.sample_isochrone(isochrone, 10000)
+    for a, b in zip(near, far):
+        np.testing.assert_array_equal(a, b)
+
+    def n_at(dm):
+        params = {"isochrone": cfg, "distance_modulus": {"center": {"value": dm}}}
+        return inject_utils.convert_SurfaceBrightness_to_N(
+            32.0,
+            stream_length=8.0,
+            stream_width=0.2,
+            isochrone_params=params,
+            band="r",
+        )
+
+    assert n_at(16.0) != n_at(17.0), "distance must still change the answer"
+
+
+def test_cached_sample_arrays_are_read_only(isochrone_params):
+    """The arrays are shared between callers, so an in-place write would
+    silently corrupt every later conversion. Fail loudly instead."""
+    isochrone = inject_utils._build_isochrone(isochrone_params["isochrone"])
+    arrays = inject_utils.sample_isochrone(isochrone, 10000)
+    with pytest.raises(ValueError):
+        arrays[0][0] = 1.0
+
+
+def test_conversion_still_responds_to_every_parameter(isochrone_params):
+    """End-to-end guard over all the axes a full grid scan will vary: each
+    must change the resolved star count, with both caches active."""
+    cfg = isochrone_params["isochrone"]
+
+    def n_for(age=12.5, z=0.0002, dm=16.0, width=0.2, length=8.0):
+        params = {
+            "isochrone": {**cfg, "age": age, "z": z},
+            "distance_modulus": {"center": {"value": dm}},
+        }
+        return inject_utils.convert_SurfaceBrightness_to_N(
+            32.0,
+            stream_length=length,
+            stream_width=width,
+            isochrone_params=params,
+            band="r",
+        )
+
+    base = n_for()
+    assert n_for(dm=17.0) != base
+    assert n_for(age=10.0) != base
+    assert n_for(z=0.0008) != base
+    assert n_for(width=0.4) != base
+    assert n_for(length=12.0) != base
+    assert n_for() == base, "re-asking must be stable"
+
+
+def test_sample_cache_differs_across_isochrones(isochrone_params):
+    """The sample() cache is keyed on the isochrone's identity, so a wrong
+    key would serve one population's magnitudes for another -- silently, and
+    only visibly as subtly wrong star counts."""
+    inject_utils._isochrone_sample_cached.cache_clear()
+    base = isochrone_params["isochrone"]
+
+    young = inject_utils.sample_isochrone(
+        inject_utils._build_isochrone({**base, "age": 8.0}), 10000
+    )
+    old = inject_utils.sample_isochrone(
+        inject_utils._build_isochrone({**base, "age": 13.5}), 10000
+    )
+    metal_rich = inject_utils.sample_isochrone(
+        inject_utils._build_isochrone({**base, "z": 0.002}), 10000
+    )
+
+    assert not np.array_equal(young, old)
+    assert not np.array_equal(young, metal_rich)
+
+
+def test_caches_stay_correct_under_eviction(isochrone_params):
+    """'Works for different values' has to keep holding once there are more
+    distinct parameter sets than the caches can hold. Cycle through more
+    than maxsize, forcing eviction, and every combination must still return
+    exactly what it returned before anything was evicted."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    inject_utils._isochrone_sample_cached.cache_clear()
+    maxsize = inject_utils._isochrone_factory_cached.cache_info().maxsize
+    base = isochrone_params["isochrone"]
+
+    # Vary metallicity in small steps: enough distinct cache KEYS to force
+    # eviction, while every value stays inside ugali's accepted range.
+    metallicities = [0.0002 + 1e-6 * i for i in range(maxsize + 4)]
+    first_pass = {
+        z: inject_utils.sample_isochrone(
+            inject_utils._build_isochrone({**base, "z": z}), 10000
+        ).copy()
+        for z in metallicities
+    }
+    assert inject_utils._isochrone_factory_cached.cache_info().currsize <= maxsize, (
+        "the cache must stay bounded rather than growing without limit"
+    )
+
+    # The earliest entries have certainly been evicted by now; recomputing
+    # them must reproduce the original values exactly.
+    probes = (
+        metallicities[0],
+        metallicities[1],
+        metallicities[len(metallicities) // 2],
+        metallicities[-1],
+    )
+    for z in probes:
+        again = inject_utils.sample_isochrone(
+            inject_utils._build_isochrone({**base, "z": z}), 10000
+        )
+        np.testing.assert_array_equal(again, first_pass[z])
+
+
+def test_conversions_stable_when_parameter_sets_are_interleaved(isochrone_params):
+    """Round-robin across several parameter sets, the way a grid scan will:
+    each must keep returning its own answer rather than drifting toward
+    whichever was asked for most recently."""
+    base = isochrone_params["isochrone"]
+    combos = [(10.0, 0.0002, 16.0), (12.5, 0.0008, 17.0), (13.5, 0.0002, 15.5)]
+
+    def n_for(age, z, dm):
+        params = {
+            "isochrone": {**base, "age": age, "z": z},
+            "distance_modulus": {"center": {"value": dm}},
+        }
+        return inject_utils.convert_SurfaceBrightness_to_N(
+            32.0,
+            stream_length=8.0,
+            stream_width=0.2,
+            isochrone_params=params,
+            band="r",
+        )
+
+    expected = {combo: n_for(*combo) for combo in combos}
+    assert len(set(expected.values())) == len(combos), "combos must be distinguishable"
+
+    for _ in range(3):
+        for combo in combos:
+            assert n_for(*combo) == expected[combo]

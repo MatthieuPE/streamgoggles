@@ -1,4 +1,4 @@
-streamgoggles.inject\_utils
+﻿streamgoggles.inject\_utils
 ===========================
 
 .. automodule:: streamgoggles.inject_utils
@@ -15,4 +15,5 @@ streamgoggles.inject\_utils
       convert_SurfaceBrightness_to_N
       fluxToMag
       magToFlux
+      sample_isochrone
    

@@ -169,6 +169,85 @@ but they generally want different seeds there — give them separate stores
 first silently win.
 ```
 
+### Parallel sample generation: what each worker actually does
+
+Sample generation is CPU-bound and single-threaded, so
+`DataLoader(num_workers=N)` is the cheapest real speedup available
+(0.119 → 0.049 s/sample measured with 4 workers). What follows is exactly
+what is shared between workers and what each one produces on its own,
+measured by instrumenting real workers rather than inferred:
+
+**Shared — identical in every worker:**
+
+- **The background.** The catalog and its cached per-`(filter, distance)`
+  HEALPix maps are built **once, in the parent process, before any worker
+  exists**, and every worker then holds the same content (copy-on-write
+  under Linux `fork`, an unpickled copy under macOS/Windows `spawn`).
+  Verified: all 4 workers reported a byte-identical background map
+  (checksum `7889d88afb`, 375,677 stars). Workers do **not** regenerate a
+  background, and the "each matched filter touches the background exactly
+  once" guarantee is unaffected — filters were already applied upstream.
+- **The matched filters, injector configuration and normalizer**, for the
+  same reason.
+
+**Independent — drawn fresh by each worker, for every sample:**
+
+- **The RNG stream** (each worker takes its own deterministic child — see
+  the warning below),
+- **the free parameters** (e.g. which `richness` this sample gets),
+- **the stream realization** (a new population drawn from the isochrone),
+- **the placement** — sky position *and* orientation,
+- **the window**, and
+- **the survey noise / detection draw**.
+
+So a worker is not producing a variation of a shared stream: it runs the
+whole of `inject_single_stream` itself and emits a complete, independent
+sample. In the same measurement, 8 samples across 4 workers gave **8
+distinct windows and 8 distinct maps**, with richness varying freely
+between them, against that one shared background.
+
+```{warning}
+This independence only holds because it was made to. Workers receive a
+copy of the dataset carrying `rng` in the parent's exact state, so by
+default every worker spawns the same children and generates **identical
+samples** — measured at **2 unique out of 8** with `num_workers=4`, with
+no error and no slowdown to reveal it. `StreamMapDataset` gives each
+worker its own deterministic child stream to prevent this; outside a
+worker the RNG is left untouched, so single-process runs stay
+reproducible.
+```
+
+**Eval mode is unaffected by worker count.** Eval samples take their seed
+from the grid point (`EvalGrid.seeds[idx]`), never from the dataset RNG,
+so the same index yields the same sample at any `num_workers` — metrics
+stay comparable across runs that parallelize differently.
+
+**Per-worker caches.** The isochrone caches
+({doc}`data_generation`) are per-process, so each worker builds the
+isochrone once: 4 constructions instead of 1, then hits thereafter
+(measured: `misses=1` in every worker). Negligible against what they save.
+
+**Choosing the count:** `default_num_workers()` deliberately does not take
+the whole machine, and respects a cluster allocation rather than the
+physical node — `SLURM_CPUS_PER_TASK`, then `os.sched_getaffinity` (the
+cpuset the process is actually confined to), with `os.cpu_count()` only as
+a last resort, so a 4-CPU job on a 128-core node gets a couple of workers
+rather than 126. `STREAMGOGGLES_NUM_WORKERS` overrides it, including `0`.
+
+```{important}
+Pass `persistent_workers=True` whenever `num_workers > 0`. Worker startup
+costs ~12s under `spawn` (macOS/Windows, where the dataset is pickled and
+streamobs re-imported per worker) and ~0 under `fork` (Linux); without
+persistence that is paid **every epoch**, which made a first attempt
+**21x slower** than using no workers at all.
+
+Also note that anything reachable from the dataset must be **importable**,
+not just picklable, under `spawn`: a class defined in a notebook cell
+fails with `AttributeError: Can't get attribute ... on <module
+'__main__'>`. That is why `TransformedDataset` lives in this package
+rather than in the notebook that uses it.
+```
+
 ### `DataLoader` and `stream_map_collate_fn`
 
 Wrapping this dataset in a real `torch.utils.data.DataLoader` needs a

@@ -1,4 +1,4 @@
-streamgoggles.datasets.stream\_map\_dataset
+﻿streamgoggles.datasets.stream\_map\_dataset
 ===========================================
 
 .. automodule:: streamgoggles.datasets.stream_map_dataset
@@ -8,6 +8,7 @@ streamgoggles.datasets.stream\_map\_dataset
 
    .. autosummary::
    
+      default_num_workers
       stream_map_collate_fn
    
    .. rubric:: Classes
@@ -15,4 +16,5 @@ streamgoggles.datasets.stream\_map\_dataset
    .. autosummary::
    
       StreamMapDataset
+      TransformedDataset
    

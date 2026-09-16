@@ -15,6 +15,7 @@ stream samples (params={richness, morphology, ...}) in the same batch.
 """
 
 import logging
+import os
 
 import numpy as np
 
@@ -39,6 +40,127 @@ def _sample_to_dict(sample: Sample) -> dict:
         "params": sample.params,
         "metadata": sample.metadata,
     }
+
+
+def _torch_worker_info():
+    """`torch.utils.data.get_worker_info()`, or None outside a worker.
+
+    Imported lazily so this module stays importable without torch, the same
+    convention the rest of the file follows.
+    """
+    try:
+        from torch.utils.data import get_worker_info
+    except ImportError:
+        return None
+    return get_worker_info()
+
+
+def default_num_workers(max_workers: int = 4, reserve: int = 2) -> int:
+    """A conservative, portable `DataLoader(num_workers=...)` for this host.
+
+    Sample generation is CPU-bound and single-threaded, so workers are the
+    cheapest real speedup available (see `StreamMapDataset`). This picks a
+    count that is safe to commit to a config file and still correct on a
+    different machine -- deliberately NOT "all the cores":
+
+    - **Never takes the whole machine.** `reserve` cores are left for the
+      training process itself and for whatever else is running; on a shared
+      login node or a workstation, saturating every core is antisocial, and
+      on a cluster it is usually also wrong (see below). `max_workers` caps
+      the count regardless of how large the machine is, since the benefit
+      flattens out well before the core count does.
+    - **Respects a cluster allocation rather than the physical machine.**
+      A SLURM job given 4 CPUs on a 128-core node must not start 126
+      workers. `SLURM_CPUS_PER_TASK` is honored when set, and
+      `os.sched_getaffinity` (Linux) reports the cpuset/taskset the process
+      is actually confined to, which containers and schedulers both use.
+      `os.cpu_count()` -- which reports the whole machine and ignores all of
+      that -- is only the last resort.
+    - **Always overridable** via `STREAMGOGGLES_NUM_WORKERS`, so a job
+      script can force a value (including 0) without code changes.
+
+    Returns 0 when there is nothing to spare, which makes `DataLoader` load
+    synchronously in the main process -- the safe default, not an error.
+    """
+    override = os.environ.get("STREAMGOGGLES_NUM_WORKERS")
+    if override is not None:
+        try:
+            return max(0, int(override))
+        except ValueError:
+            logger.warning(
+                "STREAMGOGGLES_NUM_WORKERS=%r is not an integer; ignoring it.",
+                override,
+            )
+
+    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+    if slurm_cpus is not None:
+        try:
+            available = int(slurm_cpus)
+        except ValueError:
+            available = None
+    else:
+        available = None
+
+    if available is None:
+        if hasattr(os, "sched_getaffinity"):
+            available = len(os.sched_getaffinity(0))
+        else:
+            available = os.cpu_count() or 1
+
+    return max(0, min(max_workers, available - reserve))
+
+
+class TransformedDataset:
+    """Applies a transform to every item of a dataset, forwarding any other
+    attribute access (e.g. `eval_mode`, `eval_grid`) to the wrapped dataset.
+
+    Lives here rather than being defined where it is used because
+    `DataLoader(num_workers>0)` must be able to *import* it. Under the
+    "spawn" start method (the default on macOS and Windows) workers receive
+    the dataset by pickle, and a class defined in a notebook cell or a
+    `__main__` script cannot be unpickled there -- it fails with
+    `AttributeError: Can't get attribute '...' on <module '__main__'>`,
+    which is how this was found: enabling workers broke the training
+    notebook outright.
+
+    Attributes:
+        base: the wrapped dataset.
+        transform: callable applied to each item returned by `base`.
+    """
+
+    def __init__(self, base, transform):
+        """Initialize.
+
+        Parameters:
+            base: dataset supporting `__len__`/`__getitem__`.
+            transform: callable applied to every item.
+        """
+        self.base = base
+        self.transform = transform
+
+    def __len__(self) -> int:
+        """Length of the wrapped dataset."""
+        return len(self.base)
+
+    def __getitem__(self, idx):
+        """Return the wrapped dataset's item at `idx`, transformed."""
+        return self.transform(self.base[idx])
+
+    def __getattr__(self, name):
+        """Forward unknown attributes to the wrapped dataset.
+
+        `base`/`transform` are refused explicitly rather than forwarded, and
+        that guard is load-bearing, not defensive noise: unpickling creates
+        the instance WITHOUT calling `__init__`, so `__dict__` is empty and
+        pickle's own probing (`__setstate__`, `__reduce_ex__`, ...) lands
+        here; forwarding would then look up `self.base`, which is itself
+        missing, and recurse until `RecursionError`. Since DataLoader
+        workers under "spawn" transfer this object by pickle, that would
+        break exactly the case this class was moved here to support.
+        """
+        if name in ("base", "transform"):
+            raise AttributeError(name)
+        return getattr(self.base, name)
 
 
 def stream_map_collate_fn(batch: list[dict]) -> dict:
@@ -175,6 +297,9 @@ class StreamMapDataset:
         self.eval_mode = eval_mode
         self.steps_per_epoch = steps_per_epoch
         self.rng = rng if rng is not None else np.random.default_rng()
+        # Set on first use inside a DataLoader worker; see
+        # _ensure_worker_local_rng for why sharing one stream is unsafe.
+        self._worker_id = None
         self.eval_grid = (
             (eval_grid if eval_grid is not None else build_eval_grid(config))
             if eval_mode
@@ -249,11 +374,32 @@ class StreamMapDataset:
 
         return self.store.get_or_generate(store_params, _generate, persist=True)
 
+    def _ensure_worker_local_rng(self) -> None:
+        """Give each `DataLoader` worker its own RNG stream.
+
+        Workers each receive a copy of this dataset -- forked or pickled
+        depending on the platform's start method -- carrying `rng` in
+        exactly the state the parent had. Without this, every worker spawns
+        the same children and generates **identical samples**: measured 2
+        unique samples out of 8 at `num_workers=4`, with no error and no
+        slowdown to reveal it, which would silently train the model on
+        duplicated data.
+
+        Each worker deterministically takes its own child of the shared
+        parent, so runs stay reproducible and workers stay independent.
+        """
+        worker_info = _torch_worker_info()
+        if worker_info is None or self._worker_id == worker_info.id:
+            return
+        self.rng = self.rng.spawn(worker_info.num_workers)[worker_info.id]
+        self._worker_id = worker_info.id
+
     def _get_training_sample(self, idx: int) -> Sample:
         if not 0 <= idx < self.steps_per_epoch:
             raise IndexError(
                 f"idx {idx} out of range for steps_per_epoch={self.steps_per_epoch}"
             )
+        self._ensure_worker_local_rng()
         (rng,) = self.rng.spawn(1)
 
         if rng.random() < self.config.background_fraction:
