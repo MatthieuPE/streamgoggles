@@ -17,6 +17,7 @@ from streamgoggles.background_sources import StreamObsLightBackgroundSource, Stu
 from streamgoggles.evaluation import footprint
 from streamgoggles.evaluation.completeness_purity import aggregate_over_replicates
 from streamgoggles.evaluation.footprint import (
+    background_only_sky,
     evaluate_footprint_realizations,
     plot_confusion_matrix,
     plot_detection_rates,
@@ -64,6 +65,7 @@ def test_score_footprint_counts_and_rates():
     assert scores["fnr"] == pytest.approx(4 / 10)
     assert scores["fpr"] == pytest.approx(3 / 90)
     assert scores["tnr"] == pytest.approx(87 / 90)
+    assert scores["precision"] == pytest.approx(6 / 9)
     assert scores["n_true_pixels"] == 10
 
 
@@ -102,6 +104,7 @@ def test_score_footprint_reports_an_empty_label_as_undefined_not_zero():
 
     assert scores["n_true_pixels"] == 0
     assert np.isnan(scores["tpr"]) and np.isnan(scores["fnr"])
+    assert scores["precision"] == 0.0, "flagged pixels, none of them stream"
     assert np.isfinite(scores["fpr"]) and np.isfinite(scores["tnr"])
 
 
@@ -161,13 +164,39 @@ def test_plot_detection_rates_marks_vanished_labels():
             "richness": [31.0, 33.0, 35.0],
             "tpr_mean": [0.9, 0.5, float("nan")],
             "tpr_std": [0.05, 0.2, float("nan")],
-            "fnr_mean": [0.1, 0.5, float("nan")],
-            "fnr_std": [0.05, 0.2, float("nan")],
+            "fpr_mean": [0.01, 0.01, 0.01],
+            "fpr_std": [0.002, 0.002, 0.002],
         }
     )
-    ax = plot_detection_rates(aggregated, "richness", training_range=(31, 34))
-    labels = ax.get_legend_handles_labels()[1]
+    ax_found, ax_false = plot_detection_rates(
+        aggregated, "richness", training_range=(31, 34)
+    )
+    labels = ax_found.get_legend_handles_labels()[1]
     assert any("label vanished" in label for label in labels)
+    # Missed is the complement of found; it is not drawn.
+    assert not any("missed" in label for label in labels)
+    # Without a no-stream column there is only the with-stream line.
+    false_labels = ax_false.get_legend_handles_labels()[1]
+    assert not any("no stream" in label for label in false_labels)
+
+
+def test_plot_detection_rates_draws_the_no_stream_control():
+    import pandas as pd
+
+    aggregated = pd.DataFrame(
+        {
+            "richness": [31.0, 33.0],
+            "tpr_mean": [0.9, 0.5],
+            "tpr_std": [0.05, 0.2],
+            "fpr_mean": [0.012, 0.014],
+            "fpr_std": [0.002, 0.002],
+            "fpr_no_stream_mean": [0.009, 0.009],
+            "fpr_no_stream_std": [0.001, 0.001],
+        }
+    )
+    _, ax_false = plot_detection_rates(aggregated, "richness")
+    labels = ax_false.get_legend_handles_labels()[1]
+    assert any("no stream" in label for label in labels)
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +286,20 @@ def test_evaluate_footprint_realizations_one_row_per_realization(injector):
         "fnr",
         "fpr",
         "tnr",
+        "precision",
         "n_true_pixels",
+        "fp_no_stream",
+        "tn_no_stream",
+        "fpr_no_stream",
     ):
         assert column in results.columns
     assert (results["n_tiles"] > 0).all()
+    # The control scores the same tiles, so it covers the same non-stream
+    # pixels plus the stream's own (which are background there).
+    with_stream = results["fp"] + results["tn"]
+    control = results["fp_no_stream"] + results["tn_no_stream"]
+    assert (control >= with_stream).all()
+    assert (control <= with_stream + results["n_true_pixels"]).all()
 
     # Aggregating per richness is what the detection-rate plot consumes.
     aggregated = aggregate_over_replicates(
@@ -312,6 +351,23 @@ def test_evaluate_footprint_realizations_keeps_a_vanished_stream(monkeypatch, in
     assert len(results) == 1
     assert results.loc[0, "n_tiles"] == 0
     assert np.isnan(results.loc[0, "tpr"])
+    assert np.isnan(results.loc[0, "fpr_no_stream"])
+
+
+def test_background_only_sky_is_the_same_sky_without_the_stream(injector):
+    sky = injector.inject_stream_full_sky(_param_sets()[1], np.random.default_rng(3))
+    empty = background_only_sky(injector, sky)
+
+    valid = sky["valid_mask_full"]
+    assert empty["channels"] == sky["channels"]
+    for c in range(len(sky["channels"])):
+        assert not empty["stream_raw_full"][c].any()
+        # Injection is additive: removing the stream leaves the background.
+        np.testing.assert_allclose(
+            (sky["map_full"][c] - empty["map_full"][c])[valid],
+            sky["stream_raw_full"][c][valid],
+        )
+    assert sky["stream_raw_full"][0].any(), "the stream sky must hold a stream"
 
 
 def test_plot_detection_rates_flags_partially_vanished_points_and_clips_bars():
@@ -323,17 +379,18 @@ def test_plot_detection_rates_flags_partially_vanished_points_and_clips_bars():
             "tpr_mean": [0.95, 0.0],
             "tpr_std": [0.2, 0.0],
             "tpr_n": [30, 11],
-            "fnr_mean": [0.05, 1.0],
-            "fnr_std": [0.2, 0.0],
+            "fpr_mean": [0.01, 0.01],
+            "fpr_std": [0.2, 0.0],
             "n_true_pixels_n": [30, 30],
         }
     )
-    ax = plot_detection_rates(aggregated, "richness")
+    axes = plot_detection_rates(aggregated, "richness")
 
-    texts = [t.get_text() for t in ax.texts]
+    texts = [t.get_text() for t in axes[0].texts]
     assert texts == ["11/30"], "only the partially-vanished point is annotated"
-    for line in ax.collections:
-        segments = getattr(line, "get_segments", list)()
-        for segment in segments:
-            ys = np.asarray(segment)[:, 1]
-            assert ys.min() >= 0.0 and ys.max() <= 1.0, "bars must stay in [0, 1]"
+    for ax in axes:
+        for line in ax.collections:
+            segments = getattr(line, "get_segments", list)()
+            for segment in segments:
+                ys = np.asarray(segment)[:, 1]
+                assert ys.min() >= 0.0 and ys.max() <= 1.0, "bars must stay in [0, 1]"

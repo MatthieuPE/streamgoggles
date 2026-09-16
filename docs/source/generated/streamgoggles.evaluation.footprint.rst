@@ -1,4 +1,4 @@
-streamgoggles.evaluation.footprint
+﻿streamgoggles.evaluation.footprint
 ==================================
 
 .. automodule:: streamgoggles.evaluation.footprint
@@ -8,6 +8,7 @@ streamgoggles.evaluation.footprint
 
    .. autosummary::
    
+      background_only_sky
       evaluate_footprint_realizations
       plot_confusion_matrix
       plot_detection_rates

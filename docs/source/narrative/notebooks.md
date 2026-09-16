@@ -129,6 +129,9 @@ detection"):
   (stream + background), detection label, and prediction.
 - **§10** repeats this over 30 independent realizations for each surface
   brightness from 30 to 36. It plots the row-normalized confusion matrix
-  per SB, and the found/missed fractions against SB, to locate where
-  detection stops (half the true pixels are found down to SB ≈ 33.2).
-  About 50s of the notebook's ~160s total.
+  per SB. It also plots the found fraction against SB, next to the
+  fraction of background pixels flagged as stream, with the stream and
+  on the same tiles without it. Half the true pixels are found down to
+  SB ≈ 33.2, but ~0.9% of background is flagged even with no stream, which
+  limits precision at the faint end (§10.1). About 75s of the notebook's
+  ~190s total.

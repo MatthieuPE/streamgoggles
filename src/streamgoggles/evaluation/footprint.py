@@ -31,7 +31,11 @@ import numpy as np
 import pandas as pd
 
 from streamgoggles.evaluation.metrics import confusion_matrix, confusion_rates
-from streamgoggles.matched_filter import crop_window, stitch_windows_to_healpix
+from streamgoggles.matched_filter import (
+    crop_window,
+    finalize_full,
+    stitch_windows_to_healpix,
+)
 from streamgoggles.windows import tile_footprint
 
 if TYPE_CHECKING:
@@ -210,16 +214,53 @@ def score_footprint(
 
     Returns:
         dict with ``tp``/``fp``/``tn``/``fn`` counts, the four rates
-        (``tpr``/``fnr``/``fpr``/``tnr``, NaN for an empty class), and
+        (``tpr``/``fnr``/``fpr``/``tnr``, NaN for an empty class),
+        ``precision`` (``tp / (tp + fp)``: the fraction of flagged pixels
+        that are really stream, NaN if nothing is flagged), and
         ``n_true_pixels`` (``tp + fn``) so an undefined ``tpr`` can be read
         as "nothing to detect" rather than "nothing detected".
     """
     scored = covered & np.isfinite(prediction) & np.isfinite(label)
     counts = confusion_matrix(prediction, label, scored, threshold)
+    flagged = counts["tp"] + counts["fp"]
     return {
         **counts,
         **confusion_rates(counts),
+        "precision": counts["tp"] / flagged if flagged else float("nan"),
         "n_true_pixels": counts["tp"] + counts["fn"],
+    }
+
+
+def background_only_sky(injector: "StreamInjector", full_sky: dict) -> dict:
+    """The same sky as `full_sky`, with the stream taken out.
+
+    Every channel is rebuilt from the injector's background maps alone, and
+    the stream-only maps are zero, so the label is empty everywhere.
+    Predicting on this with the tiles of `full_sky` measures the no-stream
+    false-positive rate on exactly the same patch of sky: any pixel flagged
+    here was flagged by the background alone, and the difference from the
+    stream sky is what the stream itself added.
+
+    Parameters:
+        injector: the StreamInjector that produced `full_sky`.
+        full_sky: output of `StreamInjector.inject_stream_full_sky`.
+
+    Returns:
+        dict with the same keys as `full_sky`.
+    """
+    background = injector.background
+    maps = [
+        finalize_full(
+            background.raw_map_full_dict[ch["filter"]][ch["distance_modulus"]],
+            background.valid_mask_full,
+            injector.finalize_cfg,
+        )
+        for ch in full_sky["channels"]
+    ]
+    return {
+        **full_sky,
+        "map_full": maps,
+        "stream_raw_full": [np.zeros_like(m) for m in full_sky["stream_raw_full"]],
     }
 
 
@@ -235,6 +276,7 @@ def evaluate_footprint_realizations(
     radius_deg: float | None = None,
     threshold: float = 0.5,
     device: str = "cpu",
+    no_stream_control: bool = True,
 ) -> pd.DataFrame:
     """Score the model on many independent realizations of each parameter set.
 
@@ -263,12 +305,19 @@ def evaluate_footprint_realizations(
         stride_fraction, radius_deg: tiling, see `tiles_around_stream`.
         threshold: detection probability threshold.
         device: torch device.
+        no_stream_control: also predict on `background_only_sky` with the
+            same tiles, and record its false positives as ``fp_no_stream``/
+            ``tn_no_stream``/``fpr_no_stream``. This is the reference a
+            found fraction has to be read against: the fraction of
+            background flagged when there is no stream at all.
 
     Returns:
         DataFrame, one row per realization: every key of the parameter set,
         ``realization``, ``nstars`` (after richness resolution), ``n_tiles``,
-        the confusion counts and the four rates, and ``n_true_pixels``.
+        the confusion counts, the four rates, ``precision``,
+        ``n_true_pixels``, and the no-stream control columns if requested.
     """
+    control_keys = ("fp_no_stream", "tn_no_stream", "fpr_no_stream")
     rows = []
     for set_index, params in enumerate(param_sets):
         for realization in range(n_realizations):
@@ -288,7 +337,9 @@ def evaluate_footprint_realizations(
                 # score. Recorded rather than skipped, so a vanished stream
                 # stays visible in the results instead of disappearing.
                 row.update(dict.fromkeys(("tp", "fp", "tn", "fn", "n_true_pixels"), 0))
-                row.update(dict.fromkeys(_RATE_NAMES, float("nan")))
+                row.update(dict.fromkeys((*_RATE_NAMES, "precision"), float("nan")))
+                if no_stream_control:
+                    row.update(dict.fromkeys(control_keys, float("nan")))
                 rows.append(row)
                 continue
 
@@ -307,6 +358,28 @@ def evaluate_footprint_realizations(
                     maps["prediction"], maps["label"], maps["covered"], threshold
                 )
             )
+            if no_stream_control:
+                control = predict_footprint(
+                    model,
+                    background_only_sky(injector, full_sky),
+                    tiles,
+                    injector.pix,
+                    transform,
+                    channel,
+                    injector.count_threshold,
+                    device,
+                )
+                scores = score_footprint(
+                    control["prediction"],
+                    control["label"],
+                    control["covered"],
+                    threshold,
+                )
+                row.update(
+                    fp_no_stream=scores["fp"],
+                    tn_no_stream=scores["tn"],
+                    fpr_no_stream=scores["fpr"],
+                )
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -361,48 +434,55 @@ def plot_confusion_matrix(rates: dict, ax=None, title: str | None = None):
 def plot_detection_rates(
     aggregated: pd.DataFrame,
     param: str,
-    ax=None,
+    axes=None,
     training_range: tuple[float, float] | None = None,
 ):
-    """Plot found/missed fractions of true stream pixels against a parameter.
+    """Plot the found fraction and the background false-alarm rate against a parameter.
 
-    Shows mean +/- std over realizations of ``tpr`` (true stream pixels
-    found) and ``fnr`` (true stream pixels missed). Points where no
-    realization had any true pixel are marked separately rather than drawn
-    as zero: past that point the *label* has vanished (nothing exceeds the
-    detection threshold), which is a different statement from "the model
-    stopped detecting", and the two must not read the same.
+    Two panels sharing the x axis, because the two numbers only mean
+    something together -- finding half the stream pixels is worthless if the
+    background is flagged just as often -- but live on very different
+    scales (a found fraction spans 0-1, a useful false-alarm rate is ~1%):
+
+    - top: ``tpr``, the fraction of true stream pixels found. The missed
+      fraction is its complement and is not drawn.
+    - bottom: ``fpr``, the fraction of non-stream pixels flagged as stream,
+      on the sky with the stream; and, if present, ``fpr_no_stream``, the
+      same tiles with the stream removed. The gap between the two is what
+      the stream itself adds; the no-stream line is the floor set by the
+      background alone.
+
+    Mean +/- std over realizations; std bars are clipped to [0, 1]. Where
+    only some realizations kept a true pixel, the found point is annotated
+    "k/n"; where none did, it is marked as "label vanished" rather than
+    drawn as zero.
 
     Parameters:
         aggregated: output of
             `completeness_purity.aggregate_over_replicates(results,
-            metrics=["tpr", "fnr", ...], group_by=[param])`. If
-            ``n_true_pixels`` is among the metrics, points averaged over
-            only some realizations are annotated "k/n" (k with any true
-            pixel, out of n).
+            metrics=["tpr", "fpr", ...], group_by=[param])`. Include
+            ``fpr_no_stream`` for the control line and ``n_true_pixels``
+            for the k/n annotations.
         param: column to use as the x axis.
-        ax: matplotlib Axes (created if None).
+        axes: two matplotlib Axes, top and bottom (created if None).
         training_range: optional (min, max) of the parameter the model was
             trained on, shaded so extrapolation is visible at a glance.
 
     Returns:
-        The Axes.
+        The two Axes.
     """
     import matplotlib.pyplot as plt
 
-    if ax is None:
-        _, ax = plt.subplots(figsize=(6.5, 4.2))
+    if axes is None:
+        _, axes = plt.subplots(
+            2, 1, figsize=(6.5, 6.0), sharex=True, height_ratios=(3, 2)
+        )
+    ax_found, ax_false = axes
 
     data = aggregated.sort_values(param)
     x = data[param].to_numpy(dtype=float)
 
-    if training_range is not None:
-        ax.axvspan(*training_range, color="0.9", zorder=0, label="training range")
-
-    for rate, label, marker in (
-        ("tpr", "found (true positive rate)", "o"),
-        ("fnr", "missed (false negative rate)", "s"),
-    ):
+    def _errorbar(ax, rate, **kwargs):
         mean = data[f"{rate}_mean"].to_numpy(dtype=float)
         std = np.nan_to_num(data[f"{rate}_std"].to_numpy(dtype=float))
         defined = np.isfinite(mean)
@@ -414,10 +494,15 @@ def plot_detection_rates(
             x[defined],
             mean[defined],
             yerr=[lower[defined], upper[defined]],
-            marker=marker,
             capsize=4,
-            label=label,
+            **kwargs,
         )
+
+    for ax in axes:
+        if training_range is not None:
+            ax.axvspan(*training_range, color="0.9", zorder=0, label="training range")
+
+    _errorbar(ax_found, "tpr", marker="o", label="true stream pixels found")
 
     # Where only some realizations kept a true pixel, the rates average over
     # those alone: say how many, so a "0.0 found" over 11 of 30 skies is not
@@ -428,7 +513,7 @@ def plot_detection_rates(
         tpr_mean = data["tpr_mean"].to_numpy(dtype=float)
         for xi, yi, k, n in zip(x, tpr_mean, with_pixels, total, strict=True):
             if 0 < k < n:
-                ax.annotate(
+                ax_found.annotate(
                     f"{k}/{n}",
                     (xi, yi),
                     textcoords="offset points",
@@ -440,7 +525,7 @@ def plot_detection_rates(
 
     vanished = ~np.isfinite(data["tpr_mean"].to_numpy(dtype=float))
     if vanished.any():
-        ax.scatter(
+        ax_found.scatter(
             x[vanished],
             np.full(vanished.sum(), 0.5),
             marker="x",
@@ -449,9 +534,22 @@ def plot_detection_rates(
             label="no true pixels (label vanished)",
             zorder=3,
         )
+    ax_found.set_ylabel("fraction of true\nstream pixels found")
+    ax_found.set_ylim(-0.05, 1.05)
+    ax_found.legend(fontsize=8, loc="best")
 
-    ax.set_xlabel(param)
-    ax.set_ylabel("fraction of true stream pixels")
-    ax.set_ylim(-0.05, 1.05)
-    ax.legend(fontsize=8, loc="best")
-    return ax
+    _errorbar(ax_false, "fpr", marker="s", color="C3", label="with the stream injected")
+    if "fpr_no_stream_mean" in data:
+        _errorbar(
+            ax_false,
+            "fpr_no_stream",
+            marker="^",
+            color="0.35",
+            linestyle="--",
+            label="same tiles, no stream",
+        )
+    ax_false.set_ylim(bottom=0.0)
+    ax_false.set_ylabel("fraction of background\npixels flagged as stream")
+    ax_false.set_xlabel(param)
+    ax_false.legend(fontsize=8, loc="best")
+    return axes
