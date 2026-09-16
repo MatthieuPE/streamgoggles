@@ -993,3 +993,69 @@ def test_default_num_workers_returns_zero_on_a_tiny_allocation(monkeypatch):
     monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
     monkeypatch.setenv("SLURM_CPUS_PER_TASK", "1")
     assert default_num_workers() == 0
+
+
+class _CountableToyDataset:
+    """Module-level (therefore picklable under the "spawn" start method) toy
+    dataset, so the worker-count test doesn't pay streamobs import costs in
+    every spawned process."""
+
+    def __len__(self):
+        return 8
+
+    def __getitem__(self, idx):
+        return np.float32(idx)
+
+
+@pytest.mark.parametrize("requested", [0, 1, 2])
+def test_dataloader_creates_exactly_the_requested_workers(requested):
+    """The resource claim, checked against reality rather than the argument
+    we passed: a DataLoader must spin up exactly `num_workers` processes --
+    no hidden extras, and none at all when it is 0."""
+    import multiprocessing
+
+    from torch.utils.data import DataLoader
+
+    before = set(multiprocessing.active_children())
+    kwargs = {"persistent_workers": True} if requested else {}
+    loader = DataLoader(
+        _CountableToyDataset(), batch_size=1, num_workers=requested, **kwargs
+    )
+    iterator = iter(loader)
+    next(iterator)
+    try:
+        spawned = set(multiprocessing.active_children()) - before
+        assert len(spawned) == requested
+    finally:
+        del iterator, loader
+
+
+def test_default_num_workers_respects_cpu_affinity(monkeypatch):
+    """A container or `taskset` confines the process to a subset of the
+    machine's cores; os.cpu_count() cannot see that, sched_getaffinity can.
+    Pinned to 6 cores of a bigger machine -> 6-2 = 4, not the machine's count."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda pid: set(range(6)), raising=False
+    )
+    assert default_num_workers(max_workers=64, reserve=2) == 4
+
+
+def test_default_num_workers_caps_on_a_large_machine(monkeypatch):
+    """The cap is what stops a 128-core node from getting 126 workers even
+    when the whole node really is allocated."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "128")
+    assert default_num_workers(max_workers=4, reserve=2) == 4
+
+
+def test_default_num_workers_prefers_allocation_over_machine_size(monkeypatch):
+    """Priority order matters: a SLURM allocation must win over the physical
+    machine, or a small job on a big node oversubscribes it."""
+    monkeypatch.delenv("STREAMGOGGLES_NUM_WORKERS", raising=False)
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda pid: set(range(128)), raising=False
+    )
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
+    assert default_num_workers(max_workers=64, reserve=2) == 2

@@ -396,3 +396,90 @@ def test_conversion_still_responds_to_every_parameter(isochrone_params):
     assert n_for(width=0.4) != base
     assert n_for(length=12.0) != base
     assert n_for() == base, "re-asking must be stable"
+
+
+def test_sample_cache_differs_across_isochrones(isochrone_params):
+    """The sample() cache is keyed on the isochrone's identity, so a wrong
+    key would serve one population's magnitudes for another -- silently, and
+    only visibly as subtly wrong star counts."""
+    inject_utils._isochrone_sample_cached.cache_clear()
+    base = isochrone_params["isochrone"]
+
+    young = inject_utils.sample_isochrone(
+        inject_utils._build_isochrone({**base, "age": 8.0}), 10000
+    )
+    old = inject_utils.sample_isochrone(
+        inject_utils._build_isochrone({**base, "age": 13.5}), 10000
+    )
+    metal_rich = inject_utils.sample_isochrone(
+        inject_utils._build_isochrone({**base, "z": 0.002}), 10000
+    )
+
+    assert not np.array_equal(young, old)
+    assert not np.array_equal(young, metal_rich)
+
+
+def test_caches_stay_correct_under_eviction(isochrone_params):
+    """'Works for different values' has to keep holding once there are more
+    distinct parameter sets than the caches can hold. Cycle through more
+    than maxsize, forcing eviction, and every combination must still return
+    exactly what it returned before anything was evicted."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    inject_utils._isochrone_sample_cached.cache_clear()
+    maxsize = inject_utils._isochrone_factory_cached.cache_info().maxsize
+    base = isochrone_params["isochrone"]
+
+    # Vary metallicity in small steps: enough distinct cache KEYS to force
+    # eviction, while every value stays inside ugali's accepted range.
+    metallicities = [0.0002 + 1e-6 * i for i in range(maxsize + 4)]
+    first_pass = {
+        z: inject_utils.sample_isochrone(
+            inject_utils._build_isochrone({**base, "z": z}), 10000
+        ).copy()
+        for z in metallicities
+    }
+    assert inject_utils._isochrone_factory_cached.cache_info().currsize <= maxsize, (
+        "the cache must stay bounded rather than growing without limit"
+    )
+
+    # The earliest entries have certainly been evicted by now; recomputing
+    # them must reproduce the original values exactly.
+    probes = (
+        metallicities[0],
+        metallicities[1],
+        metallicities[len(metallicities) // 2],
+        metallicities[-1],
+    )
+    for z in probes:
+        again = inject_utils.sample_isochrone(
+            inject_utils._build_isochrone({**base, "z": z}), 10000
+        )
+        np.testing.assert_array_equal(again, first_pass[z])
+
+
+def test_conversions_stable_when_parameter_sets_are_interleaved(isochrone_params):
+    """Round-robin across several parameter sets, the way a grid scan will:
+    each must keep returning its own answer rather than drifting toward
+    whichever was asked for most recently."""
+    base = isochrone_params["isochrone"]
+    combos = [(10.0, 0.0002, 16.0), (12.5, 0.0008, 17.0), (13.5, 0.0002, 15.5)]
+
+    def n_for(age, z, dm):
+        params = {
+            "isochrone": {**base, "age": age, "z": z},
+            "distance_modulus": {"center": {"value": dm}},
+        }
+        return inject_utils.convert_SurfaceBrightness_to_N(
+            32.0,
+            stream_length=8.0,
+            stream_width=0.2,
+            isochrone_params=params,
+            band="r",
+        )
+
+    expected = {combo: n_for(*combo) for combo in combos}
+    assert len(set(expected.values())) == len(combos), "combos must be distinguishable"
+
+    for _ in range(3):
+        for combo in combos:
+            assert n_for(*combo) == expected[combo]
