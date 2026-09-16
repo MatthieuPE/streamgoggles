@@ -231,6 +231,41 @@ them via the isochrone's stellar population, so
 `resolve_richness_to_nstars` can always reduce whichever unit was given to
 an integer star count before realization.
 
+```{note}
+**Isochrone caching — where nearly all of this pipeline's time used to
+go.** `surface_brightness` is inverted numerically:
+`convert_SurfaceBrightness_to_N` runs `scipy.optimize.brentq`, which
+evaluates its residual ~31 times per stream, and each residual used to
+rebuild the ugali isochrone from scratch — a construction that globs the
+isochrone data directory and parses ~11,500 filenames. Profiling a real
+training sample put **93% of its wall time here**, rebuilding an object
+that depends only on `(age, z, survey, bands)` and was therefore identical
+every time.
+
+Two caches now cover it: the isochrone construction itself, and
+`isochrone.sample()` (called 44x per conversion at ~1.3ms). Per
+conversion: **1074ms → 70ms** for a new `(age, z)`, and **→ 11ms** for the
+same isochrone at a new distance.
+
+What keys those caches matters if you are scanning a grid:
+
+- **Only `(age, z, survey, band_1, band_2)` key them.** Distance modulus,
+  surface brightness, width, length and morphology are *not* in the key,
+  so those axes vary at no cache cost.
+- **Distance modulus is deliberately excluded from the `sample()` key**
+  and must be: ugali returns *absolute* magnitudes there and the distance
+  modulus is applied afterwards (verified — `sample()` output is identical
+  at dm=16 and dm=25), while the distance very much does change the final
+  star count (N: 8683 → 22360 for dm 16 → 17).
+- **A cache miss is cheap**, so a grid whose `(age, z)` never repeat
+  degrades gracefully rather than falling off a cliff: 0.13 s/sample with
+  `age`/`z` fixed vs 0.18 s/sample with them varying continuously. The
+  win is structural — one isochrone construction per *inversion* instead
+  of ~31 — not merely reuse across samples.
+- The cache is bounded (`maxsize=32`, ~0.6 MB per entry) and stays correct
+  under eviction.
+```
+
 ## Stream sources ({py:mod}`streamgoggles.stream_sources`)
 
 `StreamSource` is the protocol for *realizing* a stream's population —
