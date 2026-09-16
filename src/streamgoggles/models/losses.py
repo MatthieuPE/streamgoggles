@@ -18,7 +18,7 @@ All losses must handle soft float targets [0, 1] for density labels.
 
 Pred convention by loss (tied to UNet's `head` types, models/unet.py):
 
-- DiceLoss/FocalLoss/TverskyLoss: pred is a probability in [0, 1]
+- DiceLoss/BatchDiceLoss/FocalLoss/TverskyLoss: pred is a probability in [0, 1]
   (UNet head="sigmoid").
 - BCEWithLogitsLoss: pred is pre-sigmoid logits (UNet head="identity"),
   matching torch's own numerically-stable BCE-with-logits convention.
@@ -159,6 +159,51 @@ class DiceLoss(MaskedLoss):
         intersection = _spatial_sums(pred * target, mask)
         pred_sum = _spatial_sums(pred, mask)
         target_sum = _spatial_sums(target, mask)
+
+        dice = (2.0 * intersection + _EPS) / (pred_sum + target_sum + _EPS)
+        return 1.0 - dice.mean()
+
+
+class BatchDiceLoss(MaskedLoss):
+    """Soft Dice pooled over the whole batch, per channel.
+
+    `DiceLoss` takes one ratio per (window, channel) and averages them. A
+    window with an empty label then contributes ``1 - eps / (sum(p) + eps)``,
+    which is ~1 whatever is predicted there, so it gives ~no gradient: the
+    model is never told to predict low where there is no stream.
+
+    Here the intersection, prediction and target sums run over every window
+    of the batch before the ratio is taken, so one ratio per channel. A pixel
+    flagged in a stream-free window enlarges the same denominator as one
+    flagged next to a stream, and is penalized identically (gradient
+    ``dice / denominator`` for any pixel whose target is 0).
+
+    Trade-offs: pooled pixels weight a large bright stream more than a faint
+    one in the same batch; the penalty on false positives scales with the
+    batch's current Dice, so it is weak while the model is poor; and a batch
+    with no stream pixels at all still gives ~no gradient, so it needs a
+    batch large enough to usually contain a stream. For unbatched
+    ``(C, H, W)`` input it is identical to `DiceLoss`.
+    """
+
+    def forward(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Compute soft Dice loss with sums pooled over batch and space."""
+        _check_shapes(pred, target)
+        mask = _broadcast_mask(pred, valid_mask)
+
+        intersection = _spatial_sums(pred * target, mask)
+        pred_sum = _spatial_sums(pred, mask)
+        target_sum = _spatial_sums(target, mask)
+        if pred.ndim == 4:
+            # (B, C) -> (C,): pool the batch before taking the ratio.
+            intersection = intersection.sum(dim=0)
+            pred_sum = pred_sum.sum(dim=0)
+            target_sum = target_sum.sum(dim=0)
 
         dice = (2.0 * intersection + _EPS) / (pred_sum + target_sum + _EPS)
         return 1.0 - dice.mean()
@@ -337,6 +382,7 @@ class WeightedMSELoss(MaskedLoss):
 
 _LOSS_REGISTRY: dict[str, type[MaskedLoss]] = {
     "dice": DiceLoss,
+    "batch_dice": BatchDiceLoss,
     "focal": FocalLoss,
     "tversky": TverskyLoss,
     "bce": BCEWithLogitsLoss,
@@ -349,7 +395,8 @@ def get_loss(name: str, **kwargs) -> MaskedLoss:
     """Factory function to instantiate loss by name.
 
     Parameters:
-        name: Loss name ("dice", "focal", "tversky", "bce", "mse", "weighted_mse").
+        name: Loss name ("dice", "batch_dice", "focal", "tversky", "bce", "mse",
+            "weighted_mse").
         **kwargs: Loss-specific keyword arguments.
 
     Returns:
