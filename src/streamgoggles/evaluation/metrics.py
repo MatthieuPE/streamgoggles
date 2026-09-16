@@ -41,9 +41,10 @@ def _check_shapes(
     target = np.asarray(target, dtype=float)
     if pred.shape != target.shape:
         raise ValueError(f"pred shape {pred.shape} != target shape {target.shape}")
-    if pred.ndim not in (2, 3):
+    if pred.ndim not in (1, 2, 3):
         raise ValueError(
-            f"pred must be (ny, nx) or (n_channels, ny, nx), got shape {pred.shape}"
+            "pred must be (npix,) for a HEALPix map, (ny, nx) or "
+            f"(n_channels, ny, nx) for images, got shape {pred.shape}"
         )
     return pred, target
 
@@ -195,6 +196,11 @@ def confusion_matrix(
     counted as true negatives, which would otherwise inflate TN by the whole
     out-of-footprint area and make any TN-based rate meaningless.
 
+    Also works on 1-D HEALPix maps. Those typically carry NaN wherever no
+    window reached, and `NaN > threshold` is False -- so an unmasked NaN
+    pixel would be silently counted as a TRUE NEGATIVE. Always pass the
+    coverage (and finiteness) as `valid_mask` when scoring stitched maps.
+
     Parameters:
         pred, target, valid_mask, threshold: as in iou().
 
@@ -217,6 +223,45 @@ def confusion_matrix(
         "fp": int(np.count_nonzero(pred_bin & ~target_bin & mask)),
         "tn": int(np.count_nonzero(~pred_bin & ~target_bin & mask)),
         "fn": int(np.count_nonzero(~pred_bin & target_bin & mask)),
+    }
+
+
+def confusion_rates(counts: dict[str, int]) -> dict[str, float]:
+    """Normalize confusion-matrix counts into the four per-class rates.
+
+    Each rate is a fraction *of its true class*, so the two rows each sum to
+    one -- which is what makes them comparable across maps whose stream and
+    background pixel counts differ by orders of magnitude:
+
+    - ``tpr``: true stream pixels found (``tp / (tp + fn)``; recall,
+      completeness),
+    - ``fnr``: true stream pixels missed (``fn / (tp + fn)``, = 1 - ``tpr``),
+    - ``fpr``: non-stream pixels wrongly flagged (``fp / (fp + tn)``),
+    - ``tnr``: non-stream pixels correctly rejected (``tn / (fp + tn)``,
+      = 1 - ``fpr``).
+
+    NaN (this module's undefined-ratio convention) when a class is empty.
+    That case is not an edge case to paper over: a faint enough stream
+    leaves **no** pixel above the detection threshold, so ``tpr``/``fnr``
+    genuinely have nothing to measure. Reporting NaN keeps "the label
+    vanished" distinguishable from "the model detected nothing", which read
+    identically if an empty class were scored as 0.
+
+    Parameters:
+        counts: dict with ``tp``, ``fp``, ``tn``, ``fn`` (as from
+            `confusion_matrix`).
+
+    Returns:
+        dict with float keys ``tpr``, ``fnr``, ``fpr``, ``tnr``.
+    """
+    positives = counts["tp"] + counts["fn"]
+    negatives = counts["fp"] + counts["tn"]
+    nan = float("nan")
+    return {
+        "tpr": counts["tp"] / positives if positives else nan,
+        "fnr": counts["fn"] / positives if positives else nan,
+        "fpr": counts["fp"] / negatives if negatives else nan,
+        "tnr": counts["tn"] / negatives if negatives else nan,
     }
 
 

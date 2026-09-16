@@ -29,6 +29,7 @@ from streamgoggles.evaluation.completeness_purity import (
 )
 from streamgoggles.evaluation.metrics import (
     confusion_matrix,
+    confusion_rates,
     correlation,
     dice,
     iou,
@@ -638,3 +639,55 @@ def test_evaluate_on_grid_deterministic_across_calls(eval_model, eval_dataset):
     # persistence (eval mode always persists) -- only the actual values need
     # to match, which is what "deterministic" is actually testing for here.
     pd.testing.assert_frame_equal(results_a, results_b, check_like=True)
+
+
+# ---------------------------------------------------------------------------
+# confusion_rates, and scoring 1-D HEALPix maps
+# ---------------------------------------------------------------------------
+
+
+def test_confusion_rates_hand_computed():
+    rates = confusion_rates({"tp": 6, "fn": 4, "fp": 3, "tn": 87})
+    assert rates["tpr"] == pytest.approx(0.6)
+    assert rates["fnr"] == pytest.approx(0.4)
+    assert rates["fpr"] == pytest.approx(3 / 90)
+    assert rates["tnr"] == pytest.approx(87 / 90)
+
+
+def test_confusion_rates_each_row_sums_to_one():
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        counts = dict(zip(("tp", "fn", "fp", "tn"), rng.integers(1, 1000, size=4)))
+        rates = confusion_rates(counts)
+        assert rates["tpr"] + rates["fnr"] == pytest.approx(1.0)
+        assert rates["fpr"] + rates["tnr"] == pytest.approx(1.0)
+
+
+def test_confusion_rates_empty_class_is_nan_not_zero():
+    """No true stream pixels means there is nothing to find: tpr/fnr are
+    undefined. Scoring them 0 would read as "the model found nothing", the
+    opposite claim."""
+    no_positives = confusion_rates({"tp": 0, "fn": 0, "fp": 2, "tn": 98})
+    assert np.isnan(no_positives["tpr"]) and np.isnan(no_positives["fnr"])
+    assert no_positives["fpr"] == pytest.approx(0.02)
+
+    no_negatives = confusion_rates({"tp": 5, "fn": 5, "fp": 0, "tn": 0})
+    assert np.isnan(no_negatives["fpr"]) and np.isnan(no_negatives["tnr"])
+
+
+def test_confusion_matrix_accepts_1d_healpix_maps():
+    pred = np.array([0.9, 0.9, 0.1, 0.1, 0.9])
+    target = np.array([1.0, 0.0, 1.0, 0.0, 1.0])
+    assert confusion_matrix(pred, target) == {"tp": 2, "fp": 1, "tn": 1, "fn": 1}
+
+
+def test_confusion_matrix_nan_counts_as_negative_unless_masked():
+    """Documents the trap score_footprint exists to avoid: NaN > threshold
+    is False, so an unmasked NaN pixel is silently scored as a true
+    negative."""
+    pred = np.array([np.nan, np.nan, 0.9])
+    target = np.array([np.nan, np.nan, 1.0])
+    unmasked = confusion_matrix(pred, target)
+    masked = confusion_matrix(pred, target, valid_mask=np.isfinite(pred))
+    assert unmasked["tn"] == 2
+    assert masked["tn"] == 0

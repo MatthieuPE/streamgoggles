@@ -50,6 +50,7 @@ markers = [
     "storage: storage.py (ParameterStore, SimulationStore, BackgroundMapStore, ModelStore)",
     "matched_filter: matched_filter.py (matched filter, pixelization, projection)",
     "windows: windows.py (Window, random/stream window sampling, tile_footprint)",
+    "footprint: evaluation/footprint.py (full-sky inference, confusion rates, detection curves)",
     "background_sources: background_sources.py (StudyRegion, BackgroundSource implementations, harmonize_columns)",
     "stream_sources: stream_sources.py (StreamObsSource, ExternalSimSource stub)",
     "background: background.py (Background.load_or_cache, build_raw_background_maps)",
