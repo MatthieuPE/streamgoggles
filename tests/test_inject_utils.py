@@ -262,3 +262,46 @@ def test_cached_isochrone_gives_identical_conversions(isochrone_params):
 
     cached = inject_utils.convert_SurfaceBrightness_to_N(32.0, **kwargs)
     assert cached == uncached
+
+
+def test_build_isochrone_distinguishes_different_parameters(isochrone_params):
+    """The failure mode that would matter most once a full (age, z, ...)
+    grid is being scanned: a cache keyed too coarsely would hand back one
+    combination's isochrone for another, silently, with no error anywhere.
+    Different parameters must give genuinely different isochrones."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    base = dict(isochrone_params["isochrone"])
+
+    young = inject_utils._build_isochrone({**base, "age": 8.0})
+    old = inject_utils._build_isochrone({**base, "age": 13.5})
+    metal_poor = inject_utils._build_isochrone({**base, "z": 0.0001})
+
+    assert young.age != old.age
+    assert metal_poor.z != young.z
+    # Three distinct parameter sets -> three distinct constructions.
+    assert inject_utils._isochrone_factory_cached.cache_info().misses == 3
+
+
+def test_cached_conversions_differ_across_age_and_metallicity(isochrone_params):
+    """End-to-end version of the same guard: varying age or z must change
+    the resolved star count, and re-asking must stay stable (no drift from
+    one combination's cached state leaking into another's)."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+
+    def n_for(age, z):
+        params = {
+            "isochrone": {**isochrone_params["isochrone"], "age": age, "z": z},
+            "distance_modulus": {"center": {"value": 16.8}},
+        }
+        return inject_utils.convert_SurfaceBrightness_to_N(
+            32.0, stream_length=8.0, stream_width=0.2, isochrone_params=params, band="r"
+        )
+
+    a = n_for(10.0, 0.0004)
+    b = n_for(13.0, 0.0004)
+    c = n_for(10.0, 0.0016)
+
+    assert len({a, b, c}) == 3, "different (age, z) must give different N"
+    # Interleaving must not contaminate: re-asking gives the same answers.
+    assert n_for(10.0, 0.0004) == a
+    assert n_for(13.0, 0.0004) == b
