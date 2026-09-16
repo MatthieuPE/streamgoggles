@@ -35,10 +35,11 @@ from streamgoggles.matched_filter import (
     PixelizationSpec,
     ShiftedColorBoxFilter,
     StreamobsSplineFilter,
+    crop_window,
 )
 from streamgoggles.storage import BackgroundMapStore
 from streamgoggles.stream_sources import StreamObsSource
-from streamgoggles.windows import sample_random_window
+from streamgoggles.windows import Window, sample_random_window
 
 pytestmark = pytest.mark.injector
 
@@ -876,3 +877,72 @@ def test_injector_filter_names_preserve_dict_order(real_background):
         release="yr1",
     )
     assert inj.filter_names == ["good", "decoy"]
+
+
+def test_inject_stream_full_sky_matches_the_windowed_path(
+    real_background, stream_params
+):
+    """inject_single_stream and inject_stream_full_sky share their
+    realization and channel construction, so cropping the full-sky maps to
+    the windowed path's own window must reproduce that path's channels. If
+    the two ever drift apart, inference would silently be looking at
+    different data from training."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=1.0,
+    )
+
+    sample = injector.inject_single_stream(stream_params, np.random.default_rng(5))
+    full = injector.inject_stream_full_sky(stream_params, np.random.default_rng(5))
+
+    assert full["channels"] == sample.metadata["channels"]
+    assert full["params"]["nstars"] == sample.params["nstars"]
+
+    window = Window(**sample.metadata["window"])
+    for channel in range(len(full["channels"])):
+        cropped, _ = crop_window(
+            full["map_full"][channel], full["valid_mask_full"], window, pix
+        )
+        np.testing.assert_allclose(cropped, sample.map_stack[channel], rtol=1e-6)
+
+        raw_cropped, _ = crop_window(
+            full["stream_raw_full"][channel], full["valid_mask_full"], window, pix
+        )
+        expected = (raw_cropped > injector.count_threshold).astype(raw_cropped.dtype)
+        np.testing.assert_allclose(expected, sample.label_stack[channel], rtol=1e-6)
+
+
+def test_inject_stream_full_sky_returns_unthresholded_counts(
+    real_background, stream_params
+):
+    """The stream-only maps must come back as raw counts, not a binary
+    label: thresholding before cropping would be wrong (cropping
+    interpolates, so a {0,1} map becomes fractional), so the caller has to
+    be able to threshold afterwards."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=1.0,
+    )
+
+    full = injector.inject_stream_full_sky(stream_params, np.random.default_rng(5))
+    stacked = np.concatenate([m for m in full["stream_raw_full"]])
+    assert stacked.max() > 1.0, "raw counts should exceed a {0,1} range"
+    assert not set(np.unique(stacked)) <= {0.0, 1.0}

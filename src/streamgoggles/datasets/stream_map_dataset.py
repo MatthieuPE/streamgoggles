@@ -163,6 +163,59 @@ class TransformedDataset:
         return getattr(self.base, name)
 
 
+def configure_torch_threads(num_workers: int = 0, max_threads: int = 1) -> int:
+    """Cap PyTorch's intra-op thread pool, and return what it was set to.
+
+    Torch defaults to using **every** core for intra-op parallelism (8 on a
+    10-core machine here), which is wrong twice over for this pipeline:
+
+    - **It oversubscribes the machine.** With `num_workers` DataLoader
+      processes already generating samples in parallel, a main process also
+      claiming every core competes with them for the same CPUs. The model
+      step is a small fraction of each sample's cost anyway (~24ms against
+      ~130ms of generation, PLAN.md section 6.16), so the threads buy very
+      little here while taking a lot.
+    - **It crashed outright in this environment.** Two copies of
+      `libomp.dylib` end up loaded in one process (torch's, and one arriving
+      via the scientific stack), and torch's first convolution after that
+      segfaults inside `__kmp_create_worker` -> `pthread_create` -- confirmed
+      from the macOS crash report, and reproducible. With a single thread
+      torch never creates an OpenMP worker, so it never takes that path.
+      Duplicate OpenMP runtimes are an environment/packaging problem rather
+      than something this project can fix, but a thread cap avoids it and is
+      worth having on its own merits regardless.
+
+    Parameters:
+        num_workers: DataLoader worker count this run will use; reserved for
+            callers that want to scale threads against it.
+        max_threads: upper bound on torch's intra-op threads. Defaults to 1
+            deliberately -- see above.
+
+    Returns:
+        The thread count actually set, or 0 if torch isn't installed.
+    """
+    try:
+        import torch
+    except ImportError:
+        return 0
+
+    override = os.environ.get("STREAMGOGGLES_TORCH_THREADS")
+    if override is not None:
+        try:
+            threads = max(1, int(override))
+        except ValueError:
+            logger.warning(
+                "STREAMGOGGLES_TORCH_THREADS=%r is not an integer; ignoring it.",
+                override,
+            )
+            threads = max(1, max_threads)
+    else:
+        threads = max(1, max_threads)
+
+    torch.set_num_threads(threads)
+    return threads
+
+
 def stream_map_collate_fn(batch: list[dict]) -> dict:
     """DataLoader collate_fn for batches of `StreamMapDataset` items.
 

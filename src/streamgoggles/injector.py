@@ -395,6 +395,132 @@ class StreamInjector:
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
 
+    def _realize_and_inject(self, params: dict, rng: np.random.Generator):
+        """Realize a stream, place it, run it through the survey model, and
+        apply this injector's cuts/clipping.
+
+        Shared by `inject_single_stream` and `inject_stream_full_sky` so the
+        two cannot drift apart. Draws from `rng` in a fixed order
+        (realize -> place -> inject), which callers rely on for
+        reproducibility.
+
+        Returns:
+            Tuple `(detected, resolved_params)`: the surviving observed
+            catalog, and the parameter dict with richness resolved to
+            `nstars` and bands defaulted.
+        """
+        resolved_params = dict(params)
+        resolved_params.setdefault("band_1", self.bands[0])
+        resolved_params.setdefault("band_2", self.bands[1])
+        resolved_params = resolve_richness_to_nstars(
+            resolved_params, self.richness_kind
+        )
+
+        stream_df = self.stream_source.realize(resolved_params, rng)
+        placed_df = place_stream_in_footprint(
+            stream_df,
+            self.background.footprint,
+            self.pix.nside,
+            rng,
+            rotation_deg=resolved_params.get("orientation"),
+        )
+
+        injected_df = self._obs_injector.inject(
+            placed_df, bands=list(self.bands), rng=rng, verbose=False
+        )
+        detected = injected_df[injected_df[flag_col(self.namespace)]].reset_index(
+            drop=True
+        )
+
+        detected = apply_cuts(detected, self.cuts, namespace=self.namespace)
+        if self.clipping:
+            detected = apply_magnitude_clipping(
+                detected, self.clipping, namespace=self.namespace
+            )
+        return detected, resolved_params
+
+    def _build_full_sky_channels(self, detected):
+        """Build every `(distance, filter)` channel as a FULL-SKY map.
+
+        Distance-major, filter-minor channel order: every filter's map at one
+        distance is contiguous. `Sample.metadata["channels"]` records this
+        mapping explicitly so nothing downstream has to guess it.
+
+        Returns:
+            Tuple `(finalized_full, stream_raw_full, channels_meta)`, lists
+            of equal length. `stream_raw_full` is the stream-only count map,
+            deliberately **not** thresholded here: any detection threshold
+            must be applied after cropping, since cropping interpolates.
+        """
+        distance_moduli = sorted(
+            self.background.raw_map_full_dict[self.filter_names[0]]
+        )
+        finalized_full = []
+        stream_raw_full = []
+        channels_meta = []
+        for dm in distance_moduli:
+            for filter_name in self.filter_names:
+                selected = self.matched_filters[filter_name].select(
+                    detected, list(self.bands), dm
+                )
+                stream_raw, _stream_valid = make_raw_map(detected, selected, self.pix)
+                combined = combine_full_maps(
+                    self.background.raw_map_full_dict[filter_name][dm],
+                    stream_raw,
+                    self.background.valid_mask_full,
+                )
+                finalized = finalize_full(
+                    combined, self.background.valid_mask_full, self.finalize_cfg
+                )
+                finalized_full.append(finalized)
+                stream_raw_full.append(stream_raw)
+                channels_meta.append({"filter": filter_name, "distance_modulus": dm})
+        return finalized_full, stream_raw_full, channels_meta
+
+    def inject_stream_full_sky(self, params: dict, rng: np.random.Generator) -> dict:
+        """Inject a stream and return FULL-SKY channel maps, uncropped.
+
+        `inject_single_stream` crops to one window, which is what training
+        wants. This returns the same channels as whole-sky HEALPix maps
+        instead, which is what *inference* wants: tile a region with
+        `windows.tile_footprint`, crop each tile, run the model, and put the
+        predictions back on the sky with
+        `matched_filter.stitch_windows_to_healpix`. It is the simulated
+        stand-in for a real survey map, where the map exists first and
+        windows are chosen afterwards.
+
+        No window is sampled here, so `rng` is consumed only by realization,
+        placement and the survey model.
+
+        Parameters:
+            params: stream parameter dict, as `inject_single_stream`.
+            rng: np.random.Generator.
+
+        Returns:
+            dict with:
+
+            - ``map_full``: list of full-sky combined (background+stream)
+              maps, one per channel;
+            - ``stream_raw_full``: list of full-sky stream-only count maps,
+              **unthresholded** -- apply `count_threshold` after cropping,
+              since cropping interpolates;
+            - ``valid_mask_full``: the background's full-sky validity mask;
+            - ``channels``: the `{"filter", "distance_modulus"}` mapping, in
+              channel order;
+            - ``params``: the resolved parameter dict (richness -> nstars).
+        """
+        detected, resolved_params = self._realize_and_inject(params, rng)
+        finalized_full, stream_raw_full, channels_meta = self._build_full_sky_channels(
+            detected
+        )
+        return {
+            "map_full": finalized_full,
+            "stream_raw_full": stream_raw_full,
+            "valid_mask_full": self.background.valid_mask_full,
+            "channels": channels_meta,
+            "params": resolved_params,
+        }
+
     def inject_single_stream(
         self,
         params: dict,
@@ -437,34 +563,7 @@ class StreamInjector:
             NotImplementedError if self.label_policy is "soft_distance"
                 (rasterize.py, decision 6 -- still a stub).
         """
-        resolved_params = dict(params)
-        resolved_params.setdefault("band_1", self.bands[0])
-        resolved_params.setdefault("band_2", self.bands[1])
-        resolved_params = resolve_richness_to_nstars(
-            resolved_params, self.richness_kind
-        )
-
-        stream_df = self.stream_source.realize(resolved_params, rng)
-        placed_df = place_stream_in_footprint(
-            stream_df,
-            self.background.footprint,
-            self.pix.nside,
-            rng,
-            rotation_deg=resolved_params.get("orientation"),
-        )
-
-        injected_df = self._obs_injector.inject(
-            placed_df, bands=list(self.bands), rng=rng, verbose=False
-        )
-        detected = injected_df[injected_df[flag_col(self.namespace)]].reset_index(
-            drop=True
-        )
-
-        detected = apply_cuts(detected, self.cuts, namespace=self.namespace)
-        if self.clipping:
-            detected = apply_magnitude_clipping(
-                detected, self.clipping, namespace=self.namespace
-            )
+        detected, resolved_params = self._realize_and_inject(params, rng)
 
         size_deg = self.pix.image_size_pix[0] * self.pix.pixel_scale_deg
         window = sample_stream_window(
@@ -479,53 +578,45 @@ class StreamInjector:
             rng=rng,
         )
 
-        # Distance-major, filter-minor channel order: every filter's map at
-        # one distance is contiguous. Sample.metadata["channels"] records
-        # this mapping explicitly so nothing downstream has to guess it.
-        distance_moduli = sorted(
-            self.background.raw_map_full_dict[self.filter_names[0]]
+        finalized_full, stream_raw_full, channels_meta = self._build_full_sky_channels(
+            detected
         )
-        map_channels = []
-        label_channels = []
-        channels_meta = []
-        valid_mask = None
+        distance_moduli = sorted({c["distance_modulus"] for c in channels_meta})
         use_channelwise_label = self.label_policy in (
             "stream_count",
             "stream_detection",
         )
 
-        for dm in distance_moduli:
-            for filter_name in self.filter_names:
-                selected = self.matched_filters[filter_name].select(
-                    detected, list(self.bands), dm
-                )
-                stream_raw, _stream_valid = make_raw_map(detected, selected, self.pix)
-                combined = combine_full_maps(
-                    self.background.raw_map_full_dict[filter_name][dm],
-                    stream_raw,
+        map_channels = []
+        label_channels = []
+        valid_mask = None
+        for channel_index in range(len(channels_meta)):
+            windowed_map, windowed_valid = crop_window(
+                finalized_full[channel_index],
+                self.background.valid_mask_full,
+                window,
+                self.pix,
+            )
+            map_channels.append(windowed_map)
+            if valid_mask is None:
+                valid_mask = windowed_valid
+
+            if use_channelwise_label:
+                windowed_label, _ = crop_window(
+                    stream_raw_full[channel_index],
                     self.background.valid_mask_full,
+                    window,
+                    self.pix,
                 )
-                finalized = finalize_full(
-                    combined, self.background.valid_mask_full, self.finalize_cfg
-                )
-                windowed_map, windowed_valid = crop_window(
-                    finalized, self.background.valid_mask_full, window, self.pix
-                )
-                map_channels.append(windowed_map)
-                if valid_mask is None:
-                    valid_mask = windowed_valid
-
-                if use_channelwise_label:
-                    windowed_label, _ = crop_window(
-                        stream_raw, self.background.valid_mask_full, window, self.pix
+                # Threshold AFTER cropping, never before: crop_window
+                # interpolates, so thresholding first would produce a binary
+                # map that interpolation then turned back into fractional
+                # values -- a label that is no longer {0, 1} at all.
+                if self.label_policy == "stream_detection":
+                    windowed_label = (windowed_label > self.count_threshold).astype(
+                        windowed_label.dtype
                     )
-                    if self.label_policy == "stream_detection":
-                        windowed_label = (windowed_label > self.count_threshold).astype(
-                            windowed_label.dtype
-                        )
-                    label_channels.append(windowed_label)
-
-                channels_meta.append({"filter": filter_name, "distance_modulus": dm})
+                label_channels.append(windowed_label)
 
         if use_channelwise_label:
             label_stack = np.stack(label_channels, axis=0)

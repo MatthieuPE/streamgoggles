@@ -23,6 +23,7 @@ from streamgoggles.config import DistributionType, EvalGrid, ParameterSpec, Stre
 from streamgoggles.datasets.stream_map_dataset import (
     StreamMapDataset,
     TransformedDataset,
+    configure_torch_threads,
     default_num_workers,
     stream_map_collate_fn,
 )
@@ -1096,3 +1097,35 @@ def test_transformed_dataset_applies_transform_and_forwards_attributes():
     # Unknown attributes fall through to the wrapped dataset, which is how
     # evaluate_on_grid reads `eval_mode`/`eval_grid` through the wrapper.
     assert wrapped.eval_mode is True
+
+
+def test_configure_torch_threads_caps_the_pool(monkeypatch):
+    """Torch otherwise claims every core for intra-op work, on top of the
+    DataLoader workers. Capping it is both a resource-usage decision and,
+    in environments where two libomp copies get loaded, the difference
+    between running and a segfault inside pthread_create."""
+    import torch
+
+    monkeypatch.delenv("STREAMGOGGLES_TORCH_THREADS", raising=False)
+    original = torch.get_num_threads()
+    try:
+        assert configure_torch_threads(num_workers=4) == 1
+        assert torch.get_num_threads() == 1
+        assert configure_torch_threads(num_workers=0, max_threads=2) == 2
+        assert torch.get_num_threads() == 2
+    finally:
+        torch.set_num_threads(original)
+
+
+def test_configure_torch_threads_respects_an_override(monkeypatch):
+    import torch
+
+    original = torch.get_num_threads()
+    try:
+        monkeypatch.setenv("STREAMGOGGLES_TORCH_THREADS", "3")
+        assert configure_torch_threads() == 3
+        # Malformed values fall back rather than raising mid-run.
+        monkeypatch.setenv("STREAMGOGGLES_TORCH_THREADS", "many")
+        assert configure_torch_threads(max_threads=1) == 1
+    finally:
+        torch.set_num_threads(original)
