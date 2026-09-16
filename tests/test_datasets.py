@@ -470,6 +470,69 @@ def test_eval_mode_persists_regardless_of_config_persist(
     assert sim_store.exists(full_params)
 
 
+def test_eval_mode_replicates_are_distinct_realizations(
+    real_background, injector, sim_store
+):
+    """The real trap replicates introduce: SimulationStore addresses samples
+    by params, so replicates of one parameter combination (identical params,
+    different seeds) would all collide on a single cache entry and return
+    the first one generated -- silently collapsing k realizations into 1.
+    They must come back genuinely different."""
+    bg, _filters, _pix = real_background
+    config = StreamConfig(
+        params=_fixed_params_dict(),
+        background_fraction=0.0,
+        persist=False,
+        richness_kind="nstars",
+    )
+    grid = EvalGrid(points=[{}, {}, {}], seeds=[11, 22, 33], replicates=[0, 1, 2])
+    dataset = StreamMapDataset(
+        config=config,
+        background=bg,
+        injector=injector,
+        store=sim_store,
+        eval_mode=True,
+        eval_grid=grid,
+    )
+    assert len(dataset) == 3
+
+    items = [dataset[i] for i in range(3)]
+    for i, item in enumerate(items):
+        assert item["metadata"]["replicate"] == i
+    # Same physical parameters throughout...
+    assert items[0]["params"]["nstars"] == items[1]["params"]["nstars"]
+    # ...but genuinely different realizations (different placement/window,
+    # so different maps), not three copies of one cached sample.
+    assert not np.array_equal(items[0]["map_stack"], items[1]["map_stack"])
+    assert not np.array_equal(items[1]["map_stack"], items[2]["map_stack"])
+    assert items[0]["metadata"]["window"] != items[1]["metadata"]["window"]
+
+
+def test_eval_mode_replicate_is_still_reproducible(
+    real_background, injector, sim_store
+):
+    """Replicates stay individually deterministic -- the same index must
+    keep returning the same sample, which is the whole reason eval mode
+    uses fixed seeds at all."""
+    bg, _filters, _pix = real_background
+    config = StreamConfig(
+        params=_fixed_params_dict(),
+        background_fraction=0.0,
+        persist=False,
+        richness_kind="nstars",
+    )
+    grid = EvalGrid(points=[{}, {}], seeds=[11, 22], replicates=[0, 1])
+    dataset = StreamMapDataset(
+        config=config,
+        background=bg,
+        injector=injector,
+        store=sim_store,
+        eval_mode=True,
+        eval_grid=grid,
+    )
+    np.testing.assert_array_equal(dataset[1]["map_stack"], dataset[1]["map_stack"])
+
+
 def test_eval_mode_uses_explicitly_provided_grid(real_background, injector, sim_store):
     bg, _filters, pix = real_background
     config = StreamConfig(

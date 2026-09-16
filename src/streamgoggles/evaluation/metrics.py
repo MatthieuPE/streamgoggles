@@ -175,6 +175,51 @@ def precision_recall(
     return precision, recall
 
 
+def confusion_matrix(
+    pred: np.ndarray,
+    target: np.ndarray,
+    valid_mask: np.ndarray | None = None,
+    threshold: float = 0.5,
+) -> dict[str, int]:
+    """Per-pixel confusion matrix (TP/FP/TN/FN counts).
+
+    The raw counts every other threshold-based metric here is derived from,
+    reported directly: `iou`, `dice` and `precision_recall` all answer
+    narrower questions about the same four numbers, and none of them shows
+    the true negatives at all. Useful when what's wanted is "how is the
+    model wrong", not just "how good is the overlap" -- a model with 5 false
+    positives and a model with 5000 can report identical recall.
+
+    Both `pred` and `target` are binarized at `threshold` (same convention as
+    iou()/dice()), and invalid pixels are excluded entirely -- they are not
+    counted as true negatives, which would otherwise inflate TN by the whole
+    out-of-footprint area and make any TN-based rate meaningless.
+
+    Parameters:
+        pred, target, valid_mask, threshold: as in iou().
+
+    Returns:
+        dict with integer keys ``tp``, ``fp``, ``tn``, ``fn`` (counts over
+        valid pixels only). No NaN convention applies -- counts are always
+        well-defined, including all-zero when nothing is valid.
+
+    Raises:
+        ValueError if shapes incompatible.
+    """
+    pred, target = _check_shapes(pred, target)
+    mask = _broadcast_valid_mask(pred, valid_mask)
+
+    pred_bin = pred > threshold
+    target_bin = target > threshold
+
+    return {
+        "tp": int(np.count_nonzero(pred_bin & target_bin & mask)),
+        "fp": int(np.count_nonzero(pred_bin & ~target_bin & mask)),
+        "tn": int(np.count_nonzero(~pred_bin & ~target_bin & mask)),
+        "fn": int(np.count_nonzero(~pred_bin & target_bin & mask)),
+    }
+
+
 def mse(
     pred: np.ndarray, target: np.ndarray, valid_mask: np.ndarray | None = None
 ) -> float:

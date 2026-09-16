@@ -177,3 +177,131 @@ def test_brighter_surface_brightness_implies_more_mass(isochrone_params):
     mass_bright = _mass_for_surface_brightness(26.0)
     mass_faint = _mass_for_surface_brightness(32.0)
     assert mass_bright > mass_faint
+
+
+# ---------------------------------------------------------------------------
+# Isochrone construction cache (PLAN.md section 6.16)
+# ---------------------------------------------------------------------------
+
+
+def test_build_isochrone_is_cached(isochrone_params):
+    """Constructing a ugali isochrone globs and parses its whole data
+    directory (~11,500 files), and convert_SurfaceBrightness_to_N's brentq
+    inversion asks for the same one ~31 times per stream. Caching it is the
+    difference between ~1.2s and ~0.07s per training sample."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    cfg = isochrone_params["isochrone"]
+
+    inject_utils._build_isochrone(cfg)
+    inject_utils._build_isochrone(cfg)
+    inject_utils._build_isochrone(
+        dict(reversed(list(cfg.items())))
+    )  # key order must not matter
+
+    info = inject_utils._isochrone_factory_cached.cache_info()
+    assert info.misses == 1, "the isochrone should be constructed exactly once"
+    assert info.hits == 2
+
+
+def test_build_isochrone_returns_isolated_copies(isochrone_params):
+    """Every caller sets `distance_modulus` on the isochrone before using
+    it, so a shared cached object would let one caller's distance modulus
+    silently become the next one's. ugali keeps that value in mutable
+    Parameter objects held in dicts on the instance, so a plain shallow
+    copy does NOT isolate it -- this test is what caught that."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    cfg = isochrone_params["isochrone"]
+
+    first = inject_utils._build_isochrone(cfg)
+    baseline = first.distance_modulus
+    first.distance_modulus = 25.0
+
+    second = inject_utils._build_isochrone(cfg)
+    assert second.distance_modulus == baseline
+    assert first.distance_modulus == 25.0
+
+
+def test_build_isochrone_falls_back_when_params_unhashable(monkeypatch):
+    """Unhashable parameters (a list from someone's YAML, say) must still
+    reach the factory uncached, so adding the cache can never restrict what
+    callers are allowed to pass.
+
+    This is the one test here that stubs ugali rather than calling it for
+    real: the point is to exercise *this module's* hashability branch, and
+    every parameter the real factory accepts happens to be a scalar, so
+    there is no unhashable input it would also accept."""
+    seen = {}
+
+    def fake_factory(**kwargs):
+        seen.update(kwargs)
+        return "built-uncached"
+
+    monkeypatch.setattr(ugali.isochrone, "factory", fake_factory)
+    cfg = {"name": "Marigo2017", "nodes": [1, 2, 3]}
+
+    assert inject_utils._build_isochrone(cfg) == "built-uncached"
+    assert seen == cfg
+
+
+def test_cached_isochrone_gives_identical_conversions(isochrone_params):
+    """The cache must be a pure speedup: identical numbers, to the bit."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    kwargs = {
+        "stream_length": 8.0,
+        "stream_width": 0.2,
+        "isochrone_params": isochrone_params,
+        "band": "r",
+    }
+
+    original = inject_utils._build_isochrone
+    inject_utils._build_isochrone = lambda p: ugali.isochrone.factory(**p)
+    try:
+        uncached = inject_utils.convert_SurfaceBrightness_to_N(32.0, **kwargs)
+    finally:
+        inject_utils._build_isochrone = original
+
+    cached = inject_utils.convert_SurfaceBrightness_to_N(32.0, **kwargs)
+    assert cached == uncached
+
+
+def test_build_isochrone_distinguishes_different_parameters(isochrone_params):
+    """The failure mode that would matter most once a full (age, z, ...)
+    grid is being scanned: a cache keyed too coarsely would hand back one
+    combination's isochrone for another, silently, with no error anywhere.
+    Different parameters must give genuinely different isochrones."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+    base = dict(isochrone_params["isochrone"])
+
+    young = inject_utils._build_isochrone({**base, "age": 8.0})
+    old = inject_utils._build_isochrone({**base, "age": 13.5})
+    metal_poor = inject_utils._build_isochrone({**base, "z": 0.0001})
+
+    assert young.age != old.age
+    assert metal_poor.z != young.z
+    # Three distinct parameter sets -> three distinct constructions.
+    assert inject_utils._isochrone_factory_cached.cache_info().misses == 3
+
+
+def test_cached_conversions_differ_across_age_and_metallicity(isochrone_params):
+    """End-to-end version of the same guard: varying age or z must change
+    the resolved star count, and re-asking must stay stable (no drift from
+    one combination's cached state leaking into another's)."""
+    inject_utils._isochrone_factory_cached.cache_clear()
+
+    def n_for(age, z):
+        params = {
+            "isochrone": {**isochrone_params["isochrone"], "age": age, "z": z},
+            "distance_modulus": {"center": {"value": 16.8}},
+        }
+        return inject_utils.convert_SurfaceBrightness_to_N(
+            32.0, stream_length=8.0, stream_width=0.2, isochrone_params=params, band="r"
+        )
+
+    a = n_for(10.0, 0.0004)
+    b = n_for(13.0, 0.0004)
+    c = n_for(10.0, 0.0016)
+
+    assert len({a, b, c}) == 3, "different (age, z) must give different N"
+    # Interleaving must not contaminate: re-asking gives the same answers.
+    assert n_for(10.0, 0.0004) == a
+    assert n_for(13.0, 0.0004) == b

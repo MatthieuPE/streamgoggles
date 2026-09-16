@@ -1,4 +1,4 @@
-streamgoggles.evaluation.completeness\_purity
+﻿streamgoggles.evaluation.completeness\_purity
 =============================================
 
 .. automodule:: streamgoggles.evaluation.completeness_purity
@@ -8,6 +8,7 @@ streamgoggles.evaluation.completeness\_purity
 
    .. autosummary::
    
+      aggregate_over_replicates
       compute_completeness_purity
       evaluate_on_grid
       plot_recovery_vs_parameter

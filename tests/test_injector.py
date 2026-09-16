@@ -8,8 +8,12 @@ isochrone filter plus one or more deliberately "bad" decoy filters --
 matched_filter.ShiftedColorBoxFilter -- per trial distance), and its default
 label ("stream_count") is the true stream-only raw count per (filter,
 distance) channel, built directly here rather than via rasterize.py.
-rasterize.py-based labels (binary/density/soft_distance) are still reachable
-via label_policy and remain tested; only "soft_distance" is still a stub.
+"stream_detection" (2026-09-15, PLAN.md section 6.12) hard-thresholds that
+same per-channel count into a binary {0, 1} detection target instead --
+retargeting Stage 1 to the actual detection goal rather than trying to fix
+stream_count's amplitude-under-recovery problem. rasterize.py-based labels
+(binary/density/soft_distance) are still reachable via label_policy and
+remain tested; only "soft_distance" is still a stub.
 """
 
 import astropy.units as u
@@ -599,7 +603,19 @@ def test_inject_single_stream_strict_cuts_reduce_signal(real_background, stream_
     )
     sample_strict = strict.inject_single_stream(stream_params, np.random.default_rng(9))
 
-    assert sample_strict.map_stack.sum() < sample_lenient.map_stack.sum()
+    # Asserted on label_stack (the STREAM-ONLY count), not map_stack.
+    # map_stack is background + stream, and the background dominates it by
+    # ~3 orders of magnitude; worse, the two runs get *different windows*
+    # (sample_stream_window is driven by the detected stream stars, which
+    # the strict cut changes), so comparing map_stack sums really compares
+    # two unrelated background patches. Measured directly: strict < lenient
+    # on map_stack came out True/False/False across three seeds -- a coin
+    # flip that had nothing to do with cuts, and the source of a long-running
+    # intermittent failure here (PLAN.md section 6.15). On the stream-only
+    # label the effect is unambiguous: a g < 18 cut removes essentially
+    # every stream star at this distance modulus.
+    assert sample_lenient.label_stack.sum() > 0.0
+    assert sample_strict.label_stack.sum() < sample_lenient.label_stack.sum()
 
 
 def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
@@ -623,6 +639,153 @@ def test_inject_single_stream_soft_distance_policy_raises_not_implemented(
     )
     with pytest.raises(NotImplementedError):
         injector.inject_single_stream(stream_params, np.random.default_rng(3))
+
+
+def test_injector_default_count_threshold_is_one(real_background):
+    """Default count_threshold=1.0 (PLAN.md section 6.13), calibrated
+    empirically against nside=512 -- the lowest threshold that still
+    detects the faintest streams in this project's working richness range
+    (surface_brightness up to 35, where count_threshold>=2 already leaves
+    the label entirely empty; see create_data.ipynb's calibration section
+    (§4) for the full sweep)."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+    )
+    assert injector.count_threshold == 1.0
+
+
+def test_inject_single_stream_detection_policy_label_is_binary(
+    real_background, stream_params
+):
+    """label_policy="stream_detection" hard-thresholds the same per-channel
+    stream-only raw count stream_count would return directly (PLAN.md
+    section 6.12) -- the label itself must come out strictly binary."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=10.0,
+    )
+    sample = injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    assert set(np.unique(sample.label_stack)) <= {0.0, 1.0}
+    assert sample.label_stack.sum() > 0
+    assert sample.label_stack.dtype == np.float32
+
+
+def test_inject_single_stream_detection_policy_matches_manual_threshold_of_count_policy(
+    real_background, stream_params
+):
+    """The detection label must be exactly (stream_count label >
+    count_threshold) -- same underlying stream_raw, same window/rng, just
+    thresholded -- not some independently-recomputed quantity."""
+    bg, filters, pix = real_background
+    count_injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_count",
+    )
+    detection_injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=10.0,
+    )
+    count_sample = count_injector.inject_single_stream(
+        stream_params, np.random.default_rng(7)
+    )
+    detection_sample = detection_injector.inject_single_stream(
+        stream_params, np.random.default_rng(7)
+    )
+    expected = (count_sample.label_stack > 10.0).astype(np.float32)
+    np.testing.assert_array_equal(detection_sample.label_stack, expected)
+
+
+def test_inject_single_stream_detection_policy_decoy_stays_below_threshold_at_true_distance(
+    real_background, stream_params
+):
+    """The whole point of the decoy filter (2026-09-09 pivot) must still
+    hold under the hard-thresholded detection label: a decoy channel should
+    have far fewer (typically zero) detected pixels than the real filter's
+    channel at the stream's own true distance."""
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=10.0,
+    )
+    sample = injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    channels = sample.metadata["channels"]
+    good_idx = channels.index({"filter": "good", "distance_modulus": 16.8})
+    decoy_idx = channels.index({"filter": "decoy", "distance_modulus": 16.8})
+    assert sample.label_stack[good_idx].sum() > sample.label_stack[decoy_idx].sum()
+
+
+def test_inject_single_stream_detection_policy_higher_threshold_detects_fewer_pixels(
+    real_background, stream_params
+):
+    bg, filters, pix = real_background
+    loose = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=1.0,
+    )
+    strict = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=200.0,
+    )
+    loose_sample = loose.inject_single_stream(stream_params, np.random.default_rng(3))
+    strict_sample = strict.inject_single_stream(stream_params, np.random.default_rng(3))
+    assert strict_sample.label_stack.sum() < loose_sample.label_stack.sum()
 
 
 def test_inject_background_only_builds_valid_sample(real_background):

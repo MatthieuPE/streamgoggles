@@ -243,6 +243,47 @@ def test_streamobs_light_source_load_real():
     assert catalog["dec"].between(-34.0, -26.0).all()
 
 
+def test_streamobs_light_source_seed_makes_generation_reproducible():
+    """`seed` has to reach streamobs's generate(), not its constructor --
+    that distinction is the whole fix. Without it, generation is unseeded:
+    every call returns a different catalog, even in one process and even
+    with numpy's global seed fixed, which silently made every downstream
+    "fixed-seed" run irreproducible at the data level."""
+    source = StreamObsLightBackgroundSource()
+    region = StudyRegion(center_ra=0.0, center_dec=-30.0, width_deg=6.0, height_deg=4.0)
+
+    first = source.load(survey="lsst", release="yr1", region=region, cfg={"seed": 1234})
+    second = source.load(
+        survey="lsst", release="yr1", region=region, cfg={"seed": 1234}
+    )
+
+    assert len(first) == len(second)
+    pd.testing.assert_frame_equal(first, second)
+
+
+def test_streamobs_light_source_different_seeds_give_different_catalogs():
+    source = StreamObsLightBackgroundSource()
+    region = StudyRegion(center_ra=0.0, center_dec=-30.0, width_deg=6.0, height_deg=4.0)
+
+    first = source.load(survey="lsst", release="yr1", region=region, cfg={"seed": 1})
+    second = source.load(survey="lsst", release="yr1", region=region, cfg={"seed": 2})
+
+    assert not first.equals(second)
+
+
+def test_streamobs_light_source_is_unseeded_without_a_seed():
+    """Documents the default, which is a real trap rather than an
+    implementation detail: with no seed, two loads in the SAME process
+    disagree -- so anything wanting reproducible data must pass one."""
+    source = StreamObsLightBackgroundSource()
+    region = StudyRegion(center_ra=0.0, center_dec=-30.0, width_deg=6.0, height_deg=4.0)
+
+    first = source.load(survey="lsst", release="yr1", region=region, cfg={})
+    second = source.load(survey="lsst", release="yr1", region=region, cfg={})
+
+    assert not first.equals(second)
+
+
 def test_streamobs_light_source_custom_bands_respected():
     # bands is genuinely forwarded to Background/LightBackgroundGenerator: an
     # unbuilt band-pair CMD resource (only g,r is built in this environment)

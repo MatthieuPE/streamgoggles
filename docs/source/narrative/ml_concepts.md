@@ -70,8 +70,10 @@ A **U-Net** ([Ronneberger, Fischer & Brox
 segmentation) is a convolutional architecture for **dense prediction**
 tasks — where the output is itself an image, the same spatial size as the
 input, not a single label or a handful of numbers. This project's task
-(predict a star count *per pixel*) is exactly that shape, which is why a
-U-Net rather than a classification-style CNN.
+(predict something *per pixel* — a detection probability, or a star count)
+is exactly that shape, which is why a U-Net rather than a
+classification-style CNN (which collapses the whole image down to one
+label or a handful of numbers).
 
 It has three parts, and the "U" shape in the usual diagram names the
 first two:
@@ -100,9 +102,63 @@ first two:
 The very end of the network (the **head**) maps the decoder's final
 feature maps down to the actual number of output channels wanted, then
 optionally applies an **activation function** to constrain the output's
-range — see "Activation functions" below. See {doc}`datasets_and_models`
-for exactly how this project's `UNet` implementation is shaped (channel
-count, handling of small/non-power-of-2 images, and so on).
+range — see "Activation functions" below.
+
+Here's the shape of this project's `UNet` (`models/unet.py`) specifically,
+at its default `depth=4` (the number of encoder/decoder stages — this
+project's actual runs often use a smaller `depth=2`, e.g. `train_model.ipynb`,
+for a faster smoke-scale training loop; the diagram below just picks 4 to
+show the pattern clearly):
+
+```{mermaid}
+flowchart TB
+    IN["Input\n(B, in_channels, H, W)"] --> E1
+    subgraph ENC["Encoder"]
+        direction TB
+        E1["ConvBlock 1\nwidth = base_width"] --> P1["MaxPool /2"]
+        P1 --> E2["ConvBlock 2\nwidth = base_width x 2"] --> P2["MaxPool /2"]
+        P2 --> E3["ConvBlock 3\nwidth = base_width x 4"] --> P3["MaxPool /2"]
+        P3 --> E4["ConvBlock 4\nwidth = base_width x 8"] --> P4["MaxPool /2"]
+    end
+    P4 --> BOT["Bottleneck ConvBlock\nwidth = base_width x 16"]
+    subgraph DEC["Decoder"]
+        direction BT
+        BOT --> U4["Upsample x2"] --> D4["ConvBlock\n(+ skip from E4)"]
+        D4 --> U3["Upsample x2"] --> D3["ConvBlock\n(+ skip from E3)"]
+        D3 --> U2["Upsample x2"] --> D2["ConvBlock\n(+ skip from E2)"]
+        D2 --> U1["Upsample x2"] --> D1["ConvBlock\n(+ skip from E1)"]
+    end
+    D1 --> HEAD["1x1 conv -> out_channels\n+ head activation\n(sigmoid / identity / softplus)"]
+    HEAD --> OUT["Output\n(B, out_channels, H, W)"]
+
+    E1 -. skip .-> D1
+    E2 -. skip .-> D2
+    E3 -. skip .-> D3
+    E4 -. skip .-> D4
+```
+
+**Input and output are exactly the same spatial size (`H, W`).** This is
+guaranteed by construction, for *any* `H, W` (not just powers of 2): pooling
+uses `ceil_mode=True` (so an odd spatial size rounds up instead of
+vanishing), and each decoder stage upsamples back to its matching skip
+connection's *exact* recorded size via `F.interpolate(..., size=skip.shape[-2:])`
+rather than a fixed scale factor — so there's never a size mismatch to crop
+or pad around, at any `depth`. What changes between input and output is only
+the **channel count**: `in_channels` is `n_distances * n_filters` (one
+channel per `(matched filter, trial distance)` pair — see
+{doc}`data_generation`), while `out_channels` is typically the same number
+(one prediction per input channel, matching `label_stack`'s own shape) but
+doesn't have to be — see `datasets_and_models` for how this project sets it.
+The **output is a plain per-pixel convolutional result, with no built-in
+awareness of `valid_mask`**: pixels outside the survey footprint still get
+*some* (physically meaningless) predicted value, and must be masked out by
+the caller before plotting or thresholding — exactly like the loss and
+evaluation metrics already do internally (see the masking note in
+{doc}`datasets_and_models`).
+
+See {doc}`datasets_and_models` for exactly how this project's `UNet`
+implementation is configured in practice (`base_width`, `depth`, `head`)
+and used.
 
 ## Activation functions (the model's "head")
 
@@ -230,11 +286,38 @@ reward:
 
 ### Which of these does this project actually use?
 
-Short answer, with the full reasoning in {doc}`datasets_and_models`: the
-segmentation-style losses/metrics above (Dice, IoU, Focal, Tversky, BCE)
-were designed for an earlier binary/probability label; the current default
-label (`label_policy="stream_count"`) is a literal star count, so training
-uses `MSELoss`/`WeightedMSELoss`, while the segmentation metrics are still
-computed at *evaluation* time (by thresholding the count prediction) since
-they remain a useful, interpretable summary of "did the model find the
-stream," even though a count is what's actually being trained on.
+Short answer, with the full reasoning in {doc}`datasets_and_models`: this
+project's label went through two pivots (both logged in `PLAN.md`), and
+which loss trains against which label matters a lot here, because it turned
+out not to be a neutral choice:
+
+1. An early binary/probability label (`rasterize.py`) paired with the
+   segmentation losses above (Dice, Focal, Tversky, BCE) — still available,
+   no longer the default.
+2. `label_policy="stream_count"` (2026-09-09): a literal, per-channel star
+   count, trained with `MSELoss`/`WeightedMSELoss`. This produced a model
+   that localized streams well (high Dice *as an evaluation metric*, after
+   thresholding the count prediction) but consistently under-recovered the
+   true *amplitude* at the brightest pixels, by a large factor — a known
+   failure mode of plain regression on a heavy-tailed target (most pixels
+   near 0, a few very high), where minimizing average squared error
+   rewards hedging toward the low end almost everywhere rather than
+   committing to a rare, large value.
+3. `label_policy="stream_detection"` (2026-09-15): since the actual goal
+   is "is there a stream here," not "exactly how many stars," the count
+   label is hard-thresholded into a binary target instead
+   (`stream_raw > count_threshold`), and training goes back to the
+   segmentation losses (`DiceLoss` paired with `head="sigmoid"` is this
+   project's current default) — sidestepping the amplitude problem rather
+   than fighting it, since a bounded target has no heavy tail to hedge
+   against. The model's output is still a genuine continuous probability
+   in `(0, 1)` at every pixel (not a boolean) regardless of this choice —
+   see {doc}`datasets_and_models` for why the hard-threshold label doesn't
+   make the *output* any less continuous.
+
+`MSELoss`/`WeightedMSELoss` remain available for anyone who specifically
+wants `label_policy="stream_count"`'s literal count back; the segmentation
+metrics (Dice, IoU, precision/recall) are computed at *evaluation* time
+either way, by thresholding whatever the model outputs, since they're a
+useful, interpretable summary of "did the model find the stream" regardless
+of which label trained it.

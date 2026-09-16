@@ -96,7 +96,13 @@ class StreamMapDataset:
       `build_eval_grid` if not given explicitly). Each point has its own
       fixed seed, so `__getitem__(idx)` always returns the same sample --
       persisted through `store` regardless of `config.persist`, since an
-      eval set must be reproducible across runs.
+      eval set must be reproducible across runs. With
+      `build_eval_grid(..., n_replicates=k)`, each parameter combination
+      appears k times with k different seeds: k independent realizations
+      (different placement/window/orientation/noise) of the same physical
+      parameters, so a per-parameter metric can be a mean and spread rather
+      than one arbitrary draw. Each sample's own replicate index is recorded
+      in `Sample.metadata["replicate"]`.
 
     Attributes:
         config: StreamConfig instance (params, background_fraction, persist).
@@ -216,17 +222,32 @@ class StreamMapDataset:
             )
         point = self.eval_grid.points[idx]
         seed = self.eval_grid.seeds[idx]
+        replicate = self.eval_grid.replicates[idx]
         full_params = {
             name: (spec.value if spec.is_fixed() else point[name])
             for name, spec in self.config.params.items()
         }
 
-        def _generate(params: dict) -> Sample:
-            return self.injector.inject_single_stream(
-                params, np.random.default_rng(seed)
-            )
+        # The store addresses samples by params, so replicates of the SAME
+        # parameter combination (identical `full_params`, different seeds)
+        # would all collide on one cache entry and return the first one
+        # generated -- silently collapsing k realizations back into 1. The
+        # replicate index therefore has to be part of the *addressing* key,
+        # but NOT of the params handed to inject_single_stream, which only
+        # ever takes real stream parameters.
+        store_params = (
+            full_params if replicate == 0 else {**full_params, "replicate": replicate}
+        )
 
-        return self.store.get_or_generate(full_params, _generate, persist=True)
+        def _generate(_params: dict) -> Sample:
+            sample = self.injector.inject_single_stream(
+                full_params, np.random.default_rng(seed)
+            )
+            if sample.metadata is not None:
+                sample.metadata["replicate"] = replicate
+            return sample
+
+        return self.store.get_or_generate(store_params, _generate, persist=True)
 
     def _get_training_sample(self, idx: int) -> Sample:
         if not 0 <= idx < self.steps_per_epoch:

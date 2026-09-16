@@ -25,6 +25,150 @@ two modes:
   `StreamConfig.persist`, since an evaluation set has to be reproducible
   across runs.
 
+### Exactly how many samples, and how each one is built
+
+Both modes ultimately call `StreamInjector.inject_single_stream(params,
+rng)` exactly **once** per sample — one call realizes the stream
+population, places it, samples **one** window (`windows.
+sample_stream_window`), injects survey noise, then loops over every
+`(distance, filter)` channel *reusing that same window and realization* to
+build each channel's crop (see {doc}`data_generation`). So for a single
+sample, window selection happens once, not once per channel — every
+channel is a different color-magnitude/distance cut of the same underlying
+window and stars, not an independently re-windowed draw. "A training
+sample" always means: one stream population, one placement (random sky
+position + orientation), one window, one set of survey noise draws —
+projected into as many `(filter, distance)` channels as the config asks
+for, all channels sharing that same underlying realization.
+
+**One training step, concretely.** Say `richness` is `DISCRETE`
+`[31, 32, 33, 34]` and `DataLoader` is about to build the next batch.
+For each item in that batch, `StreamMapDataset.__getitem__` does, in
+order: (1) spawn a fresh child RNG, never used before and never reused
+again; (2) with probability `background_fraction`, generate a pure-
+background window instead and stop here; otherwise (3) draw *every* free
+parameter independently from that RNG — for `richness`, one of the 4
+values, each equally likely, independent of what any other batch or epoch
+drew; (4) call `injector.inject_single_stream(params, rng)`, which
+realizes a brand-new stream population at that richness, places it at a
+random sky position and orientation inside the footprint, rejection-samples
+one window containing enough of it, injects survey noise, and crops every
+channel from that one window/realization. The resulting `map_stack`/
+`label_stack` pair becomes one row of one batch, contributes to exactly
+one gradient update, and is then discarded — nothing about it is stored or
+referenced again.
+
+**Training: is a given input reused, across epochs or otherwise? No.**
+`steps_per_epoch` is a nominal per-`DataLoader`-epoch count, not the
+number of distinct samples that exist — `StreamMapDataset.rng` (an
+`np.random.Generator` created once, when the dataset object is
+constructed) is never reset between epochs, and every `__getitem__` call
+spawns a fresh, never-repeated child generator from it
+(`Generator.spawn(1)`) before sampling that call's own random `params` and
+handing them to `inject_single_stream`. So the true number of distinct
+training samples generated across a full `trainer.train(...)` run is
+`epochs * steps_per_epoch` (times `batch_size`, since a "step" here means
+one `__getitem__` call, and `DataLoader` calls `__getitem__` once per item
+in a batch) — e.g. `train_model.ipynb`'s `epochs=40`,
+`steps_per_epoch=30`, `batch_size=2` means **1200 independent,
+never-repeated draws** over the course of training, not 30 samples
+replayed 40 times, and not one fixed "training set" the way a typical
+image dataset (loaded once, iterated over repeatedly) would be — this
+dataset behaves like an infinite simulator you draw fresh from every step,
+closer in spirit to online/streaming training than to epoch-over-a-fixed-
+corpus training. Nothing is persisted to disk by default in training mode
+(`StreamConfig.persist=False` unless set) — every draw really is generated
+from scratch, window included. With multiple `DISCRETE` values, a fixed
+total sample budget splits across them *on average* (each draw picks one
+value independently, uniformly), not per-value — directly relevant to why
+a training budget that used to fully serve one fixed richness now only
+serves each of 4 values a quarter as often on average, see
+{doc}`training_and_evaluation` (PLAN.md §6.13).
+
+### Eval grid: one fixed realization per point — a real limitation, not just a design note
+
+`config.build_eval_grid` enumerates the **Cartesian product** of every
+non-`FIXED` parameter's candidate values (`UNIFORM`/`LOG_UNIFORM`:
+`n_points_per_range` equally-spaced points, default 5; `DISCRETE`: every
+value, or up to `n_points_discrete` if capped) — e.g. a single free
+`DISCRETE` `richness` spec with 4 values produces exactly 4 grid points,
+one per value (`train_model.ipynb`'s `[31, 32, 33, 34]` scan). Each point
+is assigned its own fixed integer seed, drawn deterministically from a
+single master `seed` (default 42) in enumeration order — so re-building
+the same `StreamConfig` always produces the same points *and* the same
+seeds. `StreamMapDataset._get_eval_sample` then calls
+`inject_single_stream(params, np.random.default_rng(seed))` — **exactly
+one, fully deterministic realization per grid point**: one specific
+placement, one specific window (position *and* orientation), one specific
+draw of survey noise, every time. This is generated once and then cached
+(`SimulationStore.get_or_generate` loads the saved sample on every later
+call instead of regenerating), so a given grid point's realization is
+fixed not just within one run but across every epoch of it.
+
+**This means a per-richness metric (e.g. "Dice at surface_brightness=34")
+is a measurement on a sample size of exactly one placement/window/
+orientation, not an average over the many realizations a stream with those
+physical parameters could actually produce.** It does *not* marginalize
+over window position, orientation, or noise the way the metric's name
+("Dice at SB 34") suggests it might — a real gap between what the number
+sounds like it means and what it actually measures. This was a deliberate
+trade-off, not an oversight: fixing the realization per grid point makes
+validation-loss/metric curves *within* one training run directly
+comparable epoch to epoch (a Dice value going up or down between epoch 10
+and epoch 20 reflects the model improving or not, not a new random window
+also changing underneath it) — resampling a new window every epoch would
+make that curve noisy for a different reason, confounding "is the model
+learning" with "did this epoch happen to get an easier window."
+
+**The real cost: a result like PLAN.md §6.13's "SB 34 recovers 0.0 Dice"
+cannot be read as "the network genuinely cannot detect streams this
+faint" — it could equally be "this one particular window/orientation
+happened to be an unusually hard instance of SB 34."** Both are consistent
+with the same observed number, and in that specific case the second turned
+out to be closer to the truth (see `train_model.ipynb` §8).
+
+### Replicates: several realizations per grid point
+
+`build_eval_grid(config, n_replicates=k)` is the fix, and it is
+implemented: each parameter combination is emitted **k times with k
+different seeds**, so one "grid point" becomes k independent realizations
+— different placement, window, orientation and survey noise — of the same
+physical parameters. A per-parameter metric then becomes a mean and
+spread instead of one arbitrary draw of it, which is what a number like
+"Dice at SB 34" should have meant all along.
+
+Replicates are expanded *inline* — the same point dict repeated, each
+entry still carrying exactly one seed — rather than nesting a seed list
+per point. That deliberately keeps `EvalGrid`'s "one index → one sample"
+contract intact, so `StreamMapDataset.__getitem__`, `evaluate_on_grid`'s
+DataFrame shape, and everything downstream needed no changes at all:
+replicate entries are simply more rows, identified by
+`EvalGrid.replicates` (and by a `replicate` column in `evaluate_on_grid`'s
+output, read from `Sample.metadata["replicate"]`). The default is
+`n_replicates=1`, i.e. exactly the historical behavior.
+
+{py:func}`~streamgoggles.evaluation.completeness_purity.aggregate_over_replicates`
+reduces those rows to `<metric>_mean`/`<metric>_std`/`<metric>_n` per
+parameter combination. The `_n` column is not bookkeeping: NaN metrics
+(the undefined-ratio convention above) drop out per metric, so a mean over
+2 of 5 replicates is a materially different claim from a mean over 5 of 5,
+and the column is what tells them apart.
+
+```{warning}
+A real trap this had to handle explicitly: `SimulationStore` addresses
+samples by their parameter dict, so replicates of one combination —
+identical params, different seeds — would all collide on a *single* cache
+entry and silently collapse k realizations back into one. The replicate
+index is therefore part of the store's addressing key while deliberately
+staying out of the params handed to `inject_single_stream` (which only
+ever takes real stream parameters). The same hazard applies to *two
+different grids sharing one store*: a 1-replicate grid and a k-replicate
+grid both have a "replicate 0" whose addressing key is the bare params,
+but they generally want different seeds there — give them separate stores
+(as `train_model.ipynb` does) rather than letting whichever generates
+first silently win.
+```
+
 ### `DataLoader` and `stream_map_collate_fn`
 
 Wrapping this dataset in a real `torch.utils.data.DataLoader` needs a
@@ -43,8 +187,10 @@ batch anyway).
 - `RobustNormalizer` — per-channel `(x - mean) / std`, fit once on pooled
   training data, computed over *valid* pixels only so the fixed invalid-fill
   value never skews the statistics. Applied to `map_stack` only —
-  `label_stack` stays in raw count units throughout, since the loss
-  functions and evaluation metrics are defined against that literal scale.
+  `label_stack` is never normalized, whatever scale it's actually in (a
+  literal count under `label_policy="stream_count"`, already bounded `{0,
+  1}` under `label_policy="stream_detection"`), since the loss functions and
+  evaluation metrics are defined against that literal label scale.
 - `StreamMapTransform` — composes optional normalization with optional
   augmentation (random 90° rotations, horizontal/vertical flips), applied
   identically to `map_stack`, `label_stack`, and `valid_mask` so all three
@@ -52,9 +198,11 @@ batch anyway).
 
 No synthetic noise injection: this was in an earlier skeleton sketch, and
 was deliberately removed. `map_stack` is count data with its own realistic
-survey noise already baked in from injection, and the label is a literal
-star count — adding an uncorrelated Gaussian noise model on top would teach
-the network a noise model that doesn't match the real one.
+survey noise already baked in from injection, and the label is derived
+directly from the same underlying stream-only count (literal under
+`label_policy="stream_count"`, thresholded under `label_policy=
+"stream_detection"`) — adding an uncorrelated Gaussian noise model on top
+would teach the network a noise model that doesn't match the real one.
 
 ## The model ({py:mod}`streamgoggles.models.unet`)
 
@@ -75,11 +223,26 @@ project:
   any depth.
 
 Three output heads, tied to the label/loss in use: `"sigmoid"` (binary
-classification), `"identity"` (unconstrained regression), `"softplus"`
-(smooth non-negative regression — the natural fit for the current default
-`label_policy="stream_count"`, a literal non-negative count).
-`UNet.encoder()` exposes bottleneck features alone, for the Stage-2
-embedding work described in {doc}`overview`.
+classification — paired with `label_policy="stream_detection"`, this
+project's current default, see {doc}`ml_concepts`), `"identity"`
+(unconstrained regression), `"softplus"` (smooth non-negative regression —
+the natural fit for `label_policy="stream_count"`'s literal, non-negative
+count, still available but no longer the default). `UNet.encoder()` exposes
+bottleneck features alone, for the Stage-2 embedding work described in
+{doc}`overview`.
+
+**The output is always a continuous value, whichever head is used —
+never literally boolean, even for `head="sigmoid"`.** A sigmoid-activated
+output is a real number in `(0, 1)` at every pixel; nothing about the head,
+or about training against a binary target, collapses it to exactly `0` or
+`1`. This matters because `label_policy="stream_detection"`'s *label* is a
+hard 0/1 (see below) — it would be easy to assume that makes the *model's
+prediction* boolean too, but it doesn't: the label only shapes what the
+continuous output comes to mean (roughly, the estimated probability that
+the true detection condition holds, given the noisy input). Thresholding
+into a hard decision is something a caller does afterward (exactly what
+`evaluation.metrics`'s `threshold` parameter is for), not something baked
+into the model.
 
 ### Predictions are never automatically masked — you always must mask them
 
@@ -119,13 +282,20 @@ downweight — invalid pixels contribute exactly zero to the loss, computed
 via a masked sum divided by the valid pixel count (or, for
 `WeightedMSELoss`, by the mask-restricted weight sum).
 
-- `DiceLoss`, `FocalLoss`, `TverskyLoss`, `BCEWithLogitsLoss` — designed
-  for (and still valid for) the binary/density label options.
-- `MSELoss`, `WeightedMSELoss` — the primary pair for the current default
-  `label_policy="stream_count"`. `WeightedMSELoss` weights each pixel's
-  squared error by its own target count, so the (rare) high-count stream
-  pixels aren't drowned out by the much more common near-zero background
-  pixels.
+- `DiceLoss`, `FocalLoss`, `TverskyLoss`, `BCEWithLogitsLoss` — the primary
+  choices for the current default `label_policy="stream_detection"` (a
+  bounded `{0, 1}` per-pixel target; `DiceLoss` + `head="sigmoid"` is what
+  `train_model.ipynb` actually uses), and also still valid for the earlier
+  binary/density label options.
+- `MSELoss`, `WeightedMSELoss` — the primary pair for `label_policy=
+  "stream_count"` (a literal, unbounded count), still available but no
+  longer the default — see {doc}`ml_concepts` for why: MSE on that
+  heavy-tailed target reliably localized streams but badly under-recovered
+  their peak amplitude, which is what motivated the `stream_detection`
+  pivot in the first place. `WeightedMSELoss` weights each pixel's squared
+  error by its own target count, so the (rare) high-count stream pixels
+  aren't drowned out by the much more common near-zero background pixels —
+  see the real limitation below if reaching for it.
 
 **A real limitation, found while tuning `train_model.ipynb`, not a
 hypothetical:** `WeightedMSELoss`'s weight normalization

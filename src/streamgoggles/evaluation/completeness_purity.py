@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from streamgoggles.evaluation.metrics import (
+    confusion_matrix,
     correlation,
     dice,
     iou,
@@ -37,7 +38,13 @@ _SINGLE_VALUE_METRICS = {
     "weighted_recall": weighted_recall,
 }
 _PRECISION_RECALL_NAMES = ("precision", "recall")
-_KNOWN_METRICS = set(_SINGLE_VALUE_METRICS) | set(_PRECISION_RECALL_NAMES)
+# "confusion" expands into four columns (tp/fp/tn/fn) rather than one, the
+# same way "precision"/"recall" share a single call.
+_CONFUSION_NAME = "confusion"
+_CONFUSION_COLUMNS = ("tp", "fp", "tn", "fn")
+_KNOWN_METRICS = (
+    set(_SINGLE_VALUE_METRICS) | set(_PRECISION_RECALL_NAMES) | {_CONFUSION_NAME}
+)
 
 
 def evaluate_on_grid(
@@ -53,6 +60,9 @@ def evaluate_on_grid(
         model: Trained model (torch.nn.Module).
         eval_dataset: StreamMapDataset in eval mode (persisted samples).
         metrics: List of metric names (e.g., ["dice", "iou", "precision"]).
+            ``"confusion"`` is special: it expands into four columns
+            (``tp``/``fp``/``tn``/``fn``) rather than one, the same way
+            ``"precision"``/``"recall"`` share a single call.
         threshold: Threshold for binary metrics (default 0.5).
         device: "cpu" or "cuda".
 
@@ -64,6 +74,11 @@ def evaluate_on_grid(
         - ``id``: sample identifier (for tracing) -- the eval_grid index,
           which StreamMapDataset guarantees is a stable identity (the same
           idx always returns the same sample).
+        - ``replicate``: present only when the eval grid was built with
+          replicates (`build_eval_grid(..., n_replicates=k)`). Rows sharing
+          the same parameter values but different ``replicate`` are
+          independent realizations of those same parameters -- see
+          `aggregate_over_replicates` to reduce them to a mean and spread.
 
     Raises:
         ValueError if metric names not recognized, or eval_dataset is not
@@ -96,6 +111,9 @@ def evaluate_on_grid(
 
             row = dict(sample["params"])
             row["id"] = idx
+            metadata = sample.get("metadata") or {}
+            if "replicate" in metadata:
+                row["replicate"] = metadata["replicate"]
             for name in metrics:
                 if name in _PRECISION_RECALL_NAMES:
                     precision, recall = precision_recall(
@@ -103,6 +121,10 @@ def evaluate_on_grid(
                     )
                     row["precision"] = precision
                     row["recall"] = recall
+                elif name == _CONFUSION_NAME:
+                    row.update(
+                        confusion_matrix(pred, label_stack, valid_mask, threshold)
+                    )
                 else:
                     row[name] = _SINGLE_VALUE_METRICS[name](
                         pred, label_stack, valid_mask, threshold
@@ -110,6 +132,70 @@ def evaluate_on_grid(
             rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def aggregate_over_replicates(
+    results: pd.DataFrame,
+    metrics: list[str],
+    group_by: list[str] | None = None,
+) -> pd.DataFrame:
+    """Reduce an `evaluate_on_grid` result with replicates to mean/std/count.
+
+    A grid built with `build_eval_grid(..., n_replicates=k)` produces k rows
+    per parameter combination -- k independent realizations (different
+    placement/window/orientation/noise) of the same physical parameters.
+    This collapses them into one row per combination, reporting each
+    metric's mean, standard deviation and contributing-sample count.
+
+    The spread is the point, not a formality: a per-parameter metric from a
+    single realization can land anywhere within it, so `mean ± std` is what
+    a "Dice at this richness" number should actually be read as. NaN metric
+    values (evaluation.metrics' undefined-ratio convention) are excluded
+    per metric rather than poisoning the whole group, and ``<metric>_n``
+    records how many realizations actually contributed -- a mean over 2 of 5
+    replicates is a different claim from a mean over 5 of 5.
+
+    Parameters:
+        results: DataFrame from `evaluate_on_grid`.
+        metrics: metric column names to aggregate (e.g. ["dice", "iou"]).
+        group_by: parameter columns defining a combination. Defaults to
+            every column that is neither a requested metric nor bookkeeping
+            (``id``/``replicate``) -- i.e. the sample's own parameters.
+
+    Returns:
+        DataFrame with one row per parameter combination: the `group_by`
+        columns, plus ``<metric>_mean``/``<metric>_std``/``<metric>_n`` for
+        each requested metric. ``std`` is NaN where only one realization
+        contributed (undefined, not zero).
+
+    Raises:
+        KeyError if any requested metric column is missing from `results`.
+    """
+    missing = [name for name in metrics if name not in results.columns]
+    if missing:
+        raise KeyError(
+            f"metric column(s) {missing} not in results columns {list(results.columns)}"
+        )
+
+    if group_by is None:
+        excluded = set(metrics) | {"id", "replicate"}
+        group_by = [name for name in results.columns if name not in excluded]
+    if not group_by:
+        raise ValueError(
+            "No columns left to group by; pass group_by explicitly "
+            "(e.g. group_by=['richness'])."
+        )
+
+    aggregated = (
+        results.groupby(group_by, dropna=False)
+        .agg({name: ["mean", "std", "count"] for name in metrics})
+        .reset_index()
+    )
+    aggregated.columns = [
+        column if not suffix else f"{column}_{'n' if suffix == 'count' else suffix}"
+        for column, suffix in aggregated.columns
+    ]
+    return aggregated
 
 
 def plot_recovery_vs_parameter(

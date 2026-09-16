@@ -241,8 +241,14 @@ class StreamObsLightBackgroundSource(BackgroundSource):
             cfg: Source-specific kwargs. `bands` (tuple of 2 band names,
                 default ("g", "r")) selects the color/reference bands
                 forwarded to `streamobs.background.background.Background`;
+                `seed` (int) or `rng` (np.random.Generator) are forwarded to
+                `Background.generate()`, which is where streamobs actually
+                reads them -- **pass one of these if reproducibility
+                matters**, since generation is otherwise unseeded and
+                produces a different catalog on every call, including within
+                a single process and regardless of numpy's global seed;
                 everything else in `cfg` (e.g. `storage=`) is forwarded to
-                its constructor as-is.
+                the constructor as-is.
 
         Returns:
             DataFrame in streamobs convention, region-restricted.
@@ -258,14 +264,30 @@ class StreamObsLightBackgroundSource(BackgroundSource):
         gc_frame, phi1_limits, phi2_limits = _study_region_to_phi_box(region)
 
         survey_obj = Survey.load(survey=survey, release=release)
-        extra_kwargs = {k: v for k, v in cfg.items() if k != "bands"}
+        # `seed`/`rng` belong to generate(), not to Background's constructor:
+        # streamobs reads them from generate()'s **kwargs
+        # (`rng = np.random.default_rng(kwargs.get("seed"))`). Forwarding
+        # them to the constructor instead -- which is what happened before
+        # this split existed -- silently left generation unseeded, so every
+        # call produced a different background catalog even within one
+        # process, and even with numpy's global seed fixed (verified
+        # directly: two loads in one process differ in star count). That
+        # made every downstream "reproducible, fixed-seed" run irreproducible
+        # at the data level; see PLAN.md section 6.15.
+        generate_kwargs = {key: cfg[key] for key in ("seed", "rng") if key in cfg}
+        extra_kwargs = {
+            k: v for k, v in cfg.items() if k not in ("bands", "seed", "rng")
+        }
         bands = tuple(cfg.get("bands", ("g", "r")))
 
         background = Background(
             surveys=survey_obj, method="light", bands=bands, **extra_kwargs
         )
         catalog, _meta = background.generate(
-            phi1_limits=phi1_limits, phi2_limits=phi2_limits, gc_frame=gc_frame
+            phi1_limits=phi1_limits,
+            phi2_limits=phi2_limits,
+            gc_frame=gc_frame,
+            **generate_kwargs,
         )
         return catalog
 
