@@ -1,4 +1,4 @@
-streamgoggles.evaluation
+﻿streamgoggles.evaluation
 ========================
 
 .. automodule:: streamgoggles.evaluation
@@ -12,4 +12,5 @@ streamgoggles.evaluation
 
    baseline_threshold
    completeness_purity
+   footprint
    metrics

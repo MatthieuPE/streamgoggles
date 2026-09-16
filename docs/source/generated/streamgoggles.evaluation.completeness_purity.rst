@@ -1,4 +1,4 @@
-﻿streamgoggles.evaluation.completeness\_purity
+streamgoggles.evaluation.completeness\_purity
 =============================================
 
 .. automodule:: streamgoggles.evaluation.completeness_purity

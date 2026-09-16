@@ -1,4 +1,4 @@
-streamgoggles.matched\_filter
+﻿streamgoggles.matched\_filter
 =============================
 
 .. automodule:: streamgoggles.matched_filter
@@ -14,6 +14,8 @@ streamgoggles.matched\_filter
       make_raw_map
       native_pixel_scale_deg
       project
+      stitch_windows_to_healpix
+      window_to_healpix_indices
       world_to_tangent_plane
    
    .. rubric:: Classes
