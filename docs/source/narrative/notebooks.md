@@ -117,3 +117,18 @@ Scaling up further (re-running the training-budget comparison now that
 replicates can measure a *success fraction*, more steps/epochs, a real GPU
 device, and eventually the `training/hyrax_runner.py` orchestration layer)
 is the natural next step.
+
+§9 and §10 move from windows to the HEALPix map that stream searches
+actually produce (see {doc}`training_and_evaluation`, "Footprint-level
+detection"):
+
+- **§9** injects one stream into the full sky, tiles the area around it
+  with overlapping windows, and stitches the model's output back to
+  HEALPix, keeping the most-central window's value where tiles overlap.
+  It plots three `skyproj` maps with the same framing: input
+  (stream + background), detection label, and prediction.
+- **§10** repeats this over 30 independent realizations for each surface
+  brightness from 30 to 36. It plots the row-normalized confusion matrix
+  per SB, and the found/missed fractions against SB, to locate where
+  detection stops (half the true pixels are found down to SB ≈ 33.2).
+  About 50s of the notebook's ~160s total.

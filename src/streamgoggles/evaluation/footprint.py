@@ -376,7 +376,10 @@ def plot_detection_rates(
     Parameters:
         aggregated: output of
             `completeness_purity.aggregate_over_replicates(results,
-            metrics=["tpr", "fnr", ...], group_by=[param])`.
+            metrics=["tpr", "fnr", ...], group_by=[param])`. If
+            ``n_true_pixels`` is among the metrics, points averaged over
+            only some realizations are annotated "k/n" (k with any true
+            pixel, out of n).
         param: column to use as the x axis.
         ax: matplotlib Axes (created if None).
         training_range: optional (min, max) of the parameter the model was
@@ -403,14 +406,37 @@ def plot_detection_rates(
         mean = data[f"{rate}_mean"].to_numpy(dtype=float)
         std = np.nan_to_num(data[f"{rate}_std"].to_numpy(dtype=float))
         defined = np.isfinite(mean)
+        # A fraction lives in [0, 1]; a symmetric std bar past either end
+        # would draw an impossible value, so the bars are clipped there.
+        lower = mean - np.clip(mean - std, 0.0, 1.0)
+        upper = np.clip(mean + std, 0.0, 1.0) - mean
         ax.errorbar(
             x[defined],
             mean[defined],
-            yerr=std[defined],
+            yerr=[lower[defined], upper[defined]],
             marker=marker,
             capsize=4,
             label=label,
         )
+
+    # Where only some realizations kept a true pixel, the rates average over
+    # those alone: say how many, so a "0.0 found" over 11 of 30 skies is not
+    # read as a verdict on all 30.
+    if "tpr_n" in data and "n_true_pixels_n" in data:
+        with_pixels = data["tpr_n"].to_numpy()
+        total = data["n_true_pixels_n"].to_numpy()
+        tpr_mean = data["tpr_mean"].to_numpy(dtype=float)
+        for xi, yi, k, n in zip(x, tpr_mean, with_pixels, total, strict=True):
+            if 0 < k < n:
+                ax.annotate(
+                    f"{k}/{n}",
+                    (xi, yi),
+                    textcoords="offset points",
+                    xytext=(0, 9),
+                    ha="center",
+                    fontsize=8,
+                    color="0.3",
+                )
 
     vanished = ~np.isfinite(data["tpr_mean"].to_numpy(dtype=float))
     if vanished.any():

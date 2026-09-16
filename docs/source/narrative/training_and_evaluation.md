@@ -135,3 +135,84 @@ non-trivial purity needs that column populated with some background/
 non-stream rows, e.g. by concatenating a stream eval grid's
 `evaluate_on_grid()` output with a separately-evaluated background-only
 set.
+
+### Footprint-level detection ({py:mod}`streamgoggles.evaluation.footprint`)
+
+Everything above scores one window at a time. The end product, though, is
+a **HEALPix map** of where streams are, so the model is also scored on the
+map itself.
+
+**From windows to a HEALPix map.** `tiles_around_stream` lays overlapping
+tiles (stride = half a window by default) over the part of the footprint
+around an injected stream. `predict_footprint` runs the model on each tile
+and projects every tile back to HEALPix with
+{py:func}`~streamgoggles.matched_filter.stitch_windows_to_healpix`. Where
+tiles overlap, a pixel takes its value from the tile where it lies
+**furthest from an edge**. Overlapping outputs are **not averaged**: the
+output is a probability that gets thresholded, and the mean of a confident
+0.9 and a confident 0.1 is not a real 0.5. This is the U-Net
+overlap-tile strategy. The input and the detection label are stitched the
+same way, so all three maps line up pixel for pixel.
+
+**The four fractions.** `score_footprint` counts `tp`/`fn`/`fp`/`tn` over
+the stitched map and normalizes each row of the confusion matrix
+({py:func}`~streamgoggles.evaluation.metrics.confusion_rates`):
+
+| | predicted stream | predicted no stream |
+|---|---|---|
+| **true stream** | `tpr` = found | `fnr` = missed |
+| **true no stream** | `fpr` = false alarm | `tnr` = correct reject |
+
+Each row sums to one, so the numbers can be compared between maps whose
+stream and background areas differ by orders of magnitude. Raw counts
+cannot. Two details matter:
+
+- Only pixels that some tile covered **and** that are finite in both maps
+  are scored. A stitched map is NaN in footprint holes and outside the
+  tiles, and `NaN > 0.5` is `False`. Without that mask, all the unobserved
+  sky would count as correctly rejected background.
+- If a stream is too faint to leave any pixel above `count_threshold`,
+  `tpr`/`fnr` are **NaN, not 0**. "Nothing to detect" (the *label* has
+  vanished) and "detected nothing" (the *model* missed it) mean opposite
+  things, so they are kept apart.
+
+The false-alarm rate is measured **near the stream** (inside the tiled
+region), not over the whole survey.
+
+**Averaging over realizations.** `evaluate_footprint_realizations` injects
+`n_realizations` independent full-sky realizations for each parameter set
+(seeded by `[seed, set_index, realization]`, so the run is reproducible and
+every sky is independent). It returns one row per realization.
+`aggregate_over_replicates(..., group_by=["richness"])` then gives
+mean/std/n per surface brightness. A realization with no stream pixels is
+kept as a row with NaN rates rather than dropped, so failures at the faint
+end don't disappear. `n_true_pixels_n` against `tpr_n` counts how many
+realizations still had a label. `plot_confusion_matrix` draws the averaged
+2×2 matrix. `plot_detection_rates` draws found/missed against a parameter.
+Its std bars are clipped to [0, 1], and points averaged over only some
+realizations are annotated `k/n`.
+
+Results from `train_model.ipynb` §10 (the model trained on SB 31–34; 30
+single-stream realizations per point, nside=512):
+
+| SB | true pixels (mean) | found (`tpr`) | false alarm (`fpr`) | realizations with a label |
+|---|---|---|---|---|
+| 30 | 569 | 0.986 ± 0.022 | 0.013 | 30/30 |
+| 31 | 525 | 0.966 ± 0.016 | 0.011 | 30/30 |
+| 32 | 383 | 0.872 ± 0.044 | 0.011 | 30/30 |
+| 33 | 206 | 0.584 ± 0.161 | 0.014 | 30/30 |
+| 34 |  56 | 0.099 ± 0.133 | 0.010 | 30/30 |
+| 35 |   8 | 0.048 ± 0.160 | 0.009 | 30/30 |
+| 36 | 0.6 | 0.000 ± 0.000 | 0.009 | 11/30 |
+
+Half of the true stream pixels are found down to **SB ≈ 33.2** (linear
+interpolation of `tpr` across 0.5). The false-alarm rate stays around 1%
+at every SB, so the cut-off comes from missed pixels, not from a noisier
+prediction. Two separate things happen at the faint end. At SB 34–35 the
+label still exists and the model misses it. By SB 36 the label itself has
+mostly vanished: most realizations leave no pixel above `count_threshold`.
+
+Current limits: one stream per sky. Multi-stream footprint injection is
+the next step, and the functions above already take whatever the injector
+returns. The scan is also one-dimensional (surface brightness only); a 2-D
+version against distance modulus is planned.

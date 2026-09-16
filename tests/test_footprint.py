@@ -312,3 +312,28 @@ def test_evaluate_footprint_realizations_keeps_a_vanished_stream(monkeypatch, in
     assert len(results) == 1
     assert results.loc[0, "n_tiles"] == 0
     assert np.isnan(results.loc[0, "tpr"])
+
+
+def test_plot_detection_rates_flags_partially_vanished_points_and_clips_bars():
+    import pandas as pd
+
+    aggregated = pd.DataFrame(
+        {
+            "richness": [31.0, 36.0],
+            "tpr_mean": [0.95, 0.0],
+            "tpr_std": [0.2, 0.0],
+            "tpr_n": [30, 11],
+            "fnr_mean": [0.05, 1.0],
+            "fnr_std": [0.2, 0.0],
+            "n_true_pixels_n": [30, 30],
+        }
+    )
+    ax = plot_detection_rates(aggregated, "richness")
+
+    texts = [t.get_text() for t in ax.texts]
+    assert texts == ["11/30"], "only the partially-vanished point is annotated"
+    for line in ax.collections:
+        segments = getattr(line, "get_segments", list)()
+        for segment in segments:
+            ys = np.asarray(segment)[:, 1]
+            assert ys.min() >= 0.0 and ys.max() <= 1.0, "bars must stay in [0, 1]"
