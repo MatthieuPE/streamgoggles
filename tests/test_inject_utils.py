@@ -194,7 +194,9 @@ def test_build_isochrone_is_cached(isochrone_params):
 
     inject_utils._build_isochrone(cfg)
     inject_utils._build_isochrone(cfg)
-    inject_utils._build_isochrone(dict(reversed(list(cfg.items()))))  # key order must not matter
+    inject_utils._build_isochrone(
+        dict(reversed(list(cfg.items())))
+    )  # key order must not matter
 
     info = inject_utils._isochrone_factory_cached.cache_info()
     assert info.misses == 1, "the isochrone should be constructed exactly once"
@@ -244,8 +246,9 @@ def test_build_isochrone_falls_back_when_params_unhashable(monkeypatch):
 def test_cached_isochrone_gives_identical_conversions(isochrone_params):
     """The cache must be a pure speedup: identical numbers, to the bit."""
     inject_utils._isochrone_factory_cached.cache_clear()
-    kwargs = dict(stream_length=8.0, stream_width=0.2,
-                  isochrone_params=isochrone_params, band="r")
+    kwargs = dict(
+        stream_length=8.0, stream_width=0.2, isochrone_params=isochrone_params, band="r"
+    )
 
     original = inject_utils._build_isochrone
     inject_utils._build_isochrone = lambda p: ugali.isochrone.factory(**p)
