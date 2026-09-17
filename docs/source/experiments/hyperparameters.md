@@ -6,7 +6,7 @@ network depth and width, learning rate and batch size give a model that
 **detects every stream at SB 33 and some at SB 34**, while keeping the
 background as clean as the current model's?
 
-**Status.** In progress: phase 1 is running.
+**Status.** In progress: phase 1 done, phase 2 running.
 
 ## Starting point
 
@@ -60,7 +60,7 @@ later without retraining.
 |---|---|---|---|
 | 1 | training length | 1200, 4800, 9600 windows (150, 600, 1200 optimizer steps) | the batch-8 models look undertrained |
 | 1 | training surface brightness | 31-34 (current); 32, 33, 33.5, 34, 34.5 | more examples near the detection edge |
-| 2 | network depth and base width | depth 2, 3, 4; width 12, 24 | a faint stream is only visible by adding up pixels along its track (~70 px long), while a depth-2 network sees ~30-40 px at once |
+| 2 | network depth and base width | depth 2, 3, 4; width 12, 24 (from 4800 windows, training SB 32-34.5) | a faint stream is only visible by adding up pixels along its track (~70 px long), while a depth-2 network sees ~30-40 px at once |
 | 3 | learning rate and batch size | 1e-3, 2e-3, 5e-3; batch 8, 16 | tune the optimization of the chosen setup |
 
 Each phase starts from the best configuration of the previous one. Phases
@@ -69,7 +69,53 @@ confirmed with 4 seeds, as the {doc}`shared protocol <index>` requires.
 
 ## Results
 
-To come, phase by phase.
+### Phase 1: training length and training surface brightness
+
+Six configurations, 2 seeds each (40 streams per surface brightness), depth 2,
+width 12, learning rate 2e-3, batch 8.
+
+```{image} figures/hyperparameters/phase1_detection.png
+:alt: Fraction of streams detected against surface brightness for the six phase-1 configurations, at thresholds 0.5 and 0.1
+:width: 100%
+```
+
+```{image} figures/hyperparameters/phase1_pixel_metrics.png
+:alt: Completeness, contamination and contrast at threshold 0.5 for the six phase-1 configurations
+:width: 100%
+```
+
+At threshold 0.5:
+
+| Training windows | Training SB | SB 33 | SB 33.5 | SB 34 | Background density in stream-free bands |
+|---|---|---|---|---|---|
+| 1200 | 31-34 (starting point) | 68% | 10% | 0% | 0.005% |
+| 4800 | 31-34 | 80% | 23% | 7% | 0.01-0.02% |
+| 9600 | 31-34 | 80% | 23% | 10% | 0.005% |
+| 1200 | 32-34.5 | **100%** | **80%** | **38%** | 0.45-0.5% |
+| 4800 | 32-34.5 | 88% | 17% | 0% | ≤ 0.005% |
+| 9600 | 32-34.5 | 85% | 42% | 20% | 0.06-0.08% |
+
+- **Detecting faint streams and keeping the background clean trade off
+  against each other.** Only one configuration meets the target (1200 windows
+  on the fainter range: every SB 33 stream, 80% at 33.5, 38% at 34, both seeds
+  agreeing), and it flags about 0.5% of the background, close to plain Dice.
+  Every configuration with a clean background stops at 80-88% at SB 33 and
+  0-10% at SB 34, and lowering the threshold to 0.1 barely changes that: those
+  models do not respond to the faintest streams at all.
+- **Training longer helps a little on the current range**: SB 33 from 68% to
+  80%, SB 33.5 from 10% to 23%, with a clean background.
+- **Seeds disagree a lot at the faint end**: for 9600 windows on the fainter
+  range, one seed detects 35% of the SB 34 streams and the other 5%.
+  Differences below about 15 points are not established.
+
+Training time: about 1.5, 3.5 and 6 minutes for 1200, 4800 and 9600 windows.
+
+**Next.** Training length does not escape the trade-off, so phase 2 tests
+whether the network's size does. A deeper network sees a longer piece of a
+track at once, and could recognize a faint stream by its coherent line rather
+than by local excesses of pixels, which background fluctuations also produce.
+Phase 2 starts from 4800 windows on the fainter range (a clean background and
+88% at SB 33).
 
 **Fixed before any result was kept.** The first phase-1 run stopped when a
 long training could not find a valid window for one training stream. The
@@ -95,7 +141,8 @@ before phase 1 was restarted from scratch:
 From the repository root, in the `streamml` environment:
 
 ```bash
-python scripts/experiments/hyperparameters/run.py phase1
+python scripts/experiments/hyperparameters/run.py phase1      # then phase2, ...
+python scripts/experiments/hyperparameters/figures.py phase1  # figures and numbers
 ```
 
 `run.py` resumes where it stopped and re-scores saved models without

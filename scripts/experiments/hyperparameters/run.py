@@ -71,7 +71,19 @@ PHASES = {
         for steps in (30, 120, 240)
     ],
 }
-SEEDS = {"phase1": [42, 43]}
+# Phase 2: network depth x base width, from phase 1's cleanest setting that
+# still gains on the faint training range (4800 windows, SB 32-34.5): phase 1
+# found no configuration with both a clean background and SB 34 detections,
+# and a deeper network sees more of a faint track at once. The depth-2,
+# width-12 configuration is phase 1's own and is reused, not retrained.
+PHASES["phase2"] = [
+    configuration(
+        steps_per_epoch=120, training_sb="sb32-34.5", depth=depth, base_width=width
+    )
+    for depth in (2, 3, 4)
+    for width in (12, 24)
+]
+SEEDS = {"phase1": [42, 43], "phase2": [42, 43]}
 
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]
 N_REALIZATIONS = 20

@@ -52,8 +52,17 @@ def label(config_row):
 
 
 def main(phase):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "run", Path(__file__).parent / "run.py"
+    )
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+    names = [config["name"] for config in run.PHASES[phase]]
     results = pd.read_pickle(RESULTS)
-    results = results[results["phase"] == phase]
+    # A configuration shared by two phases is trained once, under the first.
+    results = results[results["configuration"].isin(names)]
     cfg_columns = [c for c in results.columns if c.startswith("cfg_")]
     configs = results[["configuration", *cfg_columns]].drop_duplicates("configuration")
     configs = configs.sort_values(cfg_columns).reset_index(drop=True)
