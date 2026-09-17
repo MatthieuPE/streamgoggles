@@ -129,9 +129,18 @@ def _stream_arc_length_coord(
     approximates its track direction. Used only to measure "how much of the
     stream's on-sky length falls inside a candidate window," not as a
     physical coordinate.
+
+    The projection centre is the mean of the stars' unit vectors, not the
+    mean of their RA: a stream crossing RA = 0/360 would otherwise get a mean
+    RA near 180 deg, on the far side of the sky, and a meaningless projection
+    (lengths of millions of degrees were measured before this was fixed).
     """
-    center_ra = float(np.mean(stream_ra))
-    center_dec = float(np.mean(stream_dec))
+    mean_vector = (
+        hp.ang2vec(stream_ra, stream_dec, lonlat=True).reshape(-1, 3).mean(axis=0)
+    )
+    center_ra, center_dec = (
+        float(np.ravel(v)[0]) for v in hp.vec2ang(mean_vector, lonlat=True)
+    )
     xi, eta = world_to_tangent_plane(stream_ra, stream_dec, center_ra, center_dec, 0.0)
     coords = np.column_stack([xi, eta])
     coords = coords - coords.mean(axis=0)
@@ -180,7 +189,12 @@ def sample_stream_window(
     the entire stream must fit inside the window.
 
     Candidate (center, tilt) pairs are drawn by jittering around a randomly
-    chosen stream star, within roughly one window size — a random center
+    chosen stream star, by up to half the window's diagonal (size / sqrt(2))
+    along RA and Dec: no star inside a window is farther than that from its
+    centre, so every valid window stays reachable. (A jitter of a full window
+    size made about half the candidates miss the stream entirely, enough for a
+    failure after max_attempts somewhere in a training run of thousands of
+    samples.) A random center
     drawn from the whole footprint would rarely land near the (typically
     much smaller) stream, making rejection sampling very inefficient. This
     is purely a sampling-efficiency choice, not a semantic constraint (the
@@ -208,9 +222,10 @@ def sample_stream_window(
         anchor_ra = stream_ra[anchor_idx]
         anchor_dec = stream_dec[anchor_idx]
 
+        reach_deg = size_deg / np.sqrt(2.0)
         cos_dec = max(np.cos(np.radians(anchor_dec)), 1e-6)
-        d_ra = rng.uniform(-size_deg, size_deg) / cos_dec
-        d_dec = rng.uniform(-size_deg, size_deg)
+        d_ra = rng.uniform(-reach_deg, reach_deg) / cos_dec
+        d_dec = rng.uniform(-reach_deg, reach_deg)
         center_ra = float((anchor_ra + d_ra) % 360.0)
         center_dec = float(np.clip(anchor_dec + d_dec, -90.0, 90.0))
         rotation_deg = float(rng.uniform(0.0, 360.0))
