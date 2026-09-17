@@ -206,6 +206,13 @@ choice, is the next experiment (see {doc}`index`).
   part of the planned hyperparameter experiment.
 - **Dice+BCE was tested with a single weighting (1:1).** A smaller BCE weight
   or a Dice warm-up might avoid its collapses.
+- **Training windows near RA = 0 were not all checked properly.** Found
+  later, during the hyperparameter experiment: the "at least 5° of stream in
+  the window" check broke for streams crossing RA 0°/360° (about 13% of
+  training streams in this study region, which is centred on RA 0). Those
+  windows could contain less of the stream. Every configuration was trained
+  the same way, so the comparison is fair, but absolute numbers may shift a
+  little with the fix.
 - **One set of stream parameters.** Distance modulus, width, length, age and
   metallicity were fixed; the conclusions need checking when they vary.
 

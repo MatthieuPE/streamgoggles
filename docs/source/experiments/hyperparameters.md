@@ -71,6 +71,25 @@ confirmed with 4 seeds, as the {doc}`shared protocol <index>` requires.
 
 To come, phase by phase.
 
+**Fixed before any result was kept.** The first phase-1 run stopped when a
+long training could not find a valid window for one training stream. The
+investigation found two problems in the training-window sampler, both fixed
+before phase 1 was restarted from scratch:
+
+- **RA wrap.** The length of a stream inside a candidate window was measured
+  in a projection centred on the mean RA of its stars. For a stream crossing
+  RA 0°/360° that mean is near 180°, on the far side of the sky, so the
+  "at least 5° of stream in the window" check was meaningless for about 13%
+  of training streams (lengths of millions of degrees were measured).
+- **Inefficient proposals.** Candidate windows were centred up to a full
+  window size away from a stream star, so about half missed the stream
+  entirely. Measured on real placements, the median acceptance per attempt was
+  0.18 (0.05 at worst), so failing 100 attempts happened about once per
+  10,000 training streams, i.e. likely once in a 9600-window run. Centring
+  within half the window diagonal keeps every valid window reachable and
+  doubles the acceptance (median 0.34, worst 0.11). If no window fits at all,
+  the stream is now placed again instead of stopping training.
+
 ## Reproducing
 
 From the repository root, in the `streamml` environment:
