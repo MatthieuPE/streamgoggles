@@ -124,6 +124,7 @@ it moves the results.
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |
 | Survey-wide contamination | False alarms over a fully tiled footprint, rather than around one injected stream. | planned |
+| DES survey model | Switch the simulations from LSST year 1 to the DES Y6 survey model (`survey="des"`, `release="yr6"` in streamobs), so that detection limits can be compared with the DES 2018 stream search, whose known streams reach surface brightness 34-34.3. | planned |
 | Real data | Train with the known streams masked, then unmask and check that they are recovered. | planned |
 
 ```{toctree}
