@@ -4,6 +4,12 @@
 .. automodule:: streamgoggles.evaluation.footprint
 
    
+   .. rubric:: Module Attributes
+
+   .. autosummary::
+   
+      THRESHOLD_GRID
+   
    .. rubric:: Functions
 
    .. autosummary::

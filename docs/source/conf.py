@@ -16,6 +16,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
+    "sphinx.ext.mathjax",
     "sphinx_autodoc_typehints",
     "myst_parser",
     "sphinxcontrib.mermaid",
@@ -63,7 +64,9 @@ napoleon_use_rtype = False
 # only ever one registered object per field.
 napoleon_use_ivar = True
 
-myst_enable_extensions = ["colon_fence", "deflist"]
+# dollarmath: $...$ inline and $$...$$ display math in Markdown pages;
+# amsmath: \begin{aligned} and friends. Rendered by MathJax (sphinx.ext.mathjax).
+myst_enable_extensions = ["colon_fence", "deflist", "dollarmath", "amsmath"]
 
 # -- intersphinx --------------------------------------------------------
 intersphinx_mapping = {

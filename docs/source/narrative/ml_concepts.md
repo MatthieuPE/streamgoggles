@@ -209,8 +209,8 @@ continuous values), the metric is free to threshold/binarize.
 
 ### Regression: is the predicted *value* correct?
 
-- **MSE (mean squared error)**: the average of `(prediction - true)^2`
-  over all pixels. The standard loss for regression — predicting a
+- **MSE (mean squared error)**: the average of
+  $(\text{prediction} - \text{true})^2$ over all pixels. The standard loss for regression — predicting a
   continuous quantity (like a star count) rather than a class. Squaring
   the error means large mistakes are penalized much more than small ones.
 - **Weighted MSE**: MSE where each pixel's squared error is scaled by a
@@ -222,7 +222,7 @@ continuous values), the metric is free to threshold/binarize.
   found in this project.
 - **Correlation (Pearson correlation coefficient)**: measures whether
   predicted and true values move together (regardless of their absolute
-  scale) — `+1` means perfectly correlated, `0` means unrelated, `-1`
+  scale) — $+1$ means perfectly correlated, $0$ means unrelated, $-1$
   means perfectly inversely correlated. Useful for asking "does the model
   get the *pattern* right," separately from "does it get the exact
   magnitude right" (which MSE already answers).
@@ -239,11 +239,12 @@ per-pixel accuracy would look great on a model that just predicts
 reward:
 
 - **IoU (Intersection over Union)**, also called the **Jaccard index**:
-  `|predicted ∩ true| / |predicted ∪ true|` — the overlap between the two
+  $\lvert P \cap T\rvert \,/\, \lvert P \cup T\rvert$, with $P$ the predicted
+  and $T$ the true region — the overlap between the two
   regions, divided by their combined extent. `1` means a perfect match,
   `0` means no overlap at all.
 - **Dice coefficient** (also called the F1 score in this binary-overlap
-  context): `2 × |predicted ∩ true| / (|predicted| + |true|)` — closely
+  context): $2\lvert P \cap T\rvert \,/\, \big(\lvert P\rvert + \lvert T\rvert\big)$ — closely
   related to IoU (always `>=` it), and the more common choice in medical/
   scientific image segmentation specifically. As a *loss* (`DiceLoss`),
   it can be computed directly on continuous, un-thresholded probabilities
@@ -252,9 +253,9 @@ reward:
   thresholds first, for an interpretable, literal overlap fraction.
 - **Precision and recall**: split "how good is the overlap" into two
   separate questions with a real tradeoff between them.
-  **Precision** = `TP / (TP + FP)` — of everything the model flagged as
+  **Precision** $= \mathrm{TP}/(\mathrm{TP}+\mathrm{FP})$ — of everything the model flagged as
   positive, what fraction was actually right? Low precision means lots
-  of false alarms. **Recall** = `TP / (TP + FN)` — of everything that was
+  of false alarms. **Recall** $= \mathrm{TP}/(\mathrm{TP}+\mathrm{FN})$ — of everything that was
   actually positive, what fraction did the model catch? Low recall means
   lots of missed detections. (`TP`/`FP`/`FN` = true/false positive/
   negative pixel counts.) A model can trivially get perfect recall by
@@ -283,6 +284,10 @@ reward:
   `BCEWithLogitsLoss` combines the sigmoid activation and the BCE formula
   into one numerically stable computation, rather than applying sigmoid
   first and risking `log(0)`.
+
+The exact formulas of every loss in `models.losses`, and why the choice
+between them matters for windows without a stream, are in
+{doc}`datasets_and_models` ("Losses", "Formulas").
 
 ### Which of these does this project actually use?
 
