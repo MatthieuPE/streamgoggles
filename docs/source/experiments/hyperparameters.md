@@ -3,8 +3,15 @@
 **Question.** The streams of interest are between surface brightness 33 and
 34 mag arcsec⁻². Which training length, training surface brightness range,
 network depth and width, learning rate and batch size give a model that
-**detects every stream at SB 33 and some at SB 34**, while keeping the
-background as clean as the current model's?
+**detects most streams at SB 33** (missing a few is acceptable) **and declines
+gradually through SB 34** rather than dropping from nearly all to nothing,
+while keeping the background as clean as the current model's?
+
+A first real-data target is to reproduce the DES 2018 stream search: its known
+streams reach surface brightness 34 to 34.3, so detections at SB 34 and just
+beyond matter, not only at 33. How detectable a real stream is will also
+depend on where it lies (survey depth, extinction, footprint edges), which
+these simulations do not vary.
 
 **Status.** In progress: phase 1 done, phase 2 running.
 
