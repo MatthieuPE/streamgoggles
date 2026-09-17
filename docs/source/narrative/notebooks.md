@@ -67,53 +67,62 @@ problem entirely:
   easiest case for the network and the worst for decoy contamination, so
   it has the least to teach; whether the faintest point (SB 34) is
   recovered well is exactly what §7's per-richness Dice curve checks.
-- **`head="sigmoid"` + `loss_name="dice"`**, not `"softplus"` + `"mse"` in
-  `log1p` space — no longer needed, since a bounded `{0, 1}` target has no
-  large dynamic range to compress. The **data-informed bias
-  initialization** technique is kept, adapted rather than dropped: the
-  head's bias starts at the **logit of the per-channel positive-pixel
-  fraction** instead of the log1p-count mean, so the model begins
-  predicting close to the empirical class prior everywhere rather than a
-  default ~0.5.
+- **`head="sigmoid"` + `loss_name="batch_dice"`, batch size 8,
+  `background_fraction=0.05`**, chosen by the loss-selection experiment
+  ({doc}`../experiments/loss_selection`). A bounded `{0, 1}` target needs no
+  `log1p` compression. The **data-informed bias initialization** is kept,
+  adapted: the head's bias starts at the **logit of the per-channel
+  positive-pixel fraction**, so the model begins predicting close to the
+  empirical class prior everywhere rather than a default ~0.5.
+- **Magnitude range only in `clipping_cfg`** (16-25 in g and r). `cuts_cfg`
+  is empty: it is for quality cuts that are not magnitude ranges (SNR,
+  star/galaxy separation). The magnitude cuts it used to hold were
+  redundant with the clipping and removed no star.
 
 It plots a training/validation loss curve, one prediction compared against
 its true detection label *and* the masked residual between them (fixed to
 `[-1, 1]`, the range a bounded target actually spans), and a recovery
 curve across the richness scan against the k·σ baseline — 1200 training
-samples (`epochs=40`, `steps_per_epoch=30`), evaluated on a grid with
+windows (`epochs=40`, `steps_per_epoch=30`), evaluated on a grid with
 **5 independent realizations per richness** so each point is a mean and
-spread rather than one arbitrary draw. Real results from §7:
+spread rather than one arbitrary draw. Results from §7 (threshold 0.5):
 
 | surface_brightness | nstars | Dice | IoU | baseline Dice |
 |---|---|---|---|---|
-| 31 | 33362 | 0.773 ± 0.012 | 0.630 | 0.634 |
-| 32 | 13282 | 0.673 ± 0.051 | 0.509 | 0.301 |
-| 33 |  5288 | 0.470 ± 0.068 | 0.309 | 0.132 |
-| 34 |  2106 | 0.087 ± 0.088 | 0.047 | 0.038 |
+| 31 | 33362 | 0.847 ± 0.007 | 0.735 | 0.634 |
+| 32 | 13282 | 0.740 ± 0.072 | 0.591 | 0.301 |
+| 33 |  5288 | 0.205 ± 0.129 | 0.118 | 0.132 |
+| 34 |  2106 | 0.007 ± 0.015 | 0.003 | 0.038 |
 
-Two things the replicates make visible that a single realization per point
-could not:
+- **The network clearly beats the trivial baseline at SB 31-32** (0.85 vs
+  0.63, 0.74 vs 0.30).
+- **SB 33 is the detection edge, and it is bimodal.** §8 re-runs the model on
+  8 more realizations: about half get a confident response on the stream
+  (peak probability 0.6-0.98), the others almost none (0.02-0.26). That is
+  what §7's large standard deviation at SB 33 is made of. SB 34 gets no
+  response at all (peak probability about 0.017), although it is inside the
+  training range.
 
-- **Where the network actually earns its keep.** It beats the trivial
-  baseline decisively at SB 32 (0.673 vs 0.301) and SB 33 (0.470 vs
-  0.132). At SB 31 the two are *comparable* (0.773 vs 0.634 here; an
-  earlier run of the same configuration had the network slightly behind at
-  0.621, within the seed-to-seed spread) — read the bright end as "no
-  reliable advantage either way". That is where a real stream is a large,
-  sharp excess a plain threshold finds easily, and where the baseline is
-  additionally handed the "good" channel directly, which the network has
-  to identify for itself. The faint end is where learning clearly pays.
-- **Which numbers are measurements and which are noise.** SB 34's standard
-  deviation (0.088) is as large as its mean (0.087): that richness isn't
-  "detected at 0.087", it's bimodal — confidently detected on some
-  realizations, entirely missed on others. §8 shows the per-draw detail
-  (peak predicted probability at the true location is either ~1.0 or
-  ~0.01, nothing between), while SB 33 detects confidently on every
-  realization tried. Earlier versions of this notebook reported a bare
-  `0.000` at SB 34 from a single realization, which read as a definitive
-  failure and wasn't.
+§9, §10 and §11 move from windows to the HEALPix map that stream searches
+actually produce (see {doc}`training_and_evaluation`, "Footprint-level
+detection"):
 
-Scaling up further (re-running the training-budget comparison now that
-replicates can measure a *success fraction*, more steps/epochs, a real GPU
-device, and eventually the `training/hyrax_runner.py` orchestration layer)
-is the natural next step.
+- **§9** injects one stream into the full sky, tiles the area around it
+  with overlapping windows, and stitches the model's output back to
+  HEALPix, keeping the most-central window's value where tiles overlap.
+  It plots three `skyproj` maps with the same framing: input
+  (stream + background), detection label, and prediction. The prediction
+  follows the track with no scattered false alarms.
+- **§10** repeats this over 30 independent realizations for each surface
+  brightness from 30 to 36: the row-normalized confusion matrix per SB, and
+  the found fraction next to the fraction of background flagged, with the
+  stream and on the same tiles without it. At 0.5, half the true pixels are
+  found down to SB ≈ 32.4; with the stream removed, not a single background
+  pixel is flagged in any realization.
+- **§11** turns the same realizations into completeness $C = S_s/S_t$,
+  contamination $F = B_s/B_t$ and contrast $C/F$ against SB, one line per
+  threshold (0.1 to 0.999), to show how far the threshold moves the maps.
+  At 0.5: $C$ = 0.92 / 0.81 / 0.13 at SB 30 / 32 / 33, contamination about
+  0.1%, contrast 1200 / 655 / 292.
+
+The whole notebook runs in about 3.5 minutes on a laptop CPU.

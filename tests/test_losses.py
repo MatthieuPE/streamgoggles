@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from streamgoggles.models.losses import (
+    BatchDiceLoss,
     BCEWithLogitsLoss,
     DiceLoss,
     FocalLoss,
@@ -27,7 +28,15 @@ from streamgoggles.models.unet import UNet
 
 pytestmark = pytest.mark.losses
 
-ALL_LOSS_NAMES = ["dice", "focal", "tversky", "bce", "mse", "weighted_mse"]
+ALL_LOSS_NAMES = [
+    "dice",
+    "batch_dice",
+    "focal",
+    "tversky",
+    "bce",
+    "mse",
+    "weighted_mse",
+]
 
 
 def _loss_instance(name):
@@ -152,6 +161,54 @@ def test_dice_hand_computed_with_mask():
     # dice = 1.8/2.2
     expected = 1.0 - 1.8 / 2.2
     assert loss.item() == pytest.approx(expected, abs=1e-4)
+
+
+def _stream_and_empty_batch():
+    """Batch of two 8x8 windows: a 2-px-wide stream in window 0, nothing in
+    window 1. Predictions at a small prior everywhere, plus the stream found."""
+    target = torch.zeros(2, 1, 8, 8)
+    target[0, 0, 3:5, :] = 1.0
+    logits = torch.full((2, 1, 8, 8), -3.0)
+    logits[0, 0, 3:5, :] = 3.0
+    return logits.requires_grad_(True), target
+
+
+def test_batch_dice_equals_dice_for_a_single_window():
+    pred, target = _tiny_pred_target()  # (1, 1, 2, 2): a batch of one
+    expected = DiceLoss()(pred, target).item()
+    assert BatchDiceLoss()(pred, target).item() == pytest.approx(expected)
+    # Unbatched (C, H, W): nothing to pool, identical too.
+    assert BatchDiceLoss()(pred[0], target[0]).item() == pytest.approx(expected)
+
+
+def test_batch_dice_hand_computed_pools_before_the_ratio():
+    pred = torch.tensor([[[[1.0, 0.0]]], [[[0.5, 0.5]]]])  # (2, 1, 1, 2)
+    target = torch.tensor([[[[1.0, 0.0]]], [[[0.0, 0.0]]]])
+    # pooled: intersection=1.0, pred_sum=2.0, target_sum=1.0 -> dice=2/3
+    assert BatchDiceLoss()(pred, target).item() == pytest.approx(1 - 2 / 3, abs=1e-4)
+    # per window: dice 1.0 and ~0 -> mean ~0.5, a different number
+    assert DiceLoss()(pred, target).item() == pytest.approx(0.5, abs=1e-4)
+
+
+def test_batch_dice_penalizes_predictions_in_a_stream_free_window():
+    """The point of pooling: per-window Dice gives a window without any
+    stream ~no gradient, so it cannot teach "predict low here"; pooled Dice
+    penalizes a pixel flagged there like one flagged next to the stream."""
+    logits, target = _stream_and_empty_batch()
+    DiceLoss()(torch.sigmoid(logits), target).backward()
+    per_window = logits.grad[1].abs().mean().item()
+
+    logits, target = _stream_and_empty_batch()
+    BatchDiceLoss()(torch.sigmoid(logits), target).backward()
+    pooled_empty = logits.grad[1].abs().mean().item()
+    pooled_next_to_stream = logits.grad[0, 0, 0, :].abs().mean().item()
+
+    assert per_window < 1e-8
+    assert pooled_empty > 1e3 * per_window
+    # Same (pred, target=0) pixel in either window -> same gradient.
+    assert pooled_empty == pytest.approx(pooled_next_to_stream, rel=1e-5)
+    # And it points the right way: lowering those predictions lowers the loss.
+    assert (logits.grad[1] > 0).all()
 
 
 def test_tversky_with_alpha_beta_half_equals_dice():
@@ -308,6 +365,7 @@ def test_masked_out_pred_receives_no_gradient():
     ("name", "cls"),
     [
         ("dice", DiceLoss),
+        ("batch_dice", BatchDiceLoss),
         ("focal", FocalLoss),
         ("tversky", TverskyLoss),
         ("bce", BCEWithLogitsLoss),

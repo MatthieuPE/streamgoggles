@@ -12,13 +12,22 @@ application logic. Enables flexible querying (e.g., "all samples with width in
 [0.1, 0.3]") and efficient caching.
 """
 
+import contextlib
 import hashlib
 import json
 import logging
+import os
 import pickle
+import uuid
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
+
+try:  # POSIX (macOS, Linux clusters); absent on Windows
+    import fcntl
+except ImportError:  # pragma: no cover - platform-dependent
+    fcntl = None
 
 import numpy as np
 import pandas as pd
@@ -43,6 +52,26 @@ def _to_jsonable(obj: Any) -> Any:
     if isinstance(obj, Path):
         return str(obj)
     return obj
+
+
+def _atomic_write(path: Path, write: Callable[[IO[bytes]], None]) -> None:
+    """Write a file so that readers only ever see the old or the new content.
+
+    Several processes share one store (DataLoader workers each generating and
+    saving samples). A plain write lets another process open the file while
+    it is half-written. Here the content goes to a uniquely named temporary
+    file in the same directory, then `os.replace` swaps it in, which is atomic
+    on POSIX and Windows. A reader that already opened the old file keeps
+    reading it untouched.
+    """
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            write(f)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _flatten_for_manifest(params: dict) -> dict:
@@ -79,6 +108,7 @@ class ParameterStore:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.root / "manifest.parquet"
+        self._lock_path = self.root / "manifest.lock"
 
     def key(self, params: dict) -> str:
         """Generate canonical SHA-1 hash of params (order-independent, deterministic).
@@ -147,8 +177,7 @@ class ParameterStore:
         """
         path = self.path(params).with_suffix(".pkl")
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "wb") as f:
-            pickle.dump(obj, f)
+        _atomic_write(path, lambda f: pickle.dump(obj, f))
         self._upsert_manifest_row(params, metadata)
         return path
 
@@ -206,8 +235,33 @@ class ParameterStore:
                 mask &= manifest[column] == spec
         return manifest[mask].reset_index(drop=True)
 
+    @contextlib.contextmanager
+    def _manifest_lock(self) -> Iterator[None]:
+        """Exclusive lock across processes for the manifest's read-modify-write.
+
+        Atomic replacement alone keeps readers from seeing a torn file, but two
+        writers that both read the manifest before either writes back would
+        each drop the other's new row. `fcntl.flock` on a sidecar file
+        serializes them. It is advisory and local to the machine's kernel;
+        where `fcntl` is unavailable (Windows) the lock is skipped and only
+        the atomic write protects the file.
+        """
+        if fcntl is None:  # pragma: no cover - platform-dependent
+            yield
+            return
+        with open(self._lock_path, "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
     def _load_manifest(self) -> pd.DataFrame:
-        """Read manifest.parquet, or an empty DataFrame if it doesn't exist yet."""
+        """Read manifest.parquet, or an empty DataFrame if it doesn't exist yet.
+
+        Needs no lock: the manifest is only ever replaced atomically, so a
+        read sees one complete version.
+        """
         if not self.manifest_path.exists():
             return pd.DataFrame()
         return pd.read_parquet(self.manifest_path)
@@ -217,7 +271,9 @@ class ParameterStore:
 
         Re-saving the same params overwrites its row rather than accumulating
         duplicates — the key is a deterministic function of params, so there
-        is exactly one manifest entry per distinct params dict.
+        is exactly one manifest entry per distinct params dict. Safe with
+        several processes writing to the same store at once (lock + atomic
+        replace).
         """
         key = self.key(params)
         row = {
@@ -230,14 +286,17 @@ class ParameterStore:
         }
         new_row = pd.DataFrame([row])
 
-        manifest = self._load_manifest()
-        if not manifest.empty:
-            manifest = pd.concat(
-                [manifest[manifest["id"] != key], new_row], ignore_index=True
+        with self._manifest_lock():
+            manifest = self._load_manifest()
+            if not manifest.empty:
+                manifest = pd.concat(
+                    [manifest[manifest["id"] != key], new_row], ignore_index=True
+                )
+            else:
+                manifest = new_row
+            _atomic_write(
+                self.manifest_path, lambda f: manifest.to_parquet(f, index=False)
             )
-        else:
-            manifest = new_row
-        manifest.to_parquet(self.manifest_path, index=False)
 
 
 class SimulationStore(ParameterStore):
@@ -267,18 +326,18 @@ class SimulationStore(ParameterStore):
         """
         path = self.path(params).with_suffix(".npz")
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            path,
-            map_stack=sample.map_stack,
-            label_stack=sample.label_stack,
-            valid_mask=sample.valid_mask,
-            params_json=json.dumps(_to_jsonable(sample.params), sort_keys=True),
-            metadata_json=(
+        arrays = {
+            "map_stack": sample.map_stack,
+            "label_stack": sample.label_stack,
+            "valid_mask": sample.valid_mask,
+            "params_json": json.dumps(_to_jsonable(sample.params), sort_keys=True),
+            "metadata_json": (
                 json.dumps(_to_jsonable(sample.metadata), sort_keys=True)
                 if sample.metadata is not None
                 else ""
             ),
-        )
+        }
+        _atomic_write(path, lambda f: np.savez_compressed(f, **arrays))
         self._upsert_manifest_row(params, sample.metadata)
         return path
 
@@ -378,7 +437,7 @@ class BackgroundMapStore(ParameterStore):
         arrays = {"raw_map": raw_map, "valid_mask": valid_mask}
         if finalized_map is not None:
             arrays["finalized_map"] = finalized_map
-        np.savez_compressed(path, **arrays)
+        _atomic_write(path, lambda f: np.savez_compressed(f, **arrays))
         self._upsert_manifest_row(params, metadata=None)
         return path
 

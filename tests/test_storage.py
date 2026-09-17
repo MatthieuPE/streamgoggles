@@ -394,3 +394,52 @@ def test_model_store_load_missing_raises(tmp_path, tiny_torch_model_class):
     store = ModelStore(tmp_path / "models")
     with pytest.raises(FileNotFoundError):
         store.load_model(tiny_torch_model_class, {"model_config": {}})
+
+
+# ---------------------------------------------------------------------------
+# Concurrent writers (DataLoader workers share one store)
+# ---------------------------------------------------------------------------
+
+
+def _save_many_samples(root, worker, n):
+    """Top-level so a spawned process can import it."""
+    from streamgoggles.sample import Sample
+
+    store = SimulationStore(root)
+    for i in range(n):
+        sample = Sample(
+            map_stack=np.full((1, 4, 4), float(i), dtype=np.float32),
+            label_stack=np.zeros((1, 4, 4), dtype=np.float32),
+            valid_mask=np.ones((4, 4), dtype=bool),
+            params={"worker": worker, "i": i},
+        )
+        store.save_sample(sample, {"worker": worker, "i": i})
+
+
+def test_simulation_store_survives_concurrent_writers(tmp_path):
+    """Several DataLoader workers generating eval samples write to one store
+    at once. Each save updates the shared manifest (read, modify, write), so
+    without locking a writer can read a half-written manifest (crash:
+    "Parquet magic bytes not found") or overwrite another writer's new rows
+    (lost entries). Every sample must end up readable and in the manifest."""
+    import multiprocessing
+
+    n_workers, n_each = 4, 25
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(target=_save_many_samples, args=(tmp_path, w, n_each))
+        for w in range(n_workers)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=120)
+    assert all(p.exitcode == 0 for p in processes), [p.exitcode for p in processes]
+
+    store = SimulationStore(tmp_path)
+    manifest = store.query()
+    assert len(manifest) == n_workers * n_each, "manifest lost rows"
+    for w in range(n_workers):
+        for i in range(n_each):
+            assert store.load_sample({"worker": w, "i": i}).map_stack[0, 0, 0] == i
+    assert not list(tmp_path.rglob("*.tmp")), "temporary files left behind"

@@ -1,4 +1,4 @@
-﻿streamgoggles.evaluation.metrics
+streamgoggles.evaluation.metrics
 ================================
 
 .. automodule:: streamgoggles.evaluation.metrics
@@ -9,6 +9,7 @@
    .. autosummary::
    
       confusion_matrix
+      confusion_rates
       correlation
       dice
       iou

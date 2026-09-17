@@ -8,6 +8,7 @@
 
    .. autosummary::
    
+      configure_torch_threads
       default_num_workers
       stream_map_collate_fn
    

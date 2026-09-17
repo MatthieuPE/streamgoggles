@@ -135,3 +135,130 @@ non-trivial purity needs that column populated with some background/
 non-stream rows, e.g. by concatenating a stream eval grid's
 `evaluate_on_grid()` output with a separately-evaluated background-only
 set.
+
+### Footprint-level detection ({py:mod}`streamgoggles.evaluation.footprint`)
+
+Everything above scores one window at a time. The end product, though, is
+a **HEALPix map** of where streams are, so the model is also scored on the
+map itself.
+
+**From windows to a HEALPix map.** `tiles_around_stream` lays overlapping
+tiles (stride = half a window by default) over the part of the footprint
+around an injected stream. `predict_footprint` runs the model on each tile
+and projects every tile back to HEALPix with
+{py:func}`~streamgoggles.matched_filter.stitch_windows_to_healpix`. Where
+tiles overlap, a pixel takes its value from the tile where it lies
+**furthest from an edge**. Overlapping outputs are **not averaged**: the
+output is a probability that gets thresholded, and the mean of a confident
+0.9 and a confident 0.1 is not a real 0.5. This is the U-Net
+overlap-tile strategy. The input and the detection label are stitched the
+same way, so all three maps line up pixel for pixel.
+
+**The four fractions.** `score_footprint` counts `tp`/`fn`/`fp`/`tn` over
+the stitched map and normalizes each row of the confusion matrix
+({py:func}`~streamgoggles.evaluation.metrics.confusion_rates`):
+
+| | predicted stream | predicted no stream |
+|---|---|---|
+| **true stream** | `tpr` = found | `fnr` = missed |
+| **true no stream** | `fpr` = false alarm | `tnr` = correct reject |
+
+Each row sums to one, so the numbers can be compared between maps whose
+stream and background areas differ by orders of magnitude. Raw counts
+cannot. Two details matter:
+
+- Only pixels that some tile covered **and** that are finite in both maps
+  are scored. A stitched map is NaN in footprint holes and outside the
+  tiles, and `NaN > 0.5` is `False`. Without that mask, all the unobserved
+  sky would count as correctly rejected background.
+- If a stream is too faint to leave any pixel above `count_threshold`,
+  `tpr`/`fnr` are **NaN, not 0**. "Nothing to detect" (the *label* has
+  vanished) and "detected nothing" (the *model* missed it) mean opposite
+  things, so they are kept apart.
+
+The false-alarm rate is measured **near the stream** (inside the tiled
+region), not over the whole survey.
+
+**Averaging over realizations.** `evaluate_footprint_realizations` injects
+`n_realizations` independent full-sky realizations for each parameter set
+(seeded by `[seed, set_index, realization]`, so the run is reproducible and
+every sky is independent). It returns one row per realization.
+`aggregate_over_replicates(..., group_by=["richness"])` then gives
+mean/std/n per surface brightness. A realization with no stream pixels is
+kept as a row with NaN rates rather than dropped, so failures at the faint
+end don't disappear. `n_true_pixels_n` against `tpr_n` counts how many
+realizations still had a label. `score_footprint` also returns
+`precision` (`tp / (tp + fp)`), the fraction of flagged pixels that are
+really stream.
+
+**The no-stream control.** A found fraction means nothing without the
+background it has to stand out from: finding half the stream pixels is
+worthless if half the background is flagged too. So by default
+(`no_stream_control=True`) every realization is also predicted on
+`background_only_sky`: the same sky with the stream removed, scored on
+**the same tiles**. That gives `fp_no_stream`/`tn_no_stream`/
+`fpr_no_stream`, the false-alarm rate set by the background alone. The gap
+between `fpr` and `fpr_no_stream` is what the stream itself adds.
+
+**Plots.** `plot_confusion_matrix` draws the averaged 2×2 matrix.
+`plot_detection_rates` draws two panels against a parameter. The top panel
+shows the found fraction (missed is its complement, so it isn't drawn). The
+bottom panel shows the background false-alarm rate with the stream and
+without it. Std bars are clipped to [0, 1], and points averaged over only
+some realizations are annotated `k/n`.
+
+**Any threshold, after the fact.** Passing `thresholds=THRESHOLD_GRID` to
+`evaluate_footprint_realizations` also records, for each realization, how
+many stream pixels (`n_above_stream`), background pixels
+(`n_above_background`) and no-stream-control pixels (`n_above_no_stream`) lie
+above each of 241 thresholds (evenly spaced in logit, so the tail near 1 is
+resolved; 0.5 is included exactly). No threshold has to be chosen before
+scoring.
+
+`detection_metrics(results, THRESHOLD_GRID, group_by=["richness"], at=...)`
+turns those counts into the area-independent metrics used to compare models
+({doc}`../experiments/index`). With counts summed over the realizations of a
+group, at threshold $t$: $S_t$ true stream pixels, $S_s$ of them above $t$;
+$B_t$ true background pixels, $B_s$ of them above $t$;
+
+$$
+C = \frac{S_s}{S_t}\ \text{(completeness)},\qquad
+F = \frac{B_s}{B_t}\ \text{(contamination)},\qquad
+\frac{C}{F}\ \text{(contrast)}.
+$$
+
+$F$ counts at least one flagged pixel, so it is never zero and the contrast is
+never overstated; the contrast is NaN (undefined, not zero) when no stream
+pixel is found. Unlike purity, $S_s/(S_s+B_s)$, none of the three depends on
+how much background was scored. `plot_detection_metrics` draws the three
+against a parameter, one line per threshold, with points based on fewer than
+20 found stream pixels drawn hollow.
+
+Results from `train_model.ipynb` §10-11 (batch Dice, batch 8; trained on
+SB 31-34; 30 single-stream realizations per point; nside 512; threshold 0.5):
+
+| SB | true pixels (mean) | $C$ | $F$ | $C/F$ | precision | background flagged, no stream |
+|---|---|---|---|---|---|---|
+| 30 | 569 | 0.92 | 7.7e-4 | 1200 | 0.97 | 0 |
+| 31 | 525 | 0.90 | 1.0e-3 | 900 | 0.96 | 0 |
+| 32 | 383 | 0.81 | 1.2e-3 | 655 | 0.91 | 0 |
+| 33 | 206 | 0.13 | 4.3e-4 | 292 | 0.76 | 0 |
+| 34 |  56 | 0 | -- | -- | -- | 0 |
+
+Half of the true stream pixels are found down to **SB ≈ 32.4**. With the
+stream removed, not one background pixel is flagged in any of the 210
+realizations, so the background flagged on the stream skies is provoked by
+the stream itself (pixels beside its track). At SB 34 the label still exists
+(56 pixels on average) but the model does not respond.
+
+An earlier version of this notebook trained with plain Dice at batch 2 found
+more of the faint end at 0.5 (58% at SB 33) but flagged about 0.9% of the
+background at every SB, even with no stream, on the same sky pixels from one
+realization to the next. Per-window Dice gives no gradient on a window
+without a stream, so nothing taught the model to predict low there. The
+comparison that led to batch Dice is {doc}`../experiments/loss_selection`.
+
+Current limits: one stream per sky. Multi-stream footprint injection is
+the next step, and the functions above already take whatever the injector
+returns. The scan is also one-dimensional (surface brightness only); a 2-D
+version against distance modulus is planned.

@@ -361,11 +361,11 @@ downweight — invalid pixels contribute exactly zero to the loss, computed
 via a masked sum divided by the valid pixel count (or, for
 `WeightedMSELoss`, by the mask-restricted weight sum).
 
-- `DiceLoss`, `FocalLoss`, `TverskyLoss`, `BCEWithLogitsLoss` — the primary
-  choices for the current default `label_policy="stream_detection"` (a
-  bounded `{0, 1}` per-pixel target; `DiceLoss` + `head="sigmoid"` is what
-  `train_model.ipynb` actually uses), and also still valid for the earlier
-  binary/density label options.
+- `DiceLoss`, `BatchDiceLoss`, `FocalLoss`, `TverskyLoss`,
+  `BCEWithLogitsLoss` — the primary choices for the current default
+  `label_policy="stream_detection"` (a bounded `{0, 1}` per-pixel target;
+  `DiceLoss` + `head="sigmoid"` is what `train_model.ipynb` actually uses),
+  and also still valid for the earlier binary/density label options.
 - `MSELoss`, `WeightedMSELoss` — the primary pair for `label_policy=
   "stream_count"` (a literal, unbounded count), still available but no
   longer the default — see {doc}`ml_concepts` for why: MSE on that
@@ -393,4 +393,141 @@ losses.py` itself (out of scope for the notebook tuning that surfaced it) —
 flagged here for whoever reaches for `WeightedMSELoss` next on a
 similarly-skewed target.
 
-`get_loss(name, **kwargs)` is a small factory over all six, by name.
+`get_loss(name, **kwargs)` is a small factory over all seven, by name.
+
+### Formulas
+
+Exactly what each class computes. Notation, for a batch of $B$ windows and
+$C$ channels:
+
+- $p_{bci}$: the model's output at pixel $i$ of channel $c$ in window $b$
+  (a probability in $[0, 1]$ for `head="sigmoid"`; a logit $z_{bci}$ for
+  `BCEWithLogitsLoss`, whose model uses `head="identity"`);
+- $y_{bci}$: the target (the detection label, $0$ or $1$);
+- $V_b$: the valid pixels of window $b$ (`valid_mask`, shared by all
+  channels). Every sum below runs over valid pixels only;
+- $N = C\sum_b |V_b|$: the number of valid elements in the batch;
+- $\varepsilon = 10^{-6}$ (`_EPS`), which keeps ratios and logarithms finite.
+
+**Dice** (`DiceLoss`, `"dice"`): one soft Dice ratio per window and channel,
+then the mean over them:
+
+$$
+\mathcal{L}_\text{Dice} = 1 - \frac{1}{BC}\sum_{b=1}^{B}\sum_{c=1}^{C}
+\frac{2\sum_{i \in V_b} p_{bci}\,y_{bci} + \varepsilon}
+     {\sum_{i \in V_b} p_{bci} + \sum_{i \in V_b} y_{bci} + \varepsilon}
+$$
+
+**Batch Dice** (`BatchDiceLoss`, `"batch_dice"`): the same ratio, but the
+sums run over every window of the batch before dividing, so there is one
+ratio per channel:
+
+$$
+\mathcal{L}_\text{batch Dice} = 1 - \frac{1}{C}\sum_{c=1}^{C}
+\frac{2\sum_{b}\sum_{i \in V_b} p_{bci}\,y_{bci} + \varepsilon}
+     {\sum_{b}\sum_{i \in V_b} p_{bci} + \sum_{b}\sum_{i \in V_b} y_{bci} + \varepsilon}
+$$
+
+For a single window ($B = 1$) the two are identical.
+
+**Tversky** (`TverskyLoss`, `"tversky"`): with soft counts per window and
+channel $\mathrm{TP}_{bc} = \sum_i p\,y$, $\mathrm{FP}_{bc} = \sum_i p\,(1-y)$,
+$\mathrm{FN}_{bc} = \sum_i (1-p)\,y$,
+
+$$
+\mathcal{L}_\text{Tversky} = 1 - \frac{1}{BC}\sum_{b,c}
+\frac{\mathrm{TP}_{bc} + \varepsilon}
+     {\mathrm{TP}_{bc} + \alpha\,\mathrm{FP}_{bc} + \beta\,\mathrm{FN}_{bc} + \varepsilon}
+$$
+
+$\alpha$ weighs false positives, $\beta$ false negatives. The defaults
+$\alpha = \beta = \tfrac12$ give back Dice.
+
+**Binary cross-entropy** (`BCEWithLogitsLoss`, `"bce"`), on logits $z$ with
+$\sigma(z) = 1/(1+e^{-z})$:
+
+$$
+\mathcal{L}_\text{BCE} = -\frac{1}{N}\sum_{b,c,i}
+\Big[\, y_{bci}\log\sigma(z_{bci}) + (1-y_{bci})\log\big(1-\sigma(z_{bci})\big) \Big]
+$$
+
+(computed in torch's numerically stable form, never as $\log$ of a
+sigmoid).
+
+**Focal** (`FocalLoss`, `"focal"`), with $p$ clamped to
+$[\varepsilon, 1-\varepsilon]$:
+
+$$
+\mathcal{L}_\text{focal} = \frac{1}{N}\sum_{b,c,i}
+\Big[ -\alpha\, y\,(1-p)^{\gamma}\log p \;-\; (1-\alpha)\,(1-y)\,p^{\gamma}\log(1-p) \Big]
+$$
+
+with defaults $\alpha = 0.25$, $\gamma = 2$. The factors $(1-p)^\gamma$ and
+$p^\gamma$ shrink the loss of pixels already predicted confidently and
+correctly; $\gamma = 0$, $\alpha = \tfrac12$ is half the BCE.
+
+**MSE** (`MSELoss`, `"mse"`):
+
+$$
+\mathcal{L}_\text{MSE} = \frac{1}{N}\sum_{b,c,i} \big(p_{bci} - y_{bci}\big)^2
+$$
+
+**Weighted MSE** (`WeightedMSELoss`, `"weighted_mse"`), weighting each
+pixel by its own (non-negative) target:
+
+$$
+\mathcal{L}_\text{WMSE} = \sum_{b,c,i} w_{bci}\,\big(p_{bci} - y_{bci}\big)^2,
+\qquad
+w_{bci} = \frac{\max(y_{bci}, 0)}{\sum_{b',c',i'} \max(y_{b'c'i'}, 0)}
+$$
+
+With `normalize_weight=False` the denominator is dropped
+($w = \max(y, 0)$). The normalization runs over the **whole batch**, which
+is the limitation described above.
+
+**Dice + BCE** (under evaluation, not yet a library class): the sum of the
+two, with BCE taken on probabilities,
+
+$$
+\mathcal{L}_\text{Dice+BCE} = \mathcal{L}_\text{Dice}
+- \frac{1}{N}\sum_{b,c,i}\Big[\, y\log p + (1-y)\log(1-p) \Big].
+$$
+
+### Why Dice cannot learn from a window without a stream
+
+Write one window-channel term of $\mathcal{L}_\text{Dice}$ as
+$1 - D_{bc}$ with $D_{bc} = N_{bc}/S_{bc}$, where
+$N_{bc} = 2\sum_i p\,y + \varepsilon$ and
+$S_{bc} = \sum_i p + \sum_i y + \varepsilon$. For a background pixel
+($y_{bci} = 0$), $p_{bci}$ appears only in the denominator, so
+
+$$
+\frac{\partial \mathcal{L}_\text{Dice}}{\partial p_{bci}}
+= \frac{1}{BC}\,\frac{N_{bc}}{S_{bc}^{2}}
+= \frac{1}{BC}\,\frac{D_{bc}}{S_{bc}}.
+$$
+
+The penalty on a false alarm is proportional to that window's own Dice.
+In a window **without any stream**, $y = 0$ everywhere, so
+$N_{bc} = \varepsilon$ and the gradient is
+$\varepsilon / \big(BC\,S_{bc}^2\big) \approx 10^{-6}/\big(BC\,(\sum_i p)^2\big)$:
+effectively zero. Nothing pushes the probabilities down there, whatever the
+model predicts. Measured on a $96\times 96$ window starting at the class
+prior: $5\times10^{-13}$ per background pixel, against $10^{-6}$ for a
+background pixel in a window that contains a stream. The same holds for
+the decoy channel, whose label is almost always empty, and for a stream too
+faint to be visible.
+
+With **batch Dice**, $N_c$ and $S_c$ are pooled over the batch, so
+
+$$
+\frac{\partial \mathcal{L}_\text{batch Dice}}{\partial p_{bci}}
+= \frac{1}{C}\,\frac{D_c}{S_c}
+\quad\text{for every } b \text{ with } y_{bci} = 0,
+$$
+
+the same for a pixel in a stream-free window as for one next to a stream,
+as long as the batch contains a stream the model is finding ($D_c > 0$).
+**BCE** gives every pixel its own gradient,
+$\partial\mathcal{L}_\text{BCE}/\partial z_{bci} = \big(\sigma(z_{bci}) - y_{bci}\big)/N$,
+whatever the rest of the window or batch holds.

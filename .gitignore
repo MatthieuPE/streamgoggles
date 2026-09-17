@@ -175,3 +175,5 @@ data/*
 claude/
 
 .vscode/
+# Local experiment plots (not tracked)
+plots/

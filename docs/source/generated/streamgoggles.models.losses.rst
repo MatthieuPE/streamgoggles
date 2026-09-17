@@ -1,4 +1,4 @@
-streamgoggles.models.losses
+﻿streamgoggles.models.losses
 ===========================
 
 .. automodule:: streamgoggles.models.losses
@@ -15,6 +15,7 @@ streamgoggles.models.losses
    .. autosummary::
    
       BCEWithLogitsLoss
+      BatchDiceLoss
       DiceLoss
       FocalLoss
       MSELoss
