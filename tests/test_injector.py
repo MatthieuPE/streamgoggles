@@ -373,6 +373,50 @@ def test_inject_single_stream_builds_valid_sample(real_injector, stream_params):
     ]
 
 
+def test_inject_single_stream_places_the_stream_again_when_no_window_fits(
+    monkeypatch, real_injector, stream_params
+):
+    """A placement along the footprint edge can admit no window holding
+    5 deg of stream. That used to raise inside a DataLoader worker and stop a
+    whole training run; the stream is now placed again instead."""
+    from streamgoggles import injector as injector_module
+
+    real_sampler = injector_module.sample_stream_window
+    calls = {"placements": 0}
+    real_realize = real_injector._realize_and_inject
+
+    def counting_realize(params, rng):
+        calls["placements"] += 1
+        return real_realize(params, rng)
+
+    def failing_twice(*args, **kwargs):
+        if calls["placements"] <= 2:
+            raise RuntimeError("sample_stream_window: no valid window found")
+        return real_sampler(*args, **kwargs)
+
+    monkeypatch.setattr(real_injector, "_realize_and_inject", counting_realize)
+    monkeypatch.setattr(injector_module, "sample_stream_window", failing_twice)
+
+    sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
+    assert calls["placements"] == 3
+    assert sample.map_stack.sum() > 0
+
+
+def test_inject_single_stream_gives_up_after_max_placements(
+    monkeypatch, real_injector, stream_params
+):
+    from streamgoggles import injector as injector_module
+
+    def always_failing(*args, **kwargs):
+        raise RuntimeError("sample_stream_window: no valid window found")
+
+    monkeypatch.setattr(injector_module, "sample_stream_window", always_failing)
+    with pytest.raises(RuntimeError, match="no valid window in 3 placements"):
+        real_injector.inject_single_stream(
+            stream_params, np.random.default_rng(3), max_placements=3
+        )
+
+
 def test_inject_single_stream_map_has_signal(real_injector, stream_params):
     sample = real_injector.inject_single_stream(stream_params, np.random.default_rng(3))
     assert sample.map_stack.sum() > 0

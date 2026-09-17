@@ -543,6 +543,7 @@ class StreamInjector:
         rng: np.random.Generator,
         min_stream_length_deg: float = 5.0,
         max_attempts: int = 100,
+        max_placements: int = 10,
     ) -> Sample:
         """Realize one stream, inject it into the background, return a
         labeled sample.
@@ -566,6 +567,14 @@ class StreamInjector:
             min_stream_length_deg: Forwarded to windows.sample_stream_window
                 (decision 21 default: 5 deg).
             max_attempts: Forwarded to windows.sample_stream_window.
+            max_placements: How many times to realize and place the stream
+                again when a placement admits no valid window (the stream
+                landed where no window centred in the footprint holds
+                ``min_stream_length_deg`` of it, e.g. along the footprint
+                edge) or no star of it was detected at all. Each retry
+                continues the same ``rng``, so a sample is still
+                reproducible, and a first placement that works is used as
+                before.
 
         Returns:
             Sample(map_stack, label_stack, valid_mask, params, metadata).
@@ -573,26 +582,39 @@ class StreamInjector:
             list (matching map_stack's channel order).
 
         Raises:
-            RuntimeError if window sampling fails (e.g. the stream is too
-                far from the footprint, or the footprint is too small/sparse
-                for a >=min_stream_length_deg window to be found).
+            RuntimeError if no valid window is found in ``max_placements``
+                placements (e.g. the footprint is too small or sparse for a
+                >=min_stream_length_deg window).
             NotImplementedError if self.label_policy is "soft_distance"
                 (rasterize.py, decision 6 -- still a stub).
         """
-        detected, resolved_params, _ = self._realize_and_inject(params, rng)
-
         size_deg = self.pix.image_size_pix[0] * self.pix.pixel_scale_deg
-        window = sample_stream_window(
-            detected["ra"].to_numpy(dtype=float),
-            detected["dec"].to_numpy(dtype=float),
-            resolved_params.get("width", 0.0),
-            self.background.footprint,
-            self.pix.nside,
-            size_deg=size_deg,
-            min_stream_length_deg=min_stream_length_deg,
-            max_attempts=max_attempts,
-            rng=rng,
-        )
+        failures = []
+        for _ in range(max_placements):
+            detected, resolved_params, _ = self._realize_and_inject(params, rng)
+            if detected.empty:
+                failures.append("no star of the stream was detected")
+                continue
+            try:
+                window = sample_stream_window(
+                    detected["ra"].to_numpy(dtype=float),
+                    detected["dec"].to_numpy(dtype=float),
+                    resolved_params.get("width", 0.0),
+                    self.background.footprint,
+                    self.pix.nside,
+                    size_deg=size_deg,
+                    min_stream_length_deg=min_stream_length_deg,
+                    max_attempts=max_attempts,
+                    rng=rng,
+                )
+                break
+            except RuntimeError as error:
+                failures.append(str(error))
+        else:
+            raise RuntimeError(
+                f"inject_single_stream: no valid window in {max_placements} "
+                f"placements of the stream; last failure: {failures[-1]}"
+            )
 
         finalized_full, stream_raw_full, channels_meta = self._build_full_sky_channels(
             detected
