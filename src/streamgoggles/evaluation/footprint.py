@@ -47,6 +47,20 @@ logger = logging.getLogger(__name__)
 
 _RATE_NAMES = ("tpr", "fnr", "fpr", "tnr")
 
+#: Probability thresholds for a detection curve (found fraction against
+#: false-alarm rate as the threshold is swept). Evenly spaced in logit space,
+#: so the tail that matters for rare false alarms -- probabilities within
+#: ~1e-5 of 1 -- is resolved as finely as the middle. Contains 0.5 exactly,
+#: so the curve passes through the default operating point.
+THRESHOLD_GRID = 1.0 / (1.0 + np.exp(-np.linspace(-12.0, 12.0, 241)))
+THRESHOLD_GRID[120] = 0.5
+
+
+def _count_above(values: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
+    """Number of `values` strictly above each threshold (same `>` as scoring)."""
+    ordered = np.sort(values)
+    return len(ordered) - np.searchsorted(ordered, thresholds, side="right")
+
 
 def tiles_around_stream(
     full_sky: dict,
@@ -199,6 +213,7 @@ def score_footprint(
     label: np.ndarray,
     covered: np.ndarray,
     threshold: float = 0.5,
+    thresholds: np.ndarray | None = None,
 ) -> dict:
     """Confusion counts and per-class rates over the covered, finite sky.
 
@@ -211,6 +226,14 @@ def score_footprint(
         prediction, label: HEALPix maps (e.g. from `predict_footprint`).
         covered: bool HEALPix mask of pixels any window reached.
         threshold: probability above which a pixel counts as detected.
+        thresholds: optional array of thresholds (e.g. `THRESHOLD_GRID`).
+            If given, also returns ``n_above_stream`` and
+            ``n_above_background``: for each threshold, how many true stream
+            pixels and how many non-stream pixels have a prediction above it.
+            Divided by ``n_true_pixels`` and ``fp + tn``, these are the found
+            fraction and false-alarm rate at every threshold, so models can
+            be compared at the same false-alarm rate instead of at 0.5. The
+            label is binarized at `threshold` as usual.
 
     Returns:
         dict with ``tp``/``fp``/``tn``/``fn`` counts, the four rates
@@ -223,12 +246,21 @@ def score_footprint(
     scored = covered & np.isfinite(prediction) & np.isfinite(label)
     counts = confusion_matrix(prediction, label, scored, threshold)
     flagged = counts["tp"] + counts["fp"]
-    return {
+    scores = {
         **counts,
         **confusion_rates(counts),
         "precision": counts["tp"] / flagged if flagged else float("nan"),
         "n_true_pixels": counts["tp"] + counts["fn"],
     }
+    if thresholds is not None:
+        is_stream = label > threshold
+        scores["n_above_stream"] = _count_above(
+            prediction[scored & is_stream], thresholds
+        )
+        scores["n_above_background"] = _count_above(
+            prediction[scored & ~is_stream], thresholds
+        )
+    return scores
 
 
 def background_only_sky(injector: "StreamInjector", full_sky: dict) -> dict:
@@ -277,6 +309,7 @@ def evaluate_footprint_realizations(
     threshold: float = 0.5,
     device: str = "cpu",
     no_stream_control: bool = True,
+    thresholds: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Score the model on many independent realizations of each parameter set.
 
@@ -310,12 +343,19 @@ def evaluate_footprint_realizations(
             ``tn_no_stream``/``fpr_no_stream``. This is the reference a
             found fraction has to be read against: the fraction of
             background flagged when there is no stream at all.
+        thresholds: optional threshold array (e.g. `THRESHOLD_GRID`). If
+            given, each row also holds array-valued ``n_above_stream`` and
+            ``n_above_background`` (see `score_footprint`), and, with the
+            control, ``n_above_no_stream``: counts above each threshold on
+            the no-stream sky, out of ``fp_no_stream + tn_no_stream`` pixels.
 
     Returns:
         DataFrame, one row per realization: every key of the parameter set,
         ``realization``, ``nstars`` (after richness resolution), ``n_tiles``,
         the confusion counts, the four rates, ``precision``,
-        ``n_true_pixels``, and the no-stream control columns if requested.
+        ``n_true_pixels``, the no-stream control columns if requested, and
+        the per-threshold counts if requested (``None`` where a stream left
+        no pixel to tile around).
     """
     control_keys = ("fp_no_stream", "tn_no_stream", "fpr_no_stream")
     rows = []
@@ -340,6 +380,19 @@ def evaluate_footprint_realizations(
                 row.update(dict.fromkeys((*_RATE_NAMES, "precision"), float("nan")))
                 if no_stream_control:
                     row.update(dict.fromkeys(control_keys, float("nan")))
+                if thresholds is not None:
+                    row.update(
+                        dict.fromkeys(
+                            (
+                                "n_above_stream",
+                                "n_above_background",
+                                "n_above_no_stream",
+                            )
+                            if no_stream_control
+                            else ("n_above_stream", "n_above_background"),
+                            None,
+                        )
+                    )
                 rows.append(row)
                 continue
 
@@ -355,7 +408,11 @@ def evaluate_footprint_realizations(
             )
             row.update(
                 score_footprint(
-                    maps["prediction"], maps["label"], maps["covered"], threshold
+                    maps["prediction"],
+                    maps["label"],
+                    maps["covered"],
+                    threshold,
+                    thresholds,
                 )
             )
             if no_stream_control:
@@ -374,12 +431,16 @@ def evaluate_footprint_realizations(
                     control["label"],
                     control["covered"],
                     threshold,
+                    thresholds,
                 )
                 row.update(
                     fp_no_stream=scores["fp"],
                     tn_no_stream=scores["tn"],
                     fpr_no_stream=scores["fpr"],
                 )
+                if thresholds is not None:
+                    # The control has no stream: every pixel is background.
+                    row["n_above_no_stream"] = scores["n_above_background"]
             rows.append(row)
     return pd.DataFrame(rows)
 

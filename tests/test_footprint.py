@@ -17,6 +17,7 @@ from streamgoggles.background_sources import StreamObsLightBackgroundSource, Stu
 from streamgoggles.evaluation import footprint
 from streamgoggles.evaluation.completeness_purity import aggregate_over_replicates
 from streamgoggles.evaluation.footprint import (
+    THRESHOLD_GRID,
     background_only_sky,
     evaluate_footprint_realizations,
     plot_confusion_matrix,
@@ -67,6 +68,35 @@ def test_score_footprint_counts_and_rates():
     assert scores["tnr"] == pytest.approx(87 / 90)
     assert scores["precision"] == pytest.approx(6 / 9)
     assert scores["n_true_pixels"] == 10
+
+
+def test_threshold_grid_is_sorted_and_contains_one_half():
+    assert np.all(np.diff(THRESHOLD_GRID) > 0)
+    assert 0.5 in THRESHOLD_GRID
+    assert THRESHOLD_GRID[0] < 1e-5 and THRESHOLD_GRID[-1] > 1 - 1e-5
+
+
+def test_score_footprint_threshold_sweep_matches_the_confusion_counts():
+    prediction, label, covered = _synthetic_maps()
+    prediction[20:40] = np.linspace(0.05, 0.95, 20)  # spread some background
+    prediction = np.where(covered, prediction, np.nan)
+    thresholds = np.array([0.0, 0.3, 0.5, 0.8, 0.99])
+    scores = score_footprint(prediction, label, covered, thresholds=thresholds)
+
+    at_half = list(thresholds).index(0.5)
+    assert scores["n_above_stream"][at_half] == scores["tp"]
+    assert scores["n_above_background"][at_half] == scores["fp"]
+    # Every threshold agrees with a direct count, NaN / uncovered excluded.
+    is_stream = label > 0.5
+    scored = covered & np.isfinite(prediction)
+    for i, t in enumerate(thresholds):
+        assert scores["n_above_stream"][i] == np.count_nonzero(
+            scored & is_stream & (prediction > t)
+        )
+        assert scores["n_above_background"][i] == np.count_nonzero(
+            scored & ~is_stream & (prediction > t)
+        )
+    assert np.all(np.diff(scores["n_above_background"]) <= 0)
 
 
 def test_score_footprint_rows_sum_to_one():
@@ -309,6 +339,31 @@ def test_evaluate_footprint_realizations_one_row_per_realization(injector):
     assert (aggregated["tpr_n"] <= 2).all()
 
 
+def test_evaluate_footprint_realizations_threshold_sweep(injector):
+    import torch
+
+    torch.manual_seed(0)
+    model = UNet(in_channels=2, out_channels=2, base_width=4, depth=1, head="sigmoid")
+    results = evaluate_footprint_realizations(
+        model,
+        injector,
+        _identity_transform,
+        _param_sets()[:1],
+        n_realizations=2,
+        channel=0,
+        thresholds=THRESHOLD_GRID,
+    )
+    at_half = int(np.flatnonzero(THRESHOLD_GRID == 0.5)[0])
+    for _, row in results.iterrows():
+        assert len(row["n_above_stream"]) == len(THRESHOLD_GRID)
+        assert row["n_above_stream"][at_half] == row["tp"]
+        assert row["n_above_background"][at_half] == row["fp"]
+        assert row["n_above_no_stream"][at_half] == row["fp_no_stream"]
+        # Counts never exceed the pixels scored, and fall as the threshold rises.
+        assert row["n_above_no_stream"][0] <= row["fp_no_stream"] + row["tn_no_stream"]
+        assert np.all(np.diff(row["n_above_no_stream"]) <= 0)
+
+
 def test_evaluate_footprint_realizations_is_reproducible_and_independent(injector):
     import torch
 
@@ -352,6 +407,18 @@ def test_evaluate_footprint_realizations_keeps_a_vanished_stream(monkeypatch, in
     assert results.loc[0, "n_tiles"] == 0
     assert np.isnan(results.loc[0, "tpr"])
     assert np.isnan(results.loc[0, "fpr_no_stream"])
+
+    swept = evaluate_footprint_realizations(
+        model,
+        injector,
+        _identity_transform,
+        _param_sets()[:1],
+        n_realizations=1,
+        channel=0,
+        thresholds=THRESHOLD_GRID,
+    )
+    assert swept.loc[0, "n_above_stream"] is None
+    assert swept.loc[0, "n_above_no_stream"] is None
 
 
 def test_background_only_sky_is_the_same_sky_without_the_stream(injector):
