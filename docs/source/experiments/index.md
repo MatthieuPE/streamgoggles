@@ -52,6 +52,52 @@ $S_s/(S_s + B_s) = 1/\big(1 + (B_t/S_t)/(C/F)\big)$ is not used to compare
 models, because it depends on how much background area was scored
 ($B_t/S_t$), which is a property of the evaluation, not of the model.
 
+**Is the stream detected? Signal-to-noise along the track.** Per-pixel
+completeness can be low while a stream is still plainly visible: a search
+finds a stream as a *line* of flagged pixels denser than the background's
+false alarms, not by finding every pixel. So each injected stream is also
+scored as a whole, in its own frame ($\phi_1$ along the track, $\phi_2$
+across it, $\sigma$ the stream's Gaussian width):
+
+- **band**: the pixels within $1\sigma$ of the track
+  ($|\phi_2| < \sigma$, $|\phi_1| \le L/2$), $N_\text{band}$ of them, of which
+  $n_\text{band}$ are flagged;
+- **side bands**: the pixels between $1\sigma$ and $2\sigma$ on both sides.
+  They are reported, but they are not background: about 27% of a Gaussian
+  stream's stars lie there, and the prediction spreads slightly beyond the
+  track;
+- **background bands**: the same band shape placed at 200 random positions and
+  orientations on the same sky with the stream removed. Their flagged
+  densities have mean $\langle\rho_\text{bg}\rangle$ and scatter
+  $\sigma_\text{bg}$. Using the real band shape on the real prediction map keeps
+  the fact that false alarms come in clumps, which a Poisson formula would
+  ignore.
+
+$$
+\mathrm{SNR} = \frac{n_\text{band}/N_\text{band} - \langle\rho_\text{bg}\rangle}
+                   {\max\!\big(\sigma_\text{bg},\ \sqrt{\max(\langle\rho_\text{bg}\rangle N_\text{band},\,1)}\,/\,N_\text{band}\big)}
+$$
+
+Densities are compared, so the SNR is normalized by area. The noise is never
+taken below the Poisson noise of the expected background count, or one pixel
+when the background is clean, so a clean background cannot give an infinite
+SNR. A stream is **detected** at a threshold if
+
+$$
+n_\text{band} \ge 20 \quad\text{and}\quad \mathrm{SNR} \ge 2 .
+$$
+
+At least 20 pixels, because a real search would not follow up a handful of
+pixels; 2 sigma, because the question is whether the stream can be seen. The
+reported number is the **fraction of injected streams detected** at each
+surface brightness, with a Wilson 68% interval
+({py:func}`~streamgoggles.evaluation.footprint.stream_detection`).
+
+This is the significance of one band placed where the stream is known to be.
+A blind search tries a huge number of positions and orientations across the
+survey, and will need a stricter threshold (the look-elsewhere effect); that
+is the survey-wide contamination experiment below.
+
 **One reference threshold.** Models are compared at the same threshold, 0.5
 (the natural cut for a sigmoid output trained on a 0/1 label), with 0.9 as a
 cross-check. The threshold is not tuned per model when comparing them: it is a
@@ -73,7 +119,7 @@ it moves the results.
 |---|---|---|
 | {doc}`loss_selection` | Which training loss, batch size and background fraction? | done: batch Dice, batch 8, background fraction 0.05 |
 | Threshold tuning | Which probability threshold for the final maps, and does it hold on skies not used to choose it? | planned |
-| Network hyperparameters | Width, depth, learning rate, training length and batch size with the selected loss. Batch 8 used 4x fewer optimizer steps than batch 2 in the loss selection, so it may still be undertrained. | planned |
+| {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect every stream at SB 33 and some at SB 34, with a clean background? | in progress |
 | Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |
@@ -85,4 +131,5 @@ it moves the results.
 :hidden:
 
 loss_selection
+hyperparameters
 ```

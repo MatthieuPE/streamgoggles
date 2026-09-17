@@ -234,6 +234,28 @@ how much background was scored. `plot_detection_metrics` draws the three
 against a parameter, one line per threshold, with points based on fewer than
 20 found stream pixels drawn hollow.
 
+**Per stream: is it detected?** Pixel completeness can be low while a stream
+is still clearly visible as a line of flagged pixels. With both `thresholds`
+and the no-stream control, `evaluate_footprint_realizations` also calls
+`track_band_statistics` for each realization (for streams with a `width` and
+`length`). The injector records where the stream was placed
+(`inject_stream_full_sky(...)["placement"]`), and `stream_frame_coordinates`
+turns any sky position into the stream's own $(\phi_1, \phi_2)$. It then counts
+flagged pixels within $1\sigma$ of the track and between $1\sigma$ and $2\sigma$,
+at every threshold. It also places the same band shape at `n_null_bands` random
+positions and orientations on the sky without the stream, to measure the
+flagged densities the background alone produces in a stream-shaped region.
+
+`stream_detection(results, THRESHOLD_GRID, at=(0.1, 0.5))` counts a stream as
+detected when at least `min_pixels=20` pixels are flagged within $1\sigma$ and
+`band_snr` $\ge$ `min_snr=2`. `band_snr` compares the band's flagged density
+with the background bands' mean, in units of their scatter, never taken below
+one pixel's Poisson noise. It reports the fraction of streams detected with a
+Wilson interval, the median SNR, flagged counts and densities in the band and
+side bands, and the background density. `plot_stream_detection` draws the
+detected fraction against a parameter. The criterion and its choices are
+explained in {doc}`../experiments/index`.
+
 Results from `train_model.ipynb` §10-11 (batch Dice, batch 8; trained on
 SB 31-34; 30 single-stream realizations per point; nside 512; threshold 0.5):
 
