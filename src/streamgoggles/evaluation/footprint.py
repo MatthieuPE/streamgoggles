@@ -21,6 +21,9 @@ HEALPix map. This module evaluates that path:
    contamination and contrast at any threshold, from the per-threshold
    counts: the area-independent view used to compare models
    (docs: "Experiments and tests").
+6. `stream_detection` / `plot_stream_detection` -- per stream rather than
+   per pixel: the fraction of injected streams showing enough flagged pixels
+   above what the background alone would give.
 
 Everything is per-pixel on HEALPix, so a map containing several streams is
 scored exactly like a map containing one: the label is the union, and each
@@ -770,3 +773,171 @@ def plot_detection_metrics(
         ax.grid(alpha=0.3, which="both" if log else "major")
     axes[0].legend(fontsize=8)
     return axes
+
+
+def stream_detection(
+    results: pd.DataFrame,
+    thresholds: np.ndarray,
+    at: tuple[float, ...] = (0.5,),
+    min_pixels: int = 5,
+    n_sigma: float = 3.0,
+    group_by: list[str] | tuple[str, ...] = ("richness",),
+) -> pd.DataFrame:
+    """Fraction of injected streams detected, per group and threshold.
+
+    Per-pixel completeness can be low while every stream is still found: a
+    search needs a stream to show *some* pixels clearly above the background,
+    not all of them. For one realization at threshold t:
+
+    - ``S_s``: its true stream pixels classified as stream;
+    - ``lambda`` = S_t * F_0: the number of pixels the background alone would
+      flag inside the stream's footprint, with F_0 the fraction of pixels
+      flagged on the same tiles with the stream removed (the no-stream
+      control), pooled over the group;
+    - **detected** if ``S_s >= min_pixels`` and
+      ``S_s >= lambda + n_sigma * sqrt(lambda)``: at least a few pixels, and
+      clearly more than background fluctuations would give. A model that
+      flags the background everywhere cannot detect a stream this way.
+
+    Realizations whose stream left no pixel above the label threshold (no
+    true pixel to find) count as not detected, and are reported separately
+    in ``n_without_label``.
+
+    Parameters:
+        results: output of `evaluate_footprint_realizations` called with
+            ``thresholds`` and ``no_stream_control=True``.
+        thresholds: the threshold array passed there.
+        at: thresholds to report (nearest grid values).
+        min_pixels: minimum number of stream pixels flagged.
+        n_sigma: required excess over the background expectation, in
+            Poisson standard deviations.
+        group_by: columns defining a group.
+
+    Returns:
+        DataFrame with the group columns, ``threshold``, ``n_realizations``,
+        ``n_without_label``, ``n_detected``, ``detection_fraction``,
+        ``detection_low``/``detection_high`` (Wilson 68% interval),
+        ``median_S_s`` and ``background_expectation`` (mean lambda).
+
+    Raises:
+        ValueError if the no-stream control counts are missing.
+    """
+    if "n_above_no_stream" not in results:
+        raise ValueError(
+            "stream_detection needs the no-stream control: run "
+            "evaluate_footprint_realizations with thresholds and no_stream_control=True"
+        )
+    group_by = list(group_by)
+    indices = sorted({int(np.argmin(np.abs(thresholds - t))) for t in at})
+    rows = []
+    for keys, group in results.groupby(group_by):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        counted = group[group["n_above_stream"].notna()]
+        control_pixels = float(
+            (counted["fp_no_stream"] + counted["tn_no_stream"]).sum()
+        )
+        control_above = (
+            np.sum(np.stack(list(counted["n_above_no_stream"])), axis=0)
+            if len(counted)
+            else np.zeros(len(thresholds))
+        )
+        for k in indices:
+            f0 = control_above[k] / control_pixels if control_pixels else 0.0
+            flagged = np.array(
+                [row[k] for row in counted["n_above_stream"]], dtype=float
+            )
+            n_true = counted["n_true_pixels"].to_numpy(dtype=float)
+            expected = n_true * f0
+            detected = (
+                (flagged >= min_pixels)
+                & (flagged >= expected + n_sigma * np.sqrt(expected))
+                & (n_true > 0)
+            )
+            n = len(group)
+            n_detected = int(detected.sum())
+            low, high = _wilson_interval(n_detected, n)
+            rows.append(
+                {
+                    **dict(zip(group_by, keys, strict=True)),
+                    "threshold": float(thresholds[k]),
+                    "n_realizations": n,
+                    "n_without_label": int(n - int((n_true > 0).sum())),
+                    "n_detected": n_detected,
+                    "detection_fraction": n_detected / n if n else np.nan,
+                    "detection_low": low,
+                    "detection_high": high,
+                    "median_S_s": float(np.median(flagged)) if len(flagged) else np.nan,
+                    "background_expectation": float(expected.mean())
+                    if len(expected)
+                    else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _wilson_interval(
+    successes: int, trials: int, z: float = 1.0
+) -> tuple[float, float]:
+    """Wilson score interval for a binomial fraction (z=1: ~68%)."""
+    if trials == 0:
+        return np.nan, np.nan
+    p = successes / trials
+    denominator = 1 + z**2 / trials
+    centre = (p + z**2 / (2 * trials)) / denominator
+    half = z * np.sqrt(p * (1 - p) / trials + z**2 / (4 * trials**2)) / denominator
+    return max(centre - half, 0.0), min(centre + half, 1.0)
+
+
+def plot_stream_detection(
+    detection: pd.DataFrame,
+    param: str = "richness",
+    ax=None,
+    highlight: float | None = 0.5,
+    training_range: tuple[float, float] | None = None,
+):
+    """Plot the fraction of streams detected against a parameter.
+
+    One line per threshold, with Wilson 68% intervals (the number of
+    realizations per point is small, so the interval matters).
+
+    Parameters:
+        detection: output of `stream_detection`.
+        param: column for the x axis.
+        ax: matplotlib Axes (created if None).
+        highlight: threshold drawn thicker, or None.
+        training_range: optional (min, max) of ``param`` used in training.
+
+    Returns:
+        The Axes.
+    """
+    import matplotlib.pyplot as plt
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6.5, 4.2))
+    thresholds = sorted(detection["threshold"].unique())
+    cmap = plt.get_cmap("viridis")
+    for j, threshold in enumerate(thresholds):
+        data = detection[detection["threshold"] == threshold].sort_values(param)
+        emphasis = highlight is not None and np.isclose(threshold, highlight)
+        y = data["detection_fraction"].to_numpy(dtype=float)
+        ax.errorbar(
+            data[param].to_numpy(dtype=float),
+            y,
+            yerr=[
+                np.clip(y - data["detection_low"].to_numpy(dtype=float), 0, None),
+                np.clip(data["detection_high"].to_numpy(dtype=float) - y, 0, None),
+            ],
+            marker="o",
+            capsize=3,
+            color=cmap(j / max(len(thresholds) - 1, 1)),
+            lw=2.6 if emphasis else 1.4,
+            label=f"threshold {threshold:.3g}",
+        )
+    if training_range is not None:
+        ax.axvspan(*training_range, color="0.93", zorder=0)
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel(param)
+    ax.set_ylabel("fraction of streams detected")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    return ax

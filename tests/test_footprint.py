@@ -24,7 +24,9 @@ from streamgoggles.evaluation.footprint import (
     plot_confusion_matrix,
     plot_detection_metrics,
     plot_detection_rates,
+    plot_stream_detection,
     score_footprint,
+    stream_detection,
     tiles_around_stream,
 )
 from streamgoggles.injector import StreamInjector
@@ -575,3 +577,98 @@ def test_detection_metrics_matches_the_confusion_counts_end_to_end(injector):
         assert row.S_t == group["tp"].sum() + group["fn"].sum()
         assert row.B_s == group["fp"].sum()
         assert row.B_t == group["fp"].sum() + group["tn"].sum()
+
+
+# ---------------------------------------------------------------------------
+# stream_detection / plot_stream_detection
+# ---------------------------------------------------------------------------
+
+
+def _detection_rows(control_flagged):
+    """Three realizations at one SB, thresholds [0.1, 0.5]; control of 10^4 px."""
+    import pandas as pd
+
+    def row(above_stream, n_true):
+        return {
+            "richness": 33.0,
+            "n_above_stream": np.array(above_stream),
+            "n_above_background": np.array([0, 0]),
+            "n_above_no_stream": np.array(control_flagged),
+            "n_true_pixels": n_true,
+            "fp": 0,
+            "tn": 10_000,
+            "fp_no_stream": control_flagged[1],
+            "tn_no_stream": 10_000 - control_flagged[1],
+        }
+
+    return pd.DataFrame(
+        [
+            row([30, 12], 200),  # clearly detected at both thresholds
+            row([6, 3], 200),  # 6 pixels at 0.1, only 3 at 0.5
+            {
+                **row([0, 0], 0),
+                "n_above_stream": None,
+                "n_above_background": None,
+                "n_above_no_stream": None,
+            },  # vanished label: nothing to tile
+        ]
+    )
+
+
+def test_stream_detection_counts_streams_with_enough_pixels():
+    thresholds = np.array([0.1, 0.5])
+    d = stream_detection(_detection_rows([0, 0]), thresholds, at=(0.1, 0.5))
+    d = d.set_index("threshold")
+
+    assert d.loc[0.1, "n_detected"] == 2 and d.loc[0.5, "n_detected"] == 1
+    # The vanished stream is a realization that was not detected.
+    assert d.loc[0.5, "n_realizations"] == 3
+    assert d.loc[0.5, "n_without_label"] == 1
+    assert d.loc[0.5, "detection_fraction"] == pytest.approx(1 / 3)
+    assert d.loc[0.5, "detection_low"] <= 1 / 3 <= d.loc[0.5, "detection_high"]
+
+
+def test_stream_detection_requires_an_excess_over_the_background():
+    """A model flagging the background everywhere cannot 'detect' a stream
+    just by flagging its pixels too."""
+    thresholds = np.array([0.1, 0.5])
+    # Control: 4000 of 10^4 pixels (40%) flagged at 0.1 -> 80 expected in a
+    # 200-px stream, so 30 flagged stream pixels are no detection.
+    noisy = stream_detection(_detection_rows([4_000, 0]), thresholds, at=(0.1,))
+    assert noisy.loc[0, "n_detected"] == 0
+    assert noisy.loc[0, "background_expectation"] == pytest.approx(200 * 0.4)
+
+
+def test_stream_detection_needs_the_no_stream_control():
+    rows = _detection_rows([0, 0]).drop(columns=["n_above_no_stream"])
+    with pytest.raises(ValueError, match="no-stream control"):
+        stream_detection(rows, np.array([0.1, 0.5]))
+
+
+def test_plot_stream_detection_renders_intervals():
+    thresholds = np.array([0.1, 0.5])
+    d = stream_detection(_detection_rows([0, 0]), thresholds, at=(0.1, 0.5))
+    ax = plot_stream_detection(d, highlight=0.5, training_range=(31, 34))
+    labels = ax.get_legend_handles_labels()[1]
+    assert labels == ["threshold 0.1", "threshold 0.5"]
+    assert ax.get_ylabel() == "fraction of streams detected"
+
+
+def test_stream_detection_end_to_end(injector):
+    import torch
+
+    torch.manual_seed(0)
+    model = UNet(in_channels=2, out_channels=2, base_width=4, depth=1, head="sigmoid")
+    results = evaluate_footprint_realizations(
+        model,
+        injector,
+        _identity_transform,
+        _param_sets(),
+        n_realizations=2,
+        channel=0,
+        thresholds=THRESHOLD_GRID,
+    )
+    d = stream_detection(results, THRESHOLD_GRID, at=(0.5,))
+    assert list(d["richness"]) == [3000, 6000]
+    assert (d["n_realizations"] == 2).all()
+    assert ((d["detection_fraction"] >= 0) & (d["detection_fraction"] <= 1)).all()
