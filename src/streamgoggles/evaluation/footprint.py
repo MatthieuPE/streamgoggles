@@ -17,6 +17,10 @@ HEALPix map. This module evaluates that path:
    function of a parameter (surface brightness now; distance modulus as a
    second axis later -- the rows already carry every parameter, so grouping
    by two of them needs no change here).
+5. `detection_metrics` / `plot_detection_metrics` -- completeness,
+   contamination and contrast at any threshold, from the per-threshold
+   counts: the area-independent view used to compare models
+   (docs: "Experiments and tests").
 
 Everything is per-pixel on HEALPix, so a map containing several streams is
 scored exactly like a map containing one: the label is the union, and each
@@ -613,4 +617,156 @@ def plot_detection_rates(
     ax_false.set_ylabel("fraction of background\npixels flagged as stream")
     ax_false.set_xlabel(param)
     ax_false.legend(fontsize=8, loc="best")
+    return axes
+
+
+def detection_metrics(
+    results: pd.DataFrame,
+    thresholds: np.ndarray,
+    group_by: list[str] | tuple[str, ...] = ("richness",),
+    at: tuple[float, ...] | None = None,
+) -> pd.DataFrame:
+    """Completeness, contamination and contrast at each threshold.
+
+    With counts summed over all realizations of a group, at threshold t
+    (a pixel is classified as stream when its probability is above t):
+
+    - ``S_t``: true stream pixels; ``S_s``: those classified as stream;
+    - ``B_t``: true background pixels; ``B_s``: those classified as stream;
+    - ``completeness`` C = S_s / S_t: the fraction of the stream found;
+    - ``contamination`` F = B_s / B_t: the fraction of background flagged,
+      computed with at least one flagged pixel, so it is never zero and the
+      contrast is never overstated;
+    - ``contrast`` C / F: how many times more likely a stream pixel is to be
+      flagged than a background pixel. NaN when no stream pixel is found
+      (undefined, not zero).
+
+    None of these depends on how much sky was scored, unlike the purity
+    S_s / (S_s + B_s) = 1 / (1 + (B_t / S_t) / (C / F)).
+
+    Parameters:
+        results: output of `evaluate_footprint_realizations` called with
+            ``thresholds`` (rows whose stream left no pixel to tile around
+            carry no counts and are skipped).
+        thresholds: the same threshold array passed there (e.g.
+            `THRESHOLD_GRID`).
+        group_by: columns defining a group (one row per group and threshold).
+        at: optional thresholds to keep; each is matched to the nearest value
+            of ``thresholds``. Default: every threshold.
+
+    Returns:
+        DataFrame with the group columns, ``threshold``, ``S_s``, ``S_t``,
+        ``B_s``, ``B_t``, ``completeness``, ``contamination``, ``contrast``.
+    """
+    group_by = list(group_by)
+    counted = results[results["n_above_stream"].notna()]
+    indices = (
+        range(len(thresholds))
+        if at is None
+        else sorted({int(np.argmin(np.abs(thresholds - t))) for t in at})
+    )
+    rows = []
+    for keys, group in counted.groupby(group_by):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        stream_above = np.sum(np.stack(list(group["n_above_stream"])), axis=0)
+        background_above = np.sum(np.stack(list(group["n_above_background"])), axis=0)
+        n_stream = int(group["n_true_pixels"].sum())
+        n_background = int((group["fp"] + group["tn"]).sum())
+        for k in indices:
+            completeness = stream_above[k] / n_stream if n_stream else np.nan
+            contamination = max(int(background_above[k]), 1) / n_background
+            rows.append(
+                {
+                    **dict(zip(group_by, keys, strict=True)),
+                    "threshold": float(thresholds[k]),
+                    "S_s": int(stream_above[k]),
+                    "S_t": n_stream,
+                    "B_s": int(background_above[k]),
+                    "B_t": n_background,
+                    "completeness": completeness,
+                    "contamination": contamination,
+                    "contrast": completeness / contamination
+                    if completeness > 0
+                    else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def plot_detection_metrics(
+    metrics: pd.DataFrame,
+    param: str = "richness",
+    axes=None,
+    min_stream_pixels: int = 20,
+    highlight: float | None = 0.5,
+    training_range: tuple[float, float] | None = None,
+):
+    """Plot completeness, contamination and contrast against a parameter.
+
+    One panel per metric, one line per threshold. Points where fewer than
+    ``min_stream_pixels`` stream pixels are found are drawn hollow: too few
+    counts for the completeness or the contrast to be a measurement.
+
+    Parameters:
+        metrics: output of `detection_metrics`.
+        param: column for the x axis.
+        axes: three matplotlib Axes (created if None).
+        min_stream_pixels: below this S_s, a point is drawn hollow.
+        highlight: threshold drawn thicker (the reference one), or None.
+        training_range: optional (min, max) of ``param`` used in training,
+            shaded.
+
+    Returns:
+        The three Axes.
+    """
+    import matplotlib.pyplot as plt
+
+    if axes is None:
+        _, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    panels = (
+        ("completeness", r"completeness $C = S_s/S_t$", False),
+        ("contamination", r"contamination $F = B_s/B_t$", True),
+        ("contrast", r"contrast $C/F$", True),
+    )
+    thresholds = sorted(metrics["threshold"].unique())
+    cmap = plt.get_cmap("viridis")
+    for j, threshold in enumerate(thresholds):
+        data = metrics[metrics["threshold"] == threshold].sort_values(param)
+        color = cmap(j / max(len(thresholds) - 1, 1))
+        emphasis = highlight is not None and np.isclose(threshold, highlight)
+        for ax, (column, _, _) in zip(axes, panels, strict=True):
+            x = data[param].to_numpy(dtype=float)
+            y = data[column].to_numpy(dtype=float)
+            ax.plot(
+                x,
+                y,
+                marker="o",
+                color=color,
+                lw=2.6 if emphasis else 1.4,
+                ms=6 if emphasis else 4,
+                label=f"threshold {threshold:.3g}",
+            )
+            if column != "contamination":
+                hollow = data["S_s"].to_numpy() < min_stream_pixels
+                ax.plot(
+                    x[hollow],
+                    y[hollow],
+                    ls="none",
+                    marker="o",
+                    ms=7 if emphasis else 5,
+                    mfc="white",
+                    mec=color,
+                    zorder=5,
+                )
+    for ax, (_, label, log) in zip(axes, panels, strict=True):
+        if training_range is not None:
+            ax.axvspan(*training_range, color="0.93", zorder=0)
+        if log:
+            ax.set_yscale("log")
+        else:
+            ax.set_ylim(-0.03, 1.03)
+        ax.set_xlabel(param)
+        ax.set_ylabel(label)
+        ax.grid(alpha=0.3, which="both" if log else "major")
+    axes[0].legend(fontsize=8)
     return axes

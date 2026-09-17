@@ -15,8 +15,10 @@
    .. autosummary::
    
       background_only_sky
+      detection_metrics
       evaluate_footprint_realizations
       plot_confusion_matrix
+      plot_detection_metrics
       plot_detection_rates
       predict_footprint
       score_footprint

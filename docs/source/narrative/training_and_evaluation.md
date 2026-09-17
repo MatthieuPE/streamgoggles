@@ -207,41 +207,56 @@ bottom panel shows the background false-alarm rate with the stream and
 without it. Std bars are clipped to [0, 1], and points averaged over only
 some realizations are annotated `k/n`.
 
-Results from `train_model.ipynb` §10 (the model trained on SB 31–34; 30
-single-stream realizations per point, nside=512):
+**Any threshold, after the fact.** Passing `thresholds=THRESHOLD_GRID` to
+`evaluate_footprint_realizations` also records, for each realization, how
+many stream pixels (`n_above_stream`), background pixels
+(`n_above_background`) and no-stream-control pixels (`n_above_no_stream`) lie
+above each of 241 thresholds (evenly spaced in logit, so the tail near 1 is
+resolved; 0.5 is included exactly). No threshold has to be chosen before
+scoring.
 
-| SB | true pixels (mean) | found (`tpr`) | false alarm, with stream | false alarm, no stream | precision | realizations with a label |
+`detection_metrics(results, THRESHOLD_GRID, group_by=["richness"], at=...)`
+turns those counts into the area-independent metrics used to compare models
+({doc}`../experiments/index`). With counts summed over the realizations of a
+group, at threshold $t$: $S_t$ true stream pixels, $S_s$ of them above $t$;
+$B_t$ true background pixels, $B_s$ of them above $t$;
+
+$$
+C = \frac{S_s}{S_t}\ \text{(completeness)},\qquad
+F = \frac{B_s}{B_t}\ \text{(contamination)},\qquad
+\frac{C}{F}\ \text{(contrast)}.
+$$
+
+$F$ counts at least one flagged pixel, so it is never zero and the contrast is
+never overstated; the contrast is NaN (undefined, not zero) when no stream
+pixel is found. Unlike purity, $S_s/(S_s+B_s)$, none of the three depends on
+how much background was scored. `plot_detection_metrics` draws the three
+against a parameter, one line per threshold, with points based on fewer than
+20 found stream pixels drawn hollow.
+
+Results from `train_model.ipynb` §10-11 (batch Dice, batch 8; trained on
+SB 31-34; 30 single-stream realizations per point; nside 512; threshold 0.5):
+
+| SB | true pixels (mean) | $C$ | $F$ | $C/F$ | precision | background flagged, no stream |
 |---|---|---|---|---|---|---|
-| 30 | 569 | 0.986 ± 0.022 | 0.013 | 0.009 | 0.66 | 30/30 |
-| 31 | 525 | 0.966 ± 0.016 | 0.011 | 0.008 | 0.68 | 30/30 |
-| 32 | 383 | 0.872 ± 0.044 | 0.011 | 0.009 | 0.57 | 30/30 |
-| 33 | 206 | 0.584 ± 0.161 | 0.014 | 0.009 | 0.29 | 30/30 |
-| 34 |  56 | 0.099 ± 0.133 | 0.010 | 0.009 | 0.02 | 30/30 |
-| 35 |   8 | 0.048 ± 0.160 | 0.009 | 0.009 | 0.00 | 30/30 |
-| 36 | 0.6 | 0.000 ± 0.000 | 0.009 | 0.009 | 0.00 | 11/30 |
+| 30 | 569 | 0.92 | 7.7e-4 | 1200 | 0.97 | 0 |
+| 31 | 525 | 0.90 | 1.0e-3 | 900 | 0.96 | 0 |
+| 32 | 383 | 0.81 | 1.2e-3 | 655 | 0.91 | 0 |
+| 33 | 206 | 0.13 | 4.3e-4 | 292 | 0.76 | 0 |
+| 34 |  56 | 0 | -- | -- | -- | 0 |
 
-Half of the true stream pixels are found down to **SB ≈ 33.2** (linear
-interpolation of `tpr` across 0.5). Two separate things happen at the
-faint end. At SB 34–35 the label still exists and the model misses it. By
-SB 36 the label itself has mostly vanished: most realizations leave no
-pixel above `count_threshold`.
+Half of the true stream pixels are found down to **SB ≈ 32.4**. With the
+stream removed, not one background pixel is flagged in any of the 210
+realizations, so the background flagged on the stream skies is provoked by
+the stream itself (pixels beside its track). At SB 34 the label still exists
+(56 pixels on average) but the model does not respond.
 
-**False alarms are the weak point, and they don't come from faint
-streams.** With no stream at all, the model flags ~0.9% of background
-pixels at every SB. That is ~200 pixels per stream neighbourhood,
-comparable to the whole true stream at SB 33, which is why precision is
-only 0.29 there. A faint stream leaves that floor unchanged; a bright or
-intermediate stream adds false alarms on top (at SB 30, mostly pixels
-next to the track). The no-stream false alarms also fall on the **same sky
-pixels** from one realization to the next (639 distinct pixels account
-for 10,759 flags over 50 skies). They are fixed features of the single
-background catalog, which training uses too. The likely causes are in
-training:
-
-- Dice loss is ≈1 on a window with an empty label whatever the model
-  predicts, so it gives ≈0 gradient towards lower probabilities where
-  there is no stream.
-- Only `background_fraction=0.05` of training windows have no stream.
+An earlier version of this notebook trained with plain Dice at batch 2 found
+more of the faint end at 0.5 (58% at SB 33) but flagged about 0.9% of the
+background at every SB, even with no stream, on the same sky pixels from one
+realization to the next. Per-window Dice gives no gradient on a window
+without a stream, so nothing taught the model to predict low there. The
+comparison that led to batch Dice is {doc}`../experiments/loss_selection`.
 
 Current limits: one stream per sky. Multi-stream footprint injection is
 the next step, and the functions above already take whatever the injector

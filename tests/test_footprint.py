@@ -19,8 +19,10 @@ from streamgoggles.evaluation.completeness_purity import aggregate_over_replicat
 from streamgoggles.evaluation.footprint import (
     THRESHOLD_GRID,
     background_only_sky,
+    detection_metrics,
     evaluate_footprint_realizations,
     plot_confusion_matrix,
+    plot_detection_metrics,
     plot_detection_rates,
     score_footprint,
     tiles_around_stream,
@@ -461,3 +463,115 @@ def test_plot_detection_rates_flags_partially_vanished_points_and_clips_bars():
             for segment in segments:
                 ys = np.asarray(segment)[:, 1]
                 assert ys.min() >= 0.0 and ys.max() <= 1.0, "bars must stay in [0, 1]"
+
+
+# ---------------------------------------------------------------------------
+# detection_metrics / plot_detection_metrics
+# ---------------------------------------------------------------------------
+
+
+def _counted_rows():
+    """Two SB values, two realizations each, three thresholds."""
+    import pandas as pd
+
+    def row(sb, above_stream, above_background, n_true, n_background):
+        return {
+            "richness": sb,
+            "n_above_stream": np.array(above_stream),
+            "n_above_background": np.array(above_background),
+            "n_true_pixels": n_true,
+            "fp": above_background[1],
+            "tn": n_background - above_background[1],
+        }
+
+    return pd.DataFrame(
+        [
+            row(32.0, [100, 60, 10], [500, 40, 0], 100, 10_000),
+            row(32.0, [100, 40, 0], [300, 20, 0], 100, 10_000),
+            row(34.0, [50, 0, 0], [800, 30, 0], 50, 20_000),
+            {
+                "richness": 34.0,
+                "n_above_stream": None,
+                "n_above_background": None,
+                "n_true_pixels": 0,
+                "fp": 0,
+                "tn": 0,
+            },
+        ]
+    )
+
+
+def test_detection_metrics_pools_realizations_before_dividing():
+    thresholds = np.array([0.1, 0.5, 0.9])
+    m = detection_metrics(_counted_rows(), thresholds).set_index(
+        ["richness", "threshold"]
+    )
+
+    row = m.loc[(32.0, 0.5)]
+    assert (row.S_s, row.S_t, row.B_s, row.B_t) == (100, 200, 60, 20_000)
+    assert row.completeness == pytest.approx(0.5)
+    assert row.contamination == pytest.approx(60 / 20_000)
+    assert row.contrast == pytest.approx(0.5 / (60 / 20_000))
+
+
+def test_detection_metrics_floors_contamination_and_leaves_contrast_undefined():
+    thresholds = np.array([0.1, 0.5, 0.9])
+    m = detection_metrics(_counted_rows(), thresholds).set_index(
+        ["richness", "threshold"]
+    )
+
+    # Nothing flagged in the background: F uses one pixel, never 0.
+    strict = m.loc[(32.0, 0.9)]
+    assert strict.B_s == 0
+    assert strict.contamination == pytest.approx(1 / 20_000)
+    assert np.isfinite(strict.contrast)
+    # Nothing found in the stream: the contrast is undefined, not zero.
+    assert np.isnan(m.loc[(34.0, 0.5)].contrast)
+    # The row without counts (a vanished stream) is skipped, not counted as 0.
+    assert m.loc[(34.0, 0.1)].S_t == 50
+
+
+def test_detection_metrics_selects_nearest_thresholds():
+    thresholds = np.array([0.1, 0.5, 0.9])
+    m = detection_metrics(_counted_rows(), thresholds, at=(0.45, 0.95))
+    assert sorted(m["threshold"].unique()) == [0.5, 0.9]
+
+
+def test_plot_detection_metrics_renders_three_panels_with_hollow_low_counts():
+    thresholds = np.array([0.1, 0.5, 0.9])
+    m = detection_metrics(_counted_rows(), thresholds)
+    axes = plot_detection_metrics(m, training_range=(31, 34))
+
+    assert len(axes) == 3
+    assert axes[1].get_yscale() == "log" and axes[2].get_yscale() == "log"
+    hollow = [
+        line
+        for line in axes[0].get_lines()
+        if line.get_markerfacecolor() == "white" and len(line.get_xdata())
+    ]
+    assert hollow, "points with too few stream pixels must be hollow"
+    widths = {line.get_label(): line.get_linewidth() for line in axes[0].get_lines()}
+    assert widths["threshold 0.5"] > widths["threshold 0.1"]
+
+
+def test_detection_metrics_matches_the_confusion_counts_end_to_end(injector):
+    import torch
+
+    torch.manual_seed(0)
+    model = UNet(in_channels=2, out_channels=2, base_width=4, depth=1, head="sigmoid")
+    results = evaluate_footprint_realizations(
+        model,
+        injector,
+        _identity_transform,
+        _param_sets(),
+        n_realizations=2,
+        channel=0,
+        thresholds=THRESHOLD_GRID,
+    )
+    m = detection_metrics(results, THRESHOLD_GRID, at=(0.5,)).set_index("richness")
+    for richness, group in results.groupby("richness"):
+        row = m.loc[richness]
+        assert row.S_s == group["tp"].sum()
+        assert row.S_t == group["tp"].sum() + group["fn"].sum()
+        assert row.B_s == group["fp"].sum()
+        assert row.B_t == group["fp"].sum() + group["tn"].sum()
