@@ -47,6 +47,13 @@ narrative/tutorial
 
 ```{toctree}
 :maxdepth: 2
+:caption: Experiments
+
+experiments/index
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Reference
 
 api
@@ -64,8 +71,10 @@ read its docstrings, which loads both libraries in one process.) The build
 needs this project's real runtime environment (`torch`, `healpy`, `ugali`,
 `streamobs`), not just the `docs` dependency group, for the same reason.
 
-The result is a fully static, self-contained site — no external fonts,
-scripts, or CDN calls — so it works with no internet connection. Two ways
+The result is a static site that works with no internet connection, with
+one exception: formulas are rendered by MathJax, loaded from a CDN, so they
+show as raw LaTeX when offline. Everything else (pages, figures, API
+reference, search) is self-contained. Two ways
 to view it:
 
 - Open `docs/_build/html/index.html` directly in a browser. Works offline;
