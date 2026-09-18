@@ -54,13 +54,22 @@ not put two models at the same false-alarm rate, so figure 6 redoes every
 comparison at matched background instead — and it changes some of the
 conclusions, which is why it is worth reading before acting on figures 1 to 3.
 
+**Streams per point.** Every count of injected streams on this page is **per
+surface brightness**, not a total. "20 streams" means 20 independently injected
+streams at SB 32, 20 more at SB 33, and so on over the six evaluation
+brightnesses — 120 injections for that model in total, but 20 behind each
+plotted point, which is what its error bar is computed from. Each one is a
+fresh full-sky injection: different stream realization, placement, orientation
+and survey noise.
+
 **Two different uncertainties**, which the figures draw differently:
 
 - **Error bars are sampling uncertainty.** Each model is scored on 20 injected
-  streams per surface brightness, so a configuration with 6 seeds contributes
-  120 streams. An ensemble has no seeds to pool — it is one prediction — so it
-  is scored on 100 streams per surface brightness instead, which gives it a
-  comparable interval (±5 points against ±4.5). "k of n streams detected" is binomial — n is fixed and k ≤ n —
+  streams per surface brightness, so a configuration curve with 6 seeds has
+  120 streams behind each point. An ensemble has no seeds to pool — it is one
+  prediction — so it is scored on 100 streams per surface brightness instead,
+  which gives it a comparable interval (±5 points against ±4.5); figure 7 shows
+  what that changed. "k of n streams detected" is binomial — n is fixed and k ≤ n —
   so the bars are a **Wilson 68% interval**: the set of detection rates p for
   which the observed k is within one standard deviation, solved for p rather
   than centred on k/n. Unlike a √k bar it stays inside [0, 1] and keeps a
@@ -217,7 +226,7 @@ change the SB 33.5 detection rate from about 15% to about 90%.
 streams per surface brightness; the horizontal bar is their mean. Threshold
 0.5. Sampling bars are omitted so the spread stays visible — the scatter of
 the points is the quantity of interest, and it is several times larger than
-the sampling uncertainty on each point (±0.1 for 20 streams).*
+the sampling uncertainty on each point (±0.1 for 20 streams per point).*
 
 Standard deviation over trainings, at threshold 0.5:
 
@@ -252,8 +261,8 @@ short trainings matches a single long one.
 
 *Left: N models of 4800 windows (SB 32-34.5) whose probability maps are
 averaged into one prediction, which is then thresholded at 0.5 — the curves
-are model averages, one prediction each, scored on the same 20 streams per
-surface brightness, with Wilson 68% sampling bars. Right: the same total
+are model averages, one prediction each, scored on 100 streams per surface
+brightness, with Wilson 68% sampling bars. Right: the same total
 training cost spent two ways. Thin blue lines are individual 19200-window
 trainings, one per seed, and the thick blue line is the average of those
 curves — a summary of several models, not a model you could deploy. The
@@ -350,6 +359,38 @@ cannot be pushed to the faint end by lowering its threshold indefinitely — at
 longer trainings and the ensembles reach the numbers above. But the headline
 "training range doubles the SB 34 detections" is an operating-point effect,
 and should be reported as one.
+
+### 7. How many streams per point it takes to say any of this
+
+**Statement.** The ensembles were first scored on 20 streams per surface
+brightness, which was not enough to decide whether averaging survives the
+matched-background test; at 100 streams per point it is. The estimates barely
+moved — the extra streams bought precision, not a different answer.
+
+```{image} figures/hyperparameters/7_sampling.png
+:alt: The six-model ensemble scored on 20 and on 100 streams per surface brightness, and the single-model against six-model comparison at both sample sizes
+:width: 100%
+```
+
+*Left: the same six-model ensemble, the same trained models, scored on 20 and
+on 100 streams per surface brightness, with Wilson 68% bars. The 20-stream
+realizations are the first 20 of the 100 — the realization seed is (base seed,
+surface-brightness index, realization index) — so this is a pure sample-size
+comparison, not two different experiments. Right: the comparison that motivated
+the rerun, at SB 33.5 and a matched background density of 1e-3, annotated with
+the raw counts.*
+
+At 20 streams per point the question "does averaging help at a matched
+false-alarm rate?" was 7/20 against 11/20: the intervals overlap and the
+comparison cannot be called. At 100 it is 44/100 against 61/100, which
+separates (Fisher p = 0.01). The point estimates agree between the two sample
+sizes to within their bars everywhere, so nothing about the earlier figures was
+biased — they were simply too imprecise for that particular claim.
+
+The practical rule this suggests: a configuration curve pools several
+trainings, so 20 streams per point is enough for it; a single prediction — an
+ensemble, or a model you intend to deploy — needs about 100 per point before
+differences of 15 points mean anything.
 
 ## What to use
 

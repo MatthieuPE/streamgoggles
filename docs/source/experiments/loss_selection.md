@@ -38,8 +38,8 @@ Exact formulas and the gradient argument are in {doc}`../narrative/datasets_and_
 ("Formulas").
 
 **Evaluation**, following the {doc}`shared protocol <index>`: surface
-brightness 31 to 35, 10 realizations each, on the training background and an
-independent one; completeness $C = S_s/S_t$, contamination $F = B_s/B_t$,
+brightness 31 to 35, 10 injected streams per surface brightness (50 in total
+per model), on the training background and an independent one; completeness $C = S_s/S_t$, contamination $F = B_s/B_t$,
 contrast $C/F$; models compared at threshold 0.5, cross-checked at 0.9.
 Curves show $C$ and $F$ averaged over the 4 seeds and the contrast as the
 ratio of those averages; bars are the per-seed minimum and maximum. Hollow

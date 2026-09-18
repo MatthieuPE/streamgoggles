@@ -19,10 +19,19 @@ bars the range between seeds.
 **The same evaluation skies for every model.** Models are scored with
 {py:func}`~streamgoggles.evaluation.footprint.evaluate_footprint_realizations`
 on full-sky injections with a fixed evaluation seed: for each surface
-brightness, the same 10 stream realizations (population, placement,
-orientation, survey noise). Each sky is tiled, predicted, stitched back to
-HEALPix and scored per pixel. Differences between models therefore come from
-the models, not from the skies they were shown.
+brightness, the same stream realizations (population, placement, orientation,
+survey noise). Each sky is tiled, predicted, stitched back to HEALPix and
+scored per pixel. Differences between models therefore come from the models,
+not from the skies they were shown.
+
+**Realizations are counted per grid point.** `n_realizations` is the number of
+independent injections *per parameter set* — per surface brightness, or per
+cell when a grid varies two parameters — not a total. An experiment scoring 20
+realizations over 6 surface brightnesses injects 120 streams, with 20 behind
+each plotted point, and that 20 is what the point's error bar is computed from.
+The realization seed is (base seed, parameter-set index, realization index), so
+adding realizations extends a run rather than redrawing it: scoring 100 keeps
+the first 20 identical, which makes the two directly comparable.
 
 **Two backgrounds.** Each model is scored on the background catalog it was
 trained with, and on an independently seeded catalog it never saw. The

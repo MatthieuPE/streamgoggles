@@ -13,6 +13,8 @@ One figure per statement the page makes:
   6_matched_background.png  every model compared at the same background level,
                          since a fixed 0.5 threshold puts them at very
                          different operating points
+  7_sampling.png         20 against 100 streams per surface brightness, the
+                         sample size behind the ensemble curves
 
 Two different uncertainties appear here, drawn differently:
 
@@ -387,6 +389,109 @@ def matched_background(frame, keys):
     return pd.DataFrame(rows)
 
 
+def _wilson(k, n, z=1.0):
+    """Wilson interval, the same one `stream_detection` reports."""
+    p = k / n
+    denominator = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denominator
+    half = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denominator
+    return centre - half, centre + half
+
+
+def figure_sampling(results):
+    """7: how many streams per surface brightness the ensembles needed.
+
+    The 20-stream scoring is nested in the 100-stream one -- the realization
+    seed is [seed, surface-brightness index, realization], so realizations 0-19
+    are the same skies -- which makes this a pure sample-size comparison.
+    """
+    old_path = DATA / "ensemble_results_20streams.pkl"
+    new_path = DATA / "ensemble_results.pkl"
+    if not (old_path.exists() and new_path.exists()):
+        return
+    runs = {
+        20: pd.read_pickle(old_path),
+        100: pd.read_pickle(new_path),
+    }
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.2))
+    styles = {20: ("#9ecae1", "o", "--"), 100: ("#08519c", "s", "-")}
+
+    for n, frame in runs.items():
+        table = stream_detection(
+            frame,
+            THRESHOLD_GRID,
+            at=(THRESHOLD,),
+            group_by=["ensemble_size", "richness"],
+        )
+        data = table[table.ensemble_size == 6].sort_values("richness")
+        colour, marker, ls = styles[n]
+        y = data["detection_fraction"].to_numpy()
+        axes[0].errorbar(
+            data["richness"] + (0.02 if n == 100 else -0.02),
+            y,
+            yerr=bars(data, y),
+            marker=marker,
+            ls=ls,
+            color=colour,
+            capsize=3,
+            lw=1.8,
+            label=f"{n} streams per point",
+        )
+    decorate(axes[0])
+    legend(axes[0])
+    axes[0].set_title("6 models averaged", fontsize=11)
+
+    # The comparison that 20 streams could not settle: does averaging still
+    # help once both models are put at the same false-alarm rate?
+    positions = {1: 0.0, 6: 1.0}
+    for n, frame in runs.items():
+        matched = matched_background(frame, ("ensemble_size", "richness"))
+        colour, marker, _ = styles[n]
+        for size in (1, 6):
+            row = matched[
+                (matched.ensemble_size == size)
+                & (matched.richness == 33.5)
+                & (matched.target == 1e-3)
+            ]
+            if row.empty:
+                continue
+            k = round(row["detected"].iloc[0] * n)
+            low, high = _wilson(k, n)
+            x = positions[size] + (0.09 if n == 100 else -0.09)
+            axes[1].errorbar(
+                [x],
+                [k / n],
+                yerr=[[k / n - low], [high - k / n]],
+                marker=marker,
+                color=colour,
+                capsize=4,
+                ms=8,
+                lw=2,
+                label=f"{n} streams per point" if size == 1 else None,
+            )
+            axes[1].annotate(
+                f"{k}/{n}",
+                (x, k / n),
+                textcoords="offset points",
+                xytext=(0, 12 if n == 100 else -18),
+                ha="center",
+                fontsize=8.5,
+                color=colour,
+            )
+    axes[1].set_xticks([0, 1])
+    axes[1].set_xticklabels(["1 model", "6 models averaged"])
+    axes[1].set_xlim(-0.5, 1.5)
+    axes[1].set_ylim(0, 0.9)
+    axes[1].set_ylabel("fraction of streams detected")
+    axes[1].grid(alpha=0.3, axis="y")
+    legend(axes[1], loc="upper left")
+    axes[1].set_title("SB 33.5, matched background 1e-3", fontsize=11)
+    fig.suptitle("Streams per surface brightness: 20 against 100", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(FIGURES / "7_sampling.png", dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
 def figure_matched_background(results):
     """6: every model at the same background level, ensembles included."""
     matched = matched_background(results, ("configuration", "seed", "richness"))
@@ -471,6 +576,7 @@ def main():
     figure_variability(results, per_seed)
     figure_ensemble(results, per_seed)
     figure_matched_background(results)
+    figure_sampling(results)
     pd.set_option("display.width", 220)
     print("== streams detected at threshold 0.5 (all seeds of each configuration)")
     print(
