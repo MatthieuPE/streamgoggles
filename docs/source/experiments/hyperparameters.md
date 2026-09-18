@@ -13,8 +13,10 @@ beyond matter, not only at 33. How detectable a real stream is will also
 depend on where it lies (survey depth, extinction, footprint edges), which
 these simulations do not vary.
 
-**Status.** Phases 1 and 2 done; the summary figures below are the result.
-Phase 3 (learning rate and batch size) is not run yet.
+**Status.** Training range, training length, network size and model averaging
+are done: 58 trainings, up to 6 seeds per configuration, each scored on 20
+injected streams at each of 6 surface brightnesses. Learning rate and batch
+size are not varied yet.
 
 ## Starting point
 
@@ -82,9 +84,9 @@ later without retraining.
 
 | Varied | Values | Seeds | Why |
 |---|---|---|---|
-| training surface brightness | 31-34 (starting point); 32-34.5 | 6 | more examples near the detection edge |
-| training length | 1200, 4800, 9600, 19200 windows | 4-6 | the batch-8 models look undertrained |
-| network depth and base width | depth 2, 3, 4; width 12, 24 | 2-6 | a faint stream is only visible by adding up pixels along its track (~70 px long), while a depth-2 network sees ~30-40 px at once |
+| training surface brightness | 31-34 (starting point); 32-34.5 | 6 each, except 2 for 9600 windows on 31-34 | more examples near the detection edge |
+| training length | 1200, 4800, 9600, 19200 windows | 6 | the batch-8 models look undertrained |
+| network depth and base width | depth 2, 3, 4; width 12, 24 | 6 at width 12, 2-4 at width 24 | a faint stream is only visible by adding up pixels along its track (~70 px long), while a depth-2 network sees ~30-40 px at once |
 | models averaged into one prediction | 1, 2, 3, 4, 6 | — | trainings differ a lot; does averaging them recover the faint end? |
 
 ## Results
@@ -126,14 +128,13 @@ general. Nothing here says the network learned a general notion of "stream";
 it learned where the decision boundary should sit for the population it was
 trained on.
 
-### 2. Training longer is a real improvement, hidden by the fixed threshold
+### 2. Training longer is a real improvement
 
-**Statement.** At threshold 0.5, training longer looks like a step backwards:
-the background gets cleaner and the faint-end detections get weaker. At a
-matched false-alarm rate the picture reverses — a longer training detects
-strictly more, taking SB 33.5 from 31% (1200 windows) to 60% (19200 windows)
-at a background density of 1e-3. Training length improves the model; the fixed
-threshold was hiding it by moving the operating point.
+**Statement.** Training longer buys a cleaner background at the same detection
+rate: from 1200 to 19200 windows the fraction of background flagged drops by a
+factor 4 while detection at SB 33.5 stays between 48% and 67%. Read at a
+matched false-alarm rate, where the two effects are separated, it is a plain
+gain: SB 33.5 goes from 31% to 60%.
 
 ```{image} figures/hyperparameters/2_training_length.png
 :alt: Detection fraction and background density against surface brightness for 1200 to 19200 training windows on the fainter range
@@ -141,21 +142,36 @@ threshold was hiding it by moving the operating point.
 ```
 
 *Both panels: models trained on SB 32-34.5, at threshold 0.5, colour by
-training length. Left: fraction of streams detected, mean over that
-configuration's trainings, with Wilson 68% sampling bars. Right: fraction of
-pixels flagged inside stream-shaped bands on a stream-free sky, same models,
-log scale — note that it moves by more than a decade while detection moves by
-tens of percent.*
+training length, 6 trainings per configuration. Left: fraction of streams
+detected, mean over those trainings, with Wilson 68% sampling bars — the four
+lengths sit within about 15 points of each other, which is the size of the
+spread between trainings of a single configuration (figure 4). Right: fraction
+of pixels flagged inside stream-shaped bands on a stream-free sky, same models,
+log scale.*
 
-Between 1200 and 9600 windows, detection at SB 33.5 falls from 67% to 49%
-while the background density falls from 5.4e-3 to 7.2e-4 — a factor 7 cleaner
-for a fifth of the detections lost. A longer training is more confident, so
-fewer marginal pixels pass 0.5: both the false ones and the true ones. Read at
-a fixed threshold that looks like a trade-off, but it is a slide along the
-model's detection-versus-false-alarm curve, and figure 6 shows that the curve
-itself has moved in the right direction. The practical consequence is that
-training length should be judged at a matched false-alarm rate, and the
-threshold set afterwards.
+At SB 33.5, with the last two columns from figure 6's construction:
+
+| Training windows | detected at 0.5 | background at 0.5 | detected at 1e-4 | detected at 1e-3 |
+|---|---|---|---|---|
+| 1200 | 67% | 5.4e-3 | 7% | 31% |
+| 4800 | 48% | 1.6e-3 | 21% | 44% |
+| 9600 | 57% | 2.0e-3 | 25% | 47% |
+| 19200 | 62% | 1.3e-3 | 32% | 60% |
+
+The first two columns are why a fixed threshold misleads: the 1200-window
+model has the most detections *and* four times the false alarms, so nothing
+can be concluded by reading detections alone. The last two columns hold the
+threshold's effect fixed and are monotone in training length, at both
+false-alarm budgets. A longer training is more confident, so fewer marginal
+pixels pass any given threshold — but the pixels it does keep are better
+chosen.
+
+An earlier version of this section, written when 9600 and 19200 windows still
+had 3-4 seeds, reported a clean "longer training trades detections for a
+cleaner background". With 6 seeds the detection differences at 0.5 shrank into
+the training-to-training spread and the background ordering stopped being
+monotone (9600 is dirtier than 4800). The matched-background columns were
+stable throughout, which is another reason to prefer them.
 
 ### 3. Depth and width change nothing
 
@@ -208,7 +224,7 @@ Standard deviation over trainings, at threshold 0.5:
 | 1200 w, SB 32-34.5 | 0.10 | 0.32 | 0.27 |
 | 4800 w, SB 32-34.5 | 0.05 | 0.33 | 0.17 |
 | 4800 w, SB 31-34 | 0.07 | 0.13 | 0.04 |
-| 19200 w, SB 32-34.5 | 0.00 | 0.09 | 0.08 |
+| 19200 w, SB 32-34.5 | 0.00 | 0.07 | 0.07 |
 
 Two consequences. First, any comparison of two configurations that differ by
 less than ~15 points at SB 33.5 is not established, however clean the curves
@@ -221,10 +237,9 @@ addresses.
 
 **Statement.** Averaging the per-pixel probabilities of N independently
 trained models, then thresholding once, detects more faint streams than any of
-the models alone, and removes the seed lottery. The gain survives the
-matched-background test of section 6, so it is a better model and not just a
-looser threshold. At equal training cost, averaging four short trainings is
-close to a single long one.
+the models alone, and removes the seed lottery: four or more averaged models
+take SB 33.5 from 20% to 55-60%. At equal training cost, averaging four short
+trainings matches a single long one almost exactly.
 
 ```{image} figures/hyperparameters/5_ensemble.png
 :alt: Detection fraction for ensembles of 1 to 6 averaged models, and the equal-cost comparison between four averaged 4800-window models and single 19200-window models
@@ -241,20 +256,32 @@ curves — a summary of several models, not a model you could deploy. The
 orange curve is the model average of four 4800-window trainings (4 × 4800 =
 19200 windows), the same object as the left panel's, with its sampling bars.*
 
-Averaging six models takes SB 33.5 from 20% to 55% and SB 34 from 0% to 20%
-relative to the single model, with the background density staying at a few
-1e-4. The mechanism is the one figure 4 exposes: each training flags a
-different, partly random subset of the marginal pixels, so the false alarms
-average down while the pixels that many models agree on survive. This costs N
-trainings and N forward passes per prediction — expensive, but the forward
-passes are cheap compared with training, and they parallelize.
+Averaging four or six models takes SB 33.5 from 20% to 60% and 55%, and SB 34
+from 0% to 20%, while the background density stays at 1.1e-3 and 4.8e-4 —
+below the 1.6e-3 of a typical single 4800-window model. Two and three models
+are not enough: the gain appears between three and four. The mechanism is the
+one figure 4 exposes: each training flags a different, partly random subset of
+the marginal pixels, so the false alarms average down while the pixels that
+many models agree on survive. This costs N trainings and N forward passes per
+prediction — expensive, but the forward passes are cheap compared with
+training, and they parallelize.
+
+Each ensemble curve is one prediction scored on 20 streams per surface
+brightness, so its sampling bars are wide (±0.11 at 50%) and the non-monotonic
+wiggles between sizes 2, 3 and 4 are noise. The step from ≤3 to ≥4 models,
+0.20 to 0.55-0.60, is larger than that; section 6 shows the same step is
+weaker once the false-alarm rate is held fixed, so the honest summary is that
+averaging clearly helps at a fixed threshold and probably, but not yet
+measurably, at a fixed false-alarm rate.
 
 The equal-cost comparison matters for how to spend a fixed budget. Four
 averaged trainings of 4800 windows and one training of 19200 windows use the
 same number of simulated windows. The single long training does well on
-average, but its individual curves scatter (thin lines), and you get one draw
-from that scatter; the average of four gives one prediction, reproducible in
-the sense that the remaining spread is much smaller.
+average — and the two curves agree within their bars at every surface
+brightness — but its individual curves scatter (thin lines), and you get one
+draw from that scatter. The average of four gives one prediction, whose
+remaining spread is much smaller. At this budget the choice is therefore about
+reproducibility rather than sensitivity.
 
 ### 6. Which of those effects are real, and which are the threshold moving
 
@@ -288,16 +315,19 @@ the false-alarm rate is the resource being spent. At a matched rate, at SB 33.5:
 | 4800 w, SB 31-34 | 20% | 35% |
 | 4800 w, SB 32-34.5 | 21% | 44% |
 | 1200 w, SB 32-34.5 | 7% | 31% |
-| 19200 w, SB 32-34.5 | 25% | 60% |
+| 19200 w, SB 32-34.5 | 32% | 60% |
 | 1 model (4800 w) | 20% | 35% |
 | 6 models averaged | 30% | 55% |
 
 The two training ranges are within a few points of each other — nothing like
 the 48% against 20% that figure 1 shows at threshold 0.5. Training on fainter
 streams mainly makes the model less conservative, which a threshold can do
-too. What survives the matched comparison is training length (31% → 60% at
-1e-3) and averaging (35% → 55% at 1e-3, 20% → 30% at 1e-4): both genuinely
-detect more faint streams at the same cost in false alarms.
+too. What survives the matched comparison is training length: 31% → 60% at 1e-3
+and 7% → 32% at 1e-4, monotone in both. Averaging points the same way (35% →
+55% at 1e-3, 20% → 30% at 1e-4) but each ensemble is one prediction scored on
+20 streams, so those are 7/20 against 11/20 and 4/20 against 6/20 — the right
+direction, not yet a measurement. Confirming it needs more evaluation streams
+per ensemble, not more models.
 
 This does not make the training range irrelevant. A model trained on 31-34
 cannot be pushed to the faint end by lowering its threshold indefinitely — at
