@@ -119,7 +119,7 @@ it moves the results.
 |---|---|---|
 | {doc}`loss_selection` | Which training loss, batch size and background fraction? | done: batch Dice, batch 8, background fraction 0.05 |
 | Threshold tuning | Which probability threshold for the final maps, and does it hold on skies not used to choose it? | planned |
-| {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect every stream at SB 33 and some at SB 34, with a clean background? | in progress |
+| {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length and network size: train on SB 32-34.5 and average several trainings; learning rate and batch size not run yet |
 | Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |

@@ -56,12 +56,10 @@ TARGET = (33.0, 34.0)
 SB_LABEL = "surface brightness (mag arcsec$^{-2}$)"
 FAINT, NARROW = "sb32-34.5", "sb31-34"
 DPI = 110
-BARS = "bars: sampling (Wilson 68%)"
-SPREAD_NOTE = "spread between trainings: see the variability figure"
 
 
-def label(windows, training_sb, depth=2, width=12):
-    return f"{windows} windows, SB {training_sb[2:]}, depth {depth}, width {width}"
+def label(windows, training_sb):
+    return f"{windows} w, SB {training_sb[2:]}"
 
 
 def load():
@@ -114,9 +112,12 @@ def curve(
     )
 
 
-def legend(ax, note=BARS, **kwargs):
-    """Legend whose handles are long enough to show solid, dashed and dotted."""
-    ax.legend(fontsize=8, handlelength=3.4, title=note, title_fontsize=7.5, **kwargs)
+def legend(ax, **kwargs):
+    """Series names only: what the bars and lines mean belongs in the page text.
+
+    Handles are long enough to tell solid from dashed and dotted.
+    """
+    ax.legend(fontsize=8.5, handlelength=3.4, **kwargs)
 
 
 def decorate(ax, ylabel="fraction of streams detected", log=False):
@@ -129,10 +130,6 @@ def decorate(ax, ylabel="fraction of streams detected", log=False):
     else:
         ax.set_ylim(-0.03, 1.03)
     ax.set_xticks([32, 33, 34, 35])
-
-
-def seeds_of(results, name):
-    return results[results.configuration == name]["seed"].nunique()
 
 
 def figure_training_range(results, table):
@@ -153,12 +150,12 @@ def figure_training_range(results, table):
             color,
             marker,
             ls,
-            f"{label(windows, sb)} ({seeds_of(results, name)} seeds)",
+            label(windows, sb),
             offset=(i - 1.5) * 0.02,
         )
     decorate(ax)
-    legend(ax, f"{BARS}; {SPREAD_NOTE}", loc="upper right")
-    ax.set_title("Training on fainter streams is what reaches SB 34", fontsize=11)
+    legend(ax, loc="upper right")
+    ax.set_title("Training range", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "1_training_range.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -179,7 +176,7 @@ def figure_training_length(results, table):
             color,
             "o",
             "-",
-            f"{windows} windows ({seeds_of(results, name)} seeds)",
+            f"{windows} w",
             offset=(i - len(lengths) / 2) * 0.02,
         )
         data = table[table.configuration == name].sort_values("richness")
@@ -189,19 +186,15 @@ def figure_training_length(results, table):
             marker="o",
             color=color,
             lw=1.7,
-            label=f"{windows} windows",
+            label=f"{windows} w",
         )
     decorate(axes[0])
     decorate(axes[1], "background density in stream-free bands", log=True)
-    legend(axes[0], f"{BARS}; {SPREAD_NOTE}")
-    legend(axes[1], "pooled over the seeds of each configuration")
+    legend(axes[0])
+    legend(axes[1])
     axes[0].set_title("Detection", fontsize=11)
     axes[1].set_title("Background flagged", fontsize=11)
-    fig.suptitle(
-        "Training longer trades detection for a cleaner background "
-        f"(training SB {FAINT[2:]}, threshold {THRESHOLD})",
-        fontsize=11,
-    )
+    fig.suptitle(f"Training length (training SB {FAINT[2:]})", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "2_training_length.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -225,14 +218,12 @@ def figure_architecture(results, table):
             color,
             marker,
             ls,
-            f"depth {depth}, width {width} ({seeds_of(results, name)} seeds)",
+            f"depth {depth}, width {width}",
             offset=(i - 1.5) * 0.02,
         )
     decorate(ax)
-    legend(ax, f"{BARS}; {SPREAD_NOTE}")
-    ax.set_title(
-        "Depth and width change nothing (4800 windows, SB 32-34.5)", fontsize=11
-    )
+    legend(ax)
+    ax.set_title("Network size", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "3_architecture.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -274,14 +265,11 @@ def figure_variability(results, per_seed):
             [],
             "o",
             color=color,
-            label=f"{label(windows, sb_range)} ({seeds_of(results, name)} seeds)",
+            label=label(windows, sb_range),
         )
     decorate(ax)
-    legend(ax, "one point per trained model; bar: their mean")
-    ax.set_title(
-        "The same configuration, retrained: the spread that motivates averaging",
-        fontsize=11,
-    )
+    legend(ax)
+    ax.set_title("One point per trained model", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "4_variability.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -318,10 +306,8 @@ def figure_ensemble(results, per_seed):
             label=f"{size} model{'s' if size > 1 else ''} averaged",
         )
     decorate(axes[0])
-    legend(axes[0], f"{BARS}; an ensemble is one model, so it has no seed spread")
-    axes[0].set_title(
-        f"Averaging N trainings of 4800 windows (threshold {THRESHOLD})", fontsize=11
-    )
+    legend(axes[0])
+    axes[0].set_title("Averaging models (4800 w each)", fontsize=11)
 
     # Equal training cost: 4 x 4800 = 19200 windows either way. One training at
     # 19200 windows is the alternative to averaging four at 4800; the several
@@ -338,7 +324,7 @@ def figure_ensemble(results, per_seed):
                 color="#08306b",
                 lw=0.9,
                 alpha=0.45,
-                label="one training on 19200 windows (repeats)" if j == 0 else None,
+                label="single 19200 w models" if j == 0 else None,
             )
         mean = long_seeds.groupby("richness")["detection_fraction"].mean()
         axes[1].plot(
@@ -347,10 +333,7 @@ def figure_ensemble(results, per_seed):
             marker="s",
             color="#08306b",
             lw=2.2,
-            label=(
-                "what one such training gives on average "
-                f"({long_seeds.seed.nunique()} repeats)"
-            ),
+            label="their curve average",
         )
     four = detection_ensemble[detection_ensemble.ensemble_size == 4].sort_values(
         "richness"
@@ -365,15 +348,11 @@ def figure_ensemble(results, per_seed):
             color="#e6550d",
             capsize=3,
             lw=2.2,
-            label="4 trainings of 4800 windows, averaged into one model",
+            label="4 x 4800 w averaged",
         )
     decorate(axes[1])
-    legend(axes[1], f"{BARS} on the ensemble; thin lines: individual trainings")
-    axes[1].set_title(
-        "Same training cost (19200 windows): average four short trainings, "
-        "or run one long one",
-        fontsize=10.5,
-    )
+    legend(axes[1])
+    axes[1].set_title("Same training cost: 19200 windows", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "5_ensemble.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -448,14 +427,12 @@ def figure_matched_background(results):
                 color=color,
                 ls=ls,
                 lw=1.7,
-                label=f"{text} ({data.seed.nunique()} seeds)",
+                label=text,
             )
         decorate(ax)
-        ax.set_title(f"background density {target:.0e}", fontsize=11)
-    legend(axes[0], "mean over the trainings of each configuration")
-    fig.suptitle(
-        "Compared at the same background level, not at the same threshold", fontsize=11
-    )
+        ax.set_title(f"background density {target:.0e}", fontsize=10.5)
+    legend(axes[0])
+    fig.suptitle("Matched background level", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "6_matched_background.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
