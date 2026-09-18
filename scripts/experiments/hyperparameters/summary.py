@@ -358,63 +358,69 @@ def figure_ensemble(results, per_seed):
     plt.close(fig)
 
 
-def figure_matched_background(results):
-    """6: every model at the same background level."""
-    targets = [1e-4, 1e-3]
+MATCHED_TARGETS = (1e-4, 1e-3)
+
+
+def matched_background(frame, keys):
+    """Detection when each model is thresholded at its own background density.
+
+    For every model the threshold is the first one on THRESHOLD_GRID whose
+    stream-free density is at or below the target, so the models are compared
+    at the same false-alarm rate instead of at the same threshold. Detection
+    here is the ">= 20 flagged pixels" condition alone: the SNR compares the
+    band with the background, which this construction already fixes.
+    """
     rows = []
-    for (name, seed, sb), group in results[results["n_above_band"].notna()].groupby(
-        ["configuration", "seed", "richness"]
-    ):
+    for key, group in frame[frame["n_above_band"].notna()].groupby(list(keys)):
         control = np.sum(np.stack(list(group["n_above_no_stream"])), axis=0)
         control_pixels = float((group["fp_no_stream"] + group["tn_no_stream"]).sum())
         density = control / control_pixels
         flagged = np.stack(list(group["n_above_band"]))
-        for target in targets:
+        for target in MATCHED_TARGETS:
             reachable = np.flatnonzero(density <= target)
             if not reachable.size:
                 continue
-            k = reachable[0]
-            rows.append(
-                {
-                    "configuration": name,
-                    "seed": seed,
-                    "richness": sb,
-                    "target": target,
-                    "detected": (flagged[:, k] >= 20).mean(),
-                }
-            )
-    matched = pd.DataFrame(rows)
+            row = dict(zip(keys, key, strict=True))
+            row["target"] = target
+            row["detected"] = (flagged[:, reachable[0]] >= 20).mean()
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def figure_matched_background(results):
+    """6: every model at the same background level, ensembles included."""
+    matched = matched_background(results, ("configuration", "seed", "richness"))
     if matched.empty:
         return
-    fig, axes = plt.subplots(1, len(targets), figsize=(13.5, 5.2), sharey=True)
+    path = DATA / "ensemble_results.pkl"
+    ensembles = (
+        matched_background(pd.read_pickle(path), ("ensemble_size", "richness"))
+        if path.exists()
+        else pd.DataFrame()
+    )
+    fig, axes = plt.subplots(1, len(MATCHED_TARGETS), figsize=(13.5, 5.2), sharey=True)
     styles = {
-        f"w1200_{NARROW}_d2_b12_lr0.002_bs8": ("#1f77b4", "o", "-", "1200 w, SB 31-34"),
-        f"w4800_{NARROW}_d2_b12_lr0.002_bs8": (
-            "#08306b",
-            "s",
-            "--",
-            "4800 w, SB 31-34",
-        ),
+        f"w4800_{NARROW}_d2_b12_lr0.002_bs8": ("#1f77b4", "o", "-", "4800 w, SB 31-34"),
         f"w1200_{FAINT}_d2_b12_lr0.002_bs8": (
-            "#e6550d",
+            "#fdae6b",
             "^",
             "-",
             "1200 w, SB 32-34.5",
         ),
         f"w4800_{FAINT}_d2_b12_lr0.002_bs8": (
-            "#a63603",
+            "#e6550d",
             "v",
             "--",
             "4800 w, SB 32-34.5",
         ),
         f"w19200_{FAINT}_d2_b12_lr0.002_bs8": (
-            "#54278f",
+            "#a63603",
             "D",
             ":",
             "19200 w, SB 32-34.5",
         ),
     }
-    for ax, target in zip(axes, targets, strict=True):
+    for ax, target in zip(axes, MATCHED_TARGETS, strict=True):
         for name, (color, marker, ls, text) in styles.items():
             data = matched[(matched.configuration == name) & (matched.target == target)]
             if data.empty:
@@ -429,6 +435,23 @@ def figure_matched_background(results):
                 lw=1.7,
                 label=text,
             )
+        if not ensembles.empty:
+            for size, colour, ls in ((1, "#7fcdbb", "-"), (6, "#00441b", "-")):
+                data = ensembles[
+                    (ensembles.ensemble_size == size) & (ensembles.target == target)
+                ].sort_values("richness")
+                if data.empty:
+                    continue
+                ax.plot(
+                    data["richness"],
+                    data["detected"],
+                    marker="*",
+                    ms=10,
+                    color=colour,
+                    ls=ls,
+                    lw=2.0,
+                    label=f"{size} model{'s' if size > 1 else ''} averaged",
+                )
         decorate(ax)
         ax.set_title(f"background density {target:.0e}", fontsize=10.5)
     legend(axes[0])
@@ -470,6 +493,15 @@ def main():
         .round(2)
         .to_string()
     )
+    matched = matched_background(results, ("configuration", "seed", "richness"))
+    for target in MATCHED_TARGETS:
+        print(f"\n== streams detected at a matched background density of {target:.0e}")
+        print(
+            matched[matched.target == target]
+            .pivot_table(index="configuration", columns="richness", values="detected")
+            .round(2)
+            .to_string()
+        )
     print("\nfigures in", FIGURES)
 
 

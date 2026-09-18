@@ -47,9 +47,10 @@ least 20 pixels are flagged within 1σ of its track *and* the signal-to-noise
 of their density against 200 stream-shaped background bands is at least 2 (see
 "Is the stream detected?" in {doc}`index`). Every figure uses threshold 0.5.
 That value is not optimized: it is the natural threshold of a sigmoid output,
-and fixing one value keeps the models comparable. Tuning it per model is left
-for later, and the last figure checks that the conclusions do not come from
-that choice.
+and fixing one value keeps the models comparable. But a fixed threshold does
+not put two models at the same false-alarm rate, so figure 6 redoes every
+comparison at matched background instead — and it changes some of the
+conclusions, which is why it is worth reading before acting on figures 1 to 3.
 
 **Two different uncertainties**, which the figures draw differently:
 
@@ -88,13 +89,15 @@ later without retraining.
 
 ## Results
 
-### 1. The training surface brightness range is the lever
+### 1. The training surface brightness range sets where the model operates
 
-**Statement.** Which surface brightnesses the model is trained on decides
-where its detections stop, far more than anything else tested. Moving the
-training range from 31-34 to 32-34.5 raises detection at SB 34 from 5-8% to
-20-36% and at SB 33.5 from 16-20% to 48-67%, at the price of a background 10
-to 30 times dirtier.
+**Statement.** At a fixed threshold, which surface brightnesses the model is
+trained on decides where its detections stop, far more than anything else
+tested. Moving the training range from 31-34 to 32-34.5 raises detection at
+SB 34 from 5-8% to 20-36% and at SB 33.5 from 16-20% to 48-67% — and makes the
+background 10 to 30 times dirtier at the same time. Section 6 shows that this
+is mostly a change of operating point rather than a better model: at a matched
+false-alarm rate the two ranges perform almost the same.
 
 ```{image} figures/hyperparameters/1_training_range.png
 :alt: Fraction of streams detected against surface brightness, for 1200 and 4800 training windows on each of the two training ranges
@@ -123,11 +126,14 @@ general. Nothing here says the network learned a general notion of "stream";
 it learned where the decision boundary should sit for the population it was
 trained on.
 
-### 2. Training longer trades detection against a clean background
+### 2. Training longer is a real improvement, hidden by the fixed threshold
 
-**Statement.** On the fainter range, training longer makes the background
-cleaner and the faint-end detections weaker, until the two effects roughly
-cancel. It does not remove the trade-off; it moves along it.
+**Statement.** At threshold 0.5, training longer looks like a step backwards:
+the background gets cleaner and the faint-end detections get weaker. At a
+matched false-alarm rate the picture reverses — a longer training detects
+strictly more, taking SB 33.5 from 31% (1200 windows) to 60% (19200 windows)
+at a background density of 1e-3. Training length improves the model; the fixed
+threshold was hiding it by moving the operating point.
 
 ```{image} figures/hyperparameters/2_training_length.png
 :alt: Detection fraction and background density against surface brightness for 1200 to 19200 training windows on the fainter range
@@ -142,12 +148,14 @@ log scale — note that it moves by more than a decade while detection moves by
 tens of percent.*
 
 Between 1200 and 9600 windows, detection at SB 33.5 falls from 67% to 49%
-while the background density falls from 5.4e-3 to 7.2e-4. A longer training
-fits the training population more sharply, and since faint streams are
-genuinely ambiguous, a sharper fit means fewer marginal pixels flagged —
-both the false ones and the true ones. Training length is therefore not a way
-to escape the trade-off of figure 1; it is a second control on the same knob,
-and a slower one.
+while the background density falls from 5.4e-3 to 7.2e-4 — a factor 7 cleaner
+for a fifth of the detections lost. A longer training is more confident, so
+fewer marginal pixels pass 0.5: both the false ones and the true ones. Read at
+a fixed threshold that looks like a trade-off, but it is a slide along the
+model's detection-versus-false-alarm curve, and figure 6 shows that the curve
+itself has moved in the right direction. The practical consequence is that
+training length should be judged at a matched false-alarm rate, and the
+threshold set afterwards.
 
 ### 3. Depth and width change nothing
 
@@ -212,9 +220,11 @@ addresses.
 ### 5. Averaging several trainings is what recovers the faint end
 
 **Statement.** Averaging the per-pixel probabilities of N independently
-trained models, then thresholding once, detects more faint streams than any
-of the models alone, and removes the seed lottery. At equal training cost,
-averaging four short trainings is close to a single long one.
+trained models, then thresholding once, detects more faint streams than any of
+the models alone, and removes the seed lottery. The gain survives the
+matched-background test of section 6, so it is a better model and not just a
+looser threshold. At equal training cost, averaging four short trainings is
+close to a single long one.
 
 ```{image} figures/hyperparameters/5_ensemble.png
 :alt: Detection fraction for ensembles of 1 to 6 averaged models, and the equal-cost comparison between four averaged 4800-window models and single 19200-window models
@@ -246,47 +256,76 @@ average, but its individual curves scatter (thin lines), and you get one draw
 from that scatter; the average of four gives one prediction, reproducible in
 the sense that the remaining spread is much smaller.
 
-### 6. The same conclusions at a matched background level
+### 6. Which of those effects are real, and which are the threshold moving
 
-**Statement.** The comparisons above are not artefacts of fixing the
-threshold at 0.5. Comparing every model at the threshold where it flags the
-same fraction of stream-free sky gives the same ordering.
+**Statement.** Compared at the threshold where each model flags the same
+fraction of stream-free sky, the training range's large advantage nearly
+disappears, while training length and model averaging keep theirs. The
+training range mostly moves the operating point; training length and averaging
+move the model.
 
 ```{image} figures/hyperparameters/6_matched_background.png
-:alt: Detection fraction against surface brightness for each configuration, with each model thresholded at its own background density of 1e-4 and 1e-3
+:alt: Detection fraction against surface brightness for four configurations and for one versus six averaged models, each thresholded at its own background density of 1e-4 and 1e-3
 :width: 100%
 ```
 
-*Each model's own threshold is chosen per panel so that it flags the target
-fraction of stream-free sky (1e-4 on the left, 1e-3 on the right), instead of
-using 0.5 everywhere; the curves are then means over that configuration's
-trainings. Detection here is the ≥ 20 flagged pixels condition only: the SNR
-is defined against the background, which is fixed by construction in this
-figure.*
+*Each model's threshold is chosen per panel so that it flags the target
+fraction of stream-free sky (1e-4 left, 1e-3 right) instead of using 0.5
+everywhere; curves are then means over that configuration's trainings. The two
+star curves are a single 4800-window model and an average of six, treated the
+same way — one prediction each, not a mean over trainings, which is why the
+single-model star sits slightly below the 4800-window curve above it. Detection here is the ≥ 20 flagged pixels condition only: the
+SNR compares the band with the background, which this construction has already
+fixed. The panels are two operating points, not two experiments — 1e-4 is a
+stricter false-alarm budget than 1e-3, so every curve sits lower on the left.*
 
-A fixed threshold puts different models at very different false-alarm rates —
-a factor of 30 between the two training ranges in figure 1 — so this is the
-fair comparison, and the one relevant to a survey, where the false-alarm rate
-is the resource being spent. The training range keeps its advantage at a
-matched background level, which means it genuinely detects faint streams
-rather than simply flagging more of everything.
+A fixed threshold puts these models at false-alarm rates that differ by a
+factor of 30, so this is the fair comparison, and the one a survey cares about:
+the false-alarm rate is the resource being spent. At a matched rate, at SB 33.5:
+
+| | 1e-4 | 1e-3 |
+|---|---|---|
+| 4800 w, SB 31-34 | 20% | 35% |
+| 4800 w, SB 32-34.5 | 21% | 44% |
+| 1200 w, SB 32-34.5 | 7% | 31% |
+| 19200 w, SB 32-34.5 | 25% | 60% |
+| 1 model (4800 w) | 20% | 35% |
+| 6 models averaged | 30% | 55% |
+
+The two training ranges are within a few points of each other — nothing like
+the 48% against 20% that figure 1 shows at threshold 0.5. Training on fainter
+streams mainly makes the model less conservative, which a threshold can do
+too. What survives the matched comparison is training length (31% → 60% at
+1e-3) and averaging (35% → 55% at 1e-3, 20% → 30% at 1e-4): both genuinely
+detect more faint streams at the same cost in false alarms.
+
+This does not make the training range irrelevant. A model trained on 31-34
+cannot be pushed to the faint end by lowering its threshold indefinitely — at
+1e-3 it saturates around 35% at SB 33.5 — and the faint range is what lets the
+longer trainings and the ensembles reach the numbers above. But the headline
+"training range doubles the SB 34 detections" is an operating-point effect,
+and should be reported as one.
 
 ## What to use
 
 For the streams this project targets, on this training population:
 
-- **Train on SB 32-34.5**, not 31-34. The range is chosen to bracket the
-  target, not to match it.
-- **4800 windows** is a reasonable point on the length trade-off; 1200 is
-  more sensitive but flags 0.5% of the background, and longer trainings buy
-  cleanliness that averaging provides more cheaply.
+- **Set the threshold from a false-alarm budget, not to 0.5.** This is the
+  first decision, not the last one: at 0.5 two models that differ only in
+  training length sit at false-alarm rates an order of magnitude apart, and
+  comparing them there points the wrong way (section 2).
+- **Train on SB 32-34.5**, bracketing the target rather than matching it. Its
+  advantage at a fixed threshold is mostly an operating-point shift, but the
+  longer trainings and the ensembles that do help are all on this range, and
+  the narrow range saturates below them (section 6).
+- **Train as long as you can afford**: 19200 windows is the best model here at
+  a matched false-alarm rate, and 4800 is a reasonable compromise at a quarter
+  of the cost.
 - **Depth 2, width 12.** Nothing larger helped, so the cheapest network wins.
-- **Average 4 to 6 trainings** into one prediction. This is what turns a
-  model that may or may not see SB 34 streams into one that reliably sees
-  some of them.
-- **Threshold 0.5** everywhere here, unoptimized on purpose; a deployed
-  search should set it from an acceptable false-alarm rate instead, as
-  figure 6 does.
+- **Average 4 to 6 trainings** into one prediction. This is what turns a model
+  that may or may not see SB 34 streams into one that reliably sees some of
+  them, and it is the only lever that both raises detection and lowers the
+  false-alarm rate.
 
 ## Caveats
 

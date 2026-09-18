@@ -22,6 +22,7 @@
 
    .. autosummary::
    
+      ColorBoxFilter
       MatchedFilter
       PixelizationSpec
       ShiftedColorBoxFilter
