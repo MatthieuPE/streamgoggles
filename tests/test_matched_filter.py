@@ -7,6 +7,7 @@ import pytest
 from astropy.coordinates import angular_separation
 
 from streamgoggles.matched_filter import (
+    ColorBoxFilter,
     PixelizationSpec,
     ShiftedColorBoxFilter,
     StreamobsSplineFilter,
@@ -145,6 +146,70 @@ def cmd_spanning_catalog():
     color = rng.uniform(poly[:, 0].min() - 1.0, poly[:, 0].max() + 1.0, n)
     mag_g = mag_r + color
     return ref, poly, pd.DataFrame({"g_obs": mag_g, "r_obs": mag_r})
+
+
+# ---------------------------------------------------------------------------
+# ColorBoxFilter (fixed limits, no reference filter)
+# ---------------------------------------------------------------------------
+
+
+def test_color_box_filter_selects_exactly_its_limits(cmd_spanning_catalog):
+    _ref, _poly, catalog = cmd_spanning_catalog
+    decoy = ColorBoxFilter(color_range=(1.0, 1.3), mag_range=(18.0, 24.5))
+    selected = decoy.select(catalog, ["g", "r"], distance_modulus=16.8)
+
+    assert selected.sum() > 0
+    mag_g = catalog["g_obs"].to_numpy()[selected]
+    color = mag_g - catalog["r_obs"].to_numpy()[selected]
+    assert (mag_g >= 18.0).all() and (mag_g <= 24.5).all()
+    assert (color >= 1.0).all() and (color <= 1.3).all()
+    # and everything inside those limits is selected
+    all_mag_g = catalog["g_obs"].to_numpy()
+    all_color = all_mag_g - catalog["r_obs"].to_numpy()
+    inside = (
+        (all_mag_g >= 18.0)
+        & (all_mag_g <= 24.5)
+        & (all_color >= 1.0)
+        & (all_color <= 1.3)
+    )
+    np.testing.assert_array_equal(selected, inside)
+
+
+def test_color_box_filter_does_not_move_with_the_trial_distance(cmd_spanning_catalog):
+    """The point of fixed limits: the decoy channel means the same thing at
+    every trial distance, unlike a box tied to a reference filter's polygon."""
+    ref, _poly, catalog = cmd_spanning_catalog
+    fixed = ColorBoxFilter(color_range=(1.0, 1.3), mag_range=(18.0, 24.5))
+    shifted = ShiftedColorBoxFilter(reference_filter=ref, color_shift=0.5)
+
+    near = fixed.select(catalog, ["g", "r"], distance_modulus=16.0)
+    far = fixed.select(catalog, ["g", "r"], distance_modulus=18.0)
+    np.testing.assert_array_equal(near, far)
+
+    moved = shifted.select(
+        catalog, ["g", "r"], distance_modulus=16.0
+    ) != shifted.select(catalog, ["g", "r"], distance_modulus=18.0)
+    assert moved.any(), "the shifted box is expected to move with the distance"
+
+
+def test_color_box_filter_keeps_its_own_namespace():
+    decoy = ColorBoxFilter(
+        color_range=(1.0, 1.3), mag_range=(18.0, 24.5), namespace="lsst_yr1"
+    )
+    assert decoy.namespace == "lsst_yr1"
+
+
+@pytest.mark.parametrize(
+    ("color_range", "mag_range"),
+    [
+        ((1.3, 1.0), (18.0, 24.5)),
+        ((1.0, 1.3), (24.5, 18.0)),
+        ((1.0, 1.0), (18.0, 24.5)),
+    ],
+)
+def test_color_box_filter_rejects_empty_or_reversed_limits(color_range, mag_range):
+    with pytest.raises(ValueError, match="max > min"):
+        ColorBoxFilter(color_range=color_range, mag_range=mag_range)
 
 
 def test_shifted_color_box_filter_namespace_matches_reference():

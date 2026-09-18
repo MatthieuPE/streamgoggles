@@ -336,6 +336,98 @@ class ShiftedColorBoxFilter(MatchedFilter):
         )
 
 
+class ColorBoxFilter(MatchedFilter):
+    """A deliberately "bad" matched filter: a fixed color-magnitude box.
+
+    Rationale: the same decoy negative control as `ShiftedColorBoxFilter`, but
+    defined by absolute limits instead of relative to a reference filter's
+    polygon. `ShiftedColorBoxFilter` moves with whatever isochrone, bands and
+    trial distance its reference is configured with, so the decoy channel means
+    something slightly different in every sample and every trial distance. Here
+    the box is stated once, so the same region of colour-magnitude space is
+    selected in every sample, at every trial distance, in every experiment --
+    which is what makes the decoy channel comparable across runs.
+
+    Being distance-independent is the point, not an omission: a real filter
+    tracks the isochrone as the trial distance changes, and this one does not,
+    which is exactly the contrast the decoy channel is there to teach.
+
+    Attributes:
+        color_range: (min, max) of ``bands[0] - bands[1]``, magnitudes.
+        mag_range: (min, max) of the ``bands[0]`` magnitude.
+        namespace: column namespace (``<survey>_<release>``) of the catalog
+            columns to read, e.g. "lsst_yr1".
+    """
+
+    def __init__(
+        self,
+        color_range: tuple[float, float],
+        mag_range: tuple[float, float],
+        namespace: str | None = None,
+    ):
+        """Initialize the fixed decoy box.
+
+        Parameters:
+            color_range: (min, max) colour of the box, magnitudes. Choose it
+                off the isochrone locus of the filters it accompanies -- not
+                validated here, since where the locus sits depends on the
+                isochrone and the distances in use.
+            mag_range: (min, max) magnitude of the box in ``bands[0]``.
+                Typically the magnitude range the catalog itself is cut to.
+            namespace: column namespace to read magnitudes from. Usually the
+                same as the "good" filter's.
+
+        Raises:
+            ValueError if either range is empty or reversed.
+        """
+        for name, (low, high) in (
+            ("color_range", color_range),
+            ("mag_range", mag_range),
+        ):
+            if not high > low:
+                raise ValueError(
+                    f"{name} must be (min, max) with max > min, got {(low, high)}"
+                )
+        self.color_range = (float(color_range[0]), float(color_range[1]))
+        self.mag_range = (float(mag_range[0]), float(mag_range[1]))
+        self._namespace = namespace
+
+    @property
+    def namespace(self) -> str | None:
+        """Column namespace the magnitudes are read from."""
+        return self._namespace
+
+    def select(
+        self, catalog: pd.DataFrame, bands: list[str], distance_modulus: float
+    ) -> np.ndarray:
+        """Apply the fixed color-magnitude box cut.
+
+        Parameters:
+            catalog: DataFrame with `<namespace>_<band>_obs` columns.
+            bands: colour = ``bands[0] - bands[1]``, magnitude axis =
+                ``bands[0]`` (same convention as the other filters).
+            distance_modulus: ignored -- the box is fixed on the sky's own
+                colour-magnitude plane, which is what makes it comparable
+                across trial distances.
+
+        Returns:
+            Boolean selection mask, shape (len(catalog),).
+        """
+        from streamobs.columns import obs_col
+
+        mag_1 = catalog[obs_col(bands[0], self.namespace)].to_numpy(dtype=float)
+        mag_2 = catalog[obs_col(bands[1], self.namespace)].to_numpy(dtype=float)
+        color = mag_1 - mag_2
+        color_min, color_max = self.color_range
+        mag_min, mag_max = self.mag_range
+        return (
+            (mag_1 >= mag_min)
+            & (mag_1 <= mag_max)
+            & (color >= color_min)
+            & (color <= color_max)
+        )
+
+
 def make_raw_map(
     catalog: pd.DataFrame,
     selected: np.ndarray,
