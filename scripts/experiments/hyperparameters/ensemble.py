@@ -35,7 +35,7 @@ SEEDS = [42, 43, 44, 45, 46, 47]
 # 4 is the equal-cost comparison against one training on 4 x 4800 windows.
 ENSEMBLE_SIZES = [1, 2, 3, 4, 6]
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]
-N_REALIZATIONS = 20
+N_REALIZATIONS = 100  # one prediction per ensemble, so this is its whole sample
 N_NULL_BANDS = 200
 EVAL_SEED = 2026
 INDEPENDENT_BACKGROUND_SEED = 777
@@ -108,6 +108,21 @@ def main(configuration):
         "batch_size": settings["batch_size"],
     }
     g["stream_param_cfg"] = {**g["stream_param_cfg"], "richness": None}
+    # The models in data/experiments/hyperparameters/models/ were all trained
+    # with the shifted decoy box, before the notebook switched to the fixed one
+    # (PLAN.md 6.32). Their second input channel IS that shifted box, so the
+    # experiment keeps building it: re-scoring them against the fixed box would
+    # feed them a channel they never saw. A new experiment should train fresh
+    # models with the notebook's current filters instead of editing this.
+    g["filters_cfg"] = {
+        **g["filters_cfg"],
+        "decoy": {
+            "type": "shifted_box",
+            "reference": "good",
+            "color_shift": 0.5,
+            "color_width": 0.3,
+        },
+    }
     from importlib.util import module_from_spec, spec_from_file_location
 
     spec = spec_from_file_location("run", Path(__file__).parent / "run.py")

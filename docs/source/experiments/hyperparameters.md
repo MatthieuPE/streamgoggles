@@ -58,7 +58,9 @@ conclusions, which is why it is worth reading before acting on figures 1 to 3.
 
 - **Error bars are sampling uncertainty.** Each model is scored on 20 injected
   streams per surface brightness, so a configuration with 6 seeds contributes
-  120 streams. "k of n streams detected" is binomial — n is fixed and k ≤ n —
+  120 streams. An ensemble has no seeds to pool — it is one prediction — so it
+  is scored on 100 streams per surface brightness instead, which gives it a
+  comparable interval (±5 points against ±4.5). "k of n streams detected" is binomial — n is fixed and k ≤ n —
   so the bars are a **Wilson 68% interval**: the set of detection rates p for
   which the observed k is within one standard deviation, solved for p rather
   than centred on k/n. Unlike a √k bar it stays inside [0, 1] and keeps a
@@ -87,7 +89,7 @@ later without retraining.
 | training surface brightness | 31-34 (starting point); 32-34.5 | 6 each, except 2 for 9600 windows on 31-34 | more examples near the detection edge |
 | training length | 1200, 4800, 9600, 19200 windows | 6 | the batch-8 models look undertrained |
 | network depth and base width | depth 2, 3, 4; width 12, 24 | 6 at width 12, 2-4 at width 24 | a faint stream is only visible by adding up pixels along its track (~70 px long), while a depth-2 network sees ~30-40 px at once |
-| models averaged into one prediction | 1, 2, 3, 4, 6 | — | trainings differ a lot; does averaging them recover the faint end? |
+| models averaged into one prediction | 1, 2, 3, 4, 6 | one prediction each, 100 streams per point | trainings differ a lot; does averaging them recover the faint end? |
 
 ## Results
 
@@ -237,9 +239,11 @@ addresses.
 
 **Statement.** Averaging the per-pixel probabilities of N independently
 trained models, then thresholding once, detects more faint streams than any of
-the models alone, and removes the seed lottery: four or more averaged models
-take SB 33.5 from 20% to 55-60%. At equal training cost, averaging four short
-trainings matches a single long one almost exactly.
+the models alone, and removes the seed lottery: six averaged models take
+SB 33.5 from 27% to 52% and SB 34 from 2% to 14%. The gain survives the
+matched-background test of section 6 at a false-alarm rate of 1e-3, so it is a
+better model and not a looser threshold. At equal training cost, averaging four
+short trainings matches a single long one.
 
 ```{image} figures/hyperparameters/5_ensemble.png
 :alt: Detection fraction for ensembles of 1 to 6 averaged models, and the equal-cost comparison between four averaged 4800-window models and single 19200-window models
@@ -256,32 +260,43 @@ curves — a summary of several models, not a model you could deploy. The
 orange curve is the model average of four 4800-window trainings (4 × 4800 =
 19200 windows), the same object as the left panel's, with its sampling bars.*
 
-Averaging four or six models takes SB 33.5 from 20% to 60% and 55%, and SB 34
-from 0% to 20%, while the background density stays at 1.1e-3 and 4.8e-4 —
-below the 1.6e-3 of a typical single 4800-window model. Two and three models
-are not enough: the gain appears between three and four. The mechanism is the
-one figure 4 exposes: each training flags a different, partly random subset of
-the marginal pixels, so the false alarms average down while the pixels that
+At threshold 0.5 and SB 33.5, scored on 100 streams each:
+
+| Models averaged | detected | background density | detected at 1e-4 | at 1e-3 |
+|---|---|---|---|---|
+| 1 | 27% | 7.5e-6 | 32% | 44% |
+| 2 | 22% | 7.3e-6 | 32% | 53% |
+| 3 | 32% | 4.8e-5 | 31% | 44% |
+| 4 | 56% | 7.1e-4 | 31% | 43% |
+| 6 | 52% | 3.3e-4 | 43% | 61% |
+
+Two and three models change nothing; the gain appears at four. The mechanism is
+the one figure 4 exposes: each training flags a different, partly random subset
+of the marginal pixels, so the false alarms average down while the pixels that
 many models agree on survive. This costs N trainings and N forward passes per
 prediction — expensive, but the forward passes are cheap compared with
 training, and they parallelize.
 
-Each ensemble curve is one prediction scored on 20 streams per surface
-brightness, so its sampling bars are wide (±0.11 at 50%) and the non-monotonic
-wiggles between sizes 2, 3 and 4 are noise. The step from ≤3 to ≥4 models,
-0.20 to 0.55-0.60, is larger than that; section 6 shows the same step is
-weaker once the false-alarm rate is held fixed, so the honest summary is that
-averaging clearly helps at a fixed threshold and probably, but not yet
-measurably, at a fixed false-alarm rate.
+The last two columns are why the recommendation is six and not four. The
+4-model average's jump at threshold 0.5 comes with a background 100 times
+dirtier than the single model's, and at a matched false-alarm rate it is flat
+(31% and 43%, against the single model's 32% and 44%): that jump is the
+operating point moving. Only the 6-model average gains at a matched rate (43%
+and 61%, Fisher p = 0.07 and 0.01 against the single model).
+
+One caveat on reading the sizes as a trend: they are nested — size N averages
+the first N of the same six trainings — so "how many models" and "which models"
+are confounded. What the data supports is that averaging around six trainings
+helps, not that the curve is monotone in N.
 
 The equal-cost comparison matters for how to spend a fixed budget. Four
 averaged trainings of 4800 windows and one training of 19200 windows use the
 same number of simulated windows. The single long training does well on
 average — and the two curves agree within their bars at every surface
-brightness — but its individual curves scatter (thin lines), and you get one
-draw from that scatter. The average of four gives one prediction, whose
-remaining spread is much smaller. At this budget the choice is therefore about
-reproducibility rather than sensitivity.
+brightness (56% against 63% at SB 33.5) — but its individual curves scatter
+(thin lines), and you get one draw from that scatter. The average of four gives
+one prediction, whose remaining spread is much smaller. At this budget the
+choice is therefore about reproducibility rather than sensitivity.
 
 ### 6. Which of those effects are real, and which are the threshold moving
 
@@ -316,18 +331,18 @@ the false-alarm rate is the resource being spent. At a matched rate, at SB 33.5:
 | 4800 w, SB 32-34.5 | 21% | 44% |
 | 1200 w, SB 32-34.5 | 7% | 31% |
 | 19200 w, SB 32-34.5 | 32% | 60% |
-| 1 model (4800 w) | 20% | 35% |
-| 6 models averaged | 30% | 55% |
+| 1 model (4800 w) | 32% | 44% |
+| 6 models averaged | 43% | 61% |
 
 The two training ranges are within a few points of each other — nothing like
 the 48% against 20% that figure 1 shows at threshold 0.5. Training on fainter
 streams mainly makes the model less conservative, which a threshold can do
-too. What survives the matched comparison is training length: 31% → 60% at 1e-3
-and 7% → 32% at 1e-4, monotone in both. Averaging points the same way (35% →
-55% at 1e-3, 20% → 30% at 1e-4) but each ensemble is one prediction scored on
-20 streams, so those are 7/20 against 11/20 and 4/20 against 6/20 — the right
-direction, not yet a measurement. Confirming it needs more evaluation streams
-per ensemble, not more models.
+too. What survives the matched comparison is training length (31% → 60% at 1e-3 and
+7% → 32% at 1e-4, monotone in both) and averaging six trainings (44% → 61% at
+1e-3, Fisher p = 0.01; 32% → 43% at 1e-4, p = 0.07, so clear at the looser
+budget and suggestive at the stricter one). Those ensemble numbers are scored
+on 100 streams each; at the 20 streams used initially the same comparison was
+7/20 against 11/20 and could not be called.
 
 This does not make the training range irrelevant. A model trained on 31-34
 cannot be pushed to the faint end by lowering its threshold indefinitely — at
@@ -352,10 +367,10 @@ For the streams this project targets, on this training population:
   a matched false-alarm rate, and 4800 is a reasonable compromise at a quarter
   of the cost.
 - **Depth 2, width 12.** Nothing larger helped, so the cheapest network wins.
-- **Average 4 to 6 trainings** into one prediction. This is what turns a model
-  that may or may not see SB 34 streams into one that reliably sees some of
-  them, and it is the only lever that both raises detection and lowers the
-  false-alarm rate.
+- **Average about six trainings** into one prediction. This is what turns a
+  model that may or may not see SB 34 streams into one that reliably sees some
+  of them. Four is not enough at a matched false-alarm rate, even though it
+  looks equivalent at threshold 0.5.
 
 ## Caveats
 

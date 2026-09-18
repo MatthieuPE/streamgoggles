@@ -175,6 +175,20 @@ def main(phase):
     g = {"__name__": "notebook"}
     for cell_id in SETUP_CELLS:
         run_cell(cell_id, g)
+    # This experiment's models all use the shifted decoy box, which is what the
+    # notebook had when they were trained (PLAN.md 6.32). Pinning it here keeps
+    # every model in data/experiments/hyperparameters/ comparable and lets them
+    # be re-scored later; a new experiment should train fresh models with the
+    # notebook's current filters rather than edit this.
+    g["filters_cfg"] = {
+        **g["filters_cfg"],
+        "decoy": {
+            "type": "shifted_box",
+            "reference": "good",
+            "color_shift": 0.5,
+            "color_width": 0.3,
+        },
+    }
     base_train_cfg = copy.deepcopy(g["train_cfg"])
     base_stream_cfg = copy.deepcopy(g["stream_param_cfg"])
     base_model_cfg = copy.deepcopy(g["model_cfg"])
