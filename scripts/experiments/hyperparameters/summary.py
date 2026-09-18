@@ -14,6 +14,19 @@ One figure per statement the page makes:
                          since a fixed 0.5 threshold puts them at very
                          different operating points
 
+Two different uncertainties appear here, drawn differently:
+
+  error bars   sampling. Each model is scored on 20 injected streams per
+               surface brightness (120 when 6 seeds are pooled). "k detected
+               out of n injected" is binomial (n is fixed, k <= n), not
+               Poisson, so the bars are a Wilson 68% interval: it stays inside
+               [0, 1] and keeps a sensible width at k = 0 or k = n, where
+               sqrt(k) would give zero or reach past 1.
+  thin lines   one trained model each, where the spread between trainings is
+               the point (figures 4 and 5). The comparison figures show only
+               the mean over a configuration's trainings, to stay readable;
+               the spread itself is figure 4.
+
 Reads data/experiments/hyperparameters/{results,ensemble_results}.pkl and
 writes to docs/source/experiments/figures/hyperparameters/.
 
@@ -43,6 +56,8 @@ TARGET = (33.0, 34.0)
 SB_LABEL = "surface brightness (mag arcsec$^{-2}$)"
 FAINT, NARROW = "sb32-34.5", "sb31-34"
 DPI = 110
+BARS = "bars: sampling (Wilson 68%)"
+SPREAD_NOTE = "spread between trainings: see the variability figure"
 
 
 def label(windows, training_sb, depth=2, width=12):
@@ -61,7 +76,25 @@ def detection(results, group_by=("configuration", "richness"), thresholds=(THRES
     )
 
 
-def curve(ax, table, name, color, marker, linestyle="-", label_text=None, offset=0.0):
+def bars(data, y):
+    """Asymmetric sampling interval, clipped at 0 for matplotlib."""
+    return [
+        np.clip(y - data["detection_low"].to_numpy(), 0, None),
+        np.clip(data["detection_high"].to_numpy() - y, 0, None),
+    ]
+
+
+def curve(
+    ax,
+    table,
+    name,
+    color,
+    marker,
+    linestyle="-",
+    label_text=None,
+    offset=0.0,
+):
+    """One configuration: the mean over its trainings, with sampling bars."""
     data = table[table.configuration == name].sort_values("richness")
     if data.empty:
         return
@@ -69,10 +102,7 @@ def curve(ax, table, name, color, marker, linestyle="-", label_text=None, offset
     ax.errorbar(
         data["richness"] + offset,
         y,
-        yerr=[
-            np.clip(y - data["detection_low"], 0, None),
-            np.clip(data["detection_high"] - y, 0, None),
-        ],
+        yerr=bars(data, y),
         marker=marker,
         color=color,
         ls=linestyle,
@@ -82,6 +112,11 @@ def curve(ax, table, name, color, marker, linestyle="-", label_text=None, offset
         alpha=0.9,
         label=label_text,
     )
+
+
+def legend(ax, note=BARS, **kwargs):
+    """Legend whose handles are long enough to show solid, dashed and dotted."""
+    ax.legend(fontsize=8, handlelength=3.4, title=note, title_fontsize=7.5, **kwargs)
 
 
 def decorate(ax, ylabel="fraction of streams detected", log=False):
@@ -102,7 +137,7 @@ def seeds_of(results, name):
 
 def figure_training_range(results, table):
     """1: what the model is trained on."""
-    fig, ax = plt.subplots(figsize=(7.5, 5))
+    fig, ax = plt.subplots(figsize=(8, 5.2))
     styles = {
         (1200, NARROW): ("#1f77b4", "o", "-"),
         (4800, NARROW): ("#08306b", "s", "--"),
@@ -122,7 +157,7 @@ def figure_training_range(results, table):
             offset=(i - 1.5) * 0.02,
         )
     decorate(ax)
-    ax.legend(fontsize=8, loc="upper right")
+    legend(ax, f"{BARS}; {SPREAD_NOTE}", loc="upper right")
     ax.set_title("Training on fainter streams is what reaches SB 34", fontsize=11)
     fig.tight_layout()
     fig.savefig(FIGURES / "1_training_range.png", dpi=DPI, bbox_inches="tight")
@@ -131,7 +166,7 @@ def figure_training_range(results, table):
 
 def figure_training_length(results, table):
     """2: how long it is trained for."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
     colours = plt.get_cmap("viridis")
     lengths = sorted(results[results.cfg_training_sb == FAINT]["windows"].unique())
     for i, windows in enumerate(lengths):
@@ -158,7 +193,8 @@ def figure_training_length(results, table):
         )
     decorate(axes[0])
     decorate(axes[1], "background density in stream-free bands", log=True)
-    axes[0].legend(fontsize=8)
+    legend(axes[0], f"{BARS}; {SPREAD_NOTE}")
+    legend(axes[1], "pooled over the seeds of each configuration")
     axes[0].set_title("Detection", fontsize=11)
     axes[1].set_title("Background flagged", fontsize=11)
     fig.suptitle(
@@ -173,7 +209,7 @@ def figure_training_length(results, table):
 
 def figure_architecture(results, table):
     """3: depth and width."""
-    fig, ax = plt.subplots(figsize=(7.5, 5))
+    fig, ax = plt.subplots(figsize=(8, 5.2))
     styles = {
         (2, 12): ("#31a354", "o", "-"),
         (3, 12): ("#006d2c", "s", "--"),
@@ -193,7 +229,7 @@ def figure_architecture(results, table):
             offset=(i - 1.5) * 0.02,
         )
     decorate(ax)
-    ax.legend(fontsize=8)
+    legend(ax, f"{BARS}; {SPREAD_NOTE}")
     ax.set_title(
         "Depth and width change nothing (4800 windows, SB 32-34.5)", fontsize=11
     )
@@ -202,15 +238,14 @@ def figure_architecture(results, table):
     plt.close(fig)
 
 
-def figure_variability(results):
+def figure_variability(results, per_seed):
     """4: the same configuration, retrained."""
-    per_seed = detection(results, ("configuration", "seed", "richness"))
     names = [
         f"w4800_{FAINT}_d2_b12_lr0.002_bs8",
         f"w1200_{FAINT}_d2_b12_lr0.002_bs8",
         f"w4800_{NARROW}_d2_b12_lr0.002_bs8",
     ]
-    fig, ax = plt.subplots(figsize=(8.5, 5))
+    fig, ax = plt.subplots(figsize=(9, 5.2))
     colours = ["#e6550d", "#fdae6b", "#1f77b4"]
     for i, (name, color) in enumerate(zip(names, colours, strict=True)):
         data = per_seed[per_seed.configuration == name]
@@ -224,7 +259,7 @@ def figure_variability(results):
                 "o",
                 color=color,
                 alpha=0.55,
-                ms=7,
+                ms=6,
             )
             ax.plot(
                 [x - 0.03, x + 0.03],
@@ -242,16 +277,17 @@ def figure_variability(results):
             label=f"{label(windows, sb_range)} ({seeds_of(results, name)} seeds)",
         )
     decorate(ax)
+    legend(ax, "one point per trained model; bar: their mean")
     ax.set_title(
-        "Each point is one training: the spread motivates averaging", fontsize=11
+        "The same configuration, retrained: the spread that motivates averaging",
+        fontsize=11,
     )
-    ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(FIGURES / "4_variability.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
 
 
-def figure_ensemble(results, table):
+def figure_ensemble(results, per_seed):
     """5: averaging trainings, and the equal-cost comparison."""
     path = DATA / "ensemble_results.pkl"
     if not path.exists():
@@ -263,7 +299,7 @@ def figure_ensemble(results, table):
         at=(THRESHOLD,),
         group_by=["ensemble_size", "richness"],
     )
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
     colours = plt.get_cmap("plasma")
     sizes = sorted(detection_ensemble["ensemble_size"].unique())
     for i, size in enumerate(sizes):
@@ -274,10 +310,7 @@ def figure_ensemble(results, table):
         axes[0].errorbar(
             data["richness"] + (i - len(sizes) / 2) * 0.02,
             y,
-            yerr=[
-                np.clip(y - data["detection_low"], 0, None),
-                np.clip(data["detection_high"] - y, 0, None),
-            ],
+            yerr=bars(data, y),
             marker="o",
             color=colours(i / max(len(sizes) - 1, 1)),
             capsize=2.5,
@@ -285,44 +318,62 @@ def figure_ensemble(results, table):
             label=f"{size} model{'s' if size > 1 else ''} averaged",
         )
     decorate(axes[0])
-    axes[0].legend(fontsize=8)
+    legend(axes[0], f"{BARS}; an ensemble is one model, so it has no seed spread")
     axes[0].set_title(
         f"Averaging N trainings of 4800 windows (threshold {THRESHOLD})", fontsize=11
     )
 
-    # Equal training cost: 4 x 4800 windows averaged vs one 19200-window model.
+    # Equal training cost: 4 x 4800 = 19200 windows either way. One training at
+    # 19200 windows is the alternative to averaging four at 4800; the several
+    # 19200-window trainings shown are repeats of that same single-model
+    # outcome, not a larger spend.
     long_name = f"w19200_{FAINT}_d2_b12_lr0.002_bs8"
-    per_seed = detection(results, ("configuration", "seed", "richness"))
     long_seeds = per_seed[per_seed.configuration == long_name]
     if not long_seeds.empty:
-        summary = long_seeds.groupby("richness")["detection_fraction"].agg(
-            ["mean", "min", "max"]
-        )
-        axes[1].errorbar(
-            summary.index,
-            summary["mean"],
-            yerr=[summary["mean"] - summary["min"], summary["max"] - summary["mean"]],
+        for j, (_, one) in enumerate(long_seeds.groupby("seed")):
+            one = one.sort_values("richness")
+            axes[1].plot(
+                one["richness"],
+                one["detection_fraction"],
+                color="#08306b",
+                lw=0.9,
+                alpha=0.45,
+                label="one training on 19200 windows (repeats)" if j == 0 else None,
+            )
+        mean = long_seeds.groupby("richness")["detection_fraction"].mean()
+        axes[1].plot(
+            mean.index,
+            mean.to_numpy(),
             marker="s",
             color="#08306b",
-            capsize=3,
-            lw=1.8,
-            label=f"one model, 19200 windows ({len(long_seeds.seed.unique())} seeds, min-max)",
+            lw=2.2,
+            label=(
+                "what one such training gives on average "
+                f"({long_seeds.seed.nunique()} repeats)"
+            ),
         )
     four = detection_ensemble[detection_ensemble.ensemble_size == 4].sort_values(
         "richness"
     )
     if not four.empty:
-        axes[1].plot(
+        y = four["detection_fraction"].to_numpy()
+        axes[1].errorbar(
             four["richness"],
-            four["detection_fraction"],
+            y,
+            yerr=bars(four, y),
             marker="o",
             color="#e6550d",
+            capsize=3,
             lw=2.2,
-            label="4 models of 4800 windows, averaged",
+            label="4 trainings of 4800 windows, averaged into one model",
         )
     decorate(axes[1])
-    axes[1].legend(fontsize=8)
-    axes[1].set_title("Same training cost, two ways to spend it", fontsize=11)
+    legend(axes[1], f"{BARS} on the ensemble; thin lines: individual trainings")
+    axes[1].set_title(
+        "Same training cost (19200 windows): average four short trainings, "
+        "or run one long one",
+        fontsize=10.5,
+    )
     fig.tight_layout()
     fig.savefig(FIGURES / "5_ensemble.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -339,52 +390,69 @@ def figure_matched_background(results):
         control_pixels = float((group["fp_no_stream"] + group["tn_no_stream"]).sum())
         density = control / control_pixels
         flagged = np.stack(list(group["n_above_band"]))
-        band_pixels = group["band_pixels"].to_numpy()[:, None]
         for target in targets:
             reachable = np.flatnonzero(density <= target)
             if not reachable.size:
                 continue
             k = reachable[0]
-            detected = (flagged[:, k] >= 20) & (flagged[:, k] / band_pixels[:, 0] > 0)
             rows.append(
                 {
                     "configuration": name,
                     "seed": seed,
                     "richness": sb,
                     "target": target,
-                    "detected": detected.mean(),
+                    "detected": (flagged[:, k] >= 20).mean(),
                 }
             )
     matched = pd.DataFrame(rows)
     if matched.empty:
         return
-    fig, axes = plt.subplots(1, len(targets), figsize=(13, 5), sharey=True)
+    fig, axes = plt.subplots(1, len(targets), figsize=(13.5, 5.2), sharey=True)
     styles = {
-        f"w1200_{NARROW}_d2_b12_lr0.002_bs8": ("#1f77b4", "o", "1200 w, SB 31-34"),
-        f"w4800_{NARROW}_d2_b12_lr0.002_bs8": ("#08306b", "s", "4800 w, SB 31-34"),
-        f"w1200_{FAINT}_d2_b12_lr0.002_bs8": ("#e6550d", "^", "1200 w, SB 32-34.5"),
-        f"w4800_{FAINT}_d2_b12_lr0.002_bs8": ("#a63603", "v", "4800 w, SB 32-34.5"),
-        f"w19200_{FAINT}_d2_b12_lr0.002_bs8": ("#54278f", "D", "19200 w, SB 32-34.5"),
+        f"w1200_{NARROW}_d2_b12_lr0.002_bs8": ("#1f77b4", "o", "-", "1200 w, SB 31-34"),
+        f"w4800_{NARROW}_d2_b12_lr0.002_bs8": (
+            "#08306b",
+            "s",
+            "--",
+            "4800 w, SB 31-34",
+        ),
+        f"w1200_{FAINT}_d2_b12_lr0.002_bs8": (
+            "#e6550d",
+            "^",
+            "-",
+            "1200 w, SB 32-34.5",
+        ),
+        f"w4800_{FAINT}_d2_b12_lr0.002_bs8": (
+            "#a63603",
+            "v",
+            "--",
+            "4800 w, SB 32-34.5",
+        ),
+        f"w19200_{FAINT}_d2_b12_lr0.002_bs8": (
+            "#54278f",
+            "D",
+            ":",
+            "19200 w, SB 32-34.5",
+        ),
     }
     for ax, target in zip(axes, targets, strict=True):
-        for name, (color, marker, text) in styles.items():
+        for name, (color, marker, ls, text) in styles.items():
             data = matched[(matched.configuration == name) & (matched.target == target)]
             if data.empty:
                 continue
-            summary = data.groupby("richness")["detected"].agg(["mean", "std"])
-            ax.errorbar(
+            summary = data.groupby("richness")["detected"].mean()
+            ax.plot(
                 summary.index,
-                summary["mean"],
-                yerr=summary["std"].fillna(0),
+                summary.to_numpy(),
                 marker=marker,
                 color=color,
-                capsize=2.5,
+                ls=ls,
                 lw=1.7,
-                label=text,
+                label=f"{text} ({data.seed.nunique()} seeds)",
             )
         decorate(ax)
         ax.set_title(f"background density {target:.0e}", fontsize=11)
-    axes[0].legend(fontsize=8)
+    legend(axes[0], "mean over the trainings of each configuration")
     fig.suptitle(
         "Compared at the same background level, not at the same threshold", fontsize=11
     )
@@ -396,11 +464,12 @@ def figure_matched_background(results):
 def main():
     results = load()
     table = detection(results)
+    per_seed = detection(results, ("configuration", "seed", "richness"))
     figure_training_range(results, table)
     figure_training_length(results, table)
     figure_architecture(results, table)
-    figure_variability(results)
-    figure_ensemble(results, table)
+    figure_variability(results, per_seed)
+    figure_ensemble(results, per_seed)
     figure_matched_background(results)
     pd.set_option("display.width", 220)
     print("== streams detected at threshold 0.5 (all seeds of each configuration)")
@@ -414,7 +483,6 @@ def main():
     print("\n== seeds per configuration")
     print(results.groupby("configuration")["seed"].nunique().to_string())
     print("\n== spread between trainings (std over seeds), threshold 0.5")
-    per_seed = detection(results, ("configuration", "seed", "richness"))
     print(
         per_seed.pivot_table(
             index="configuration",
