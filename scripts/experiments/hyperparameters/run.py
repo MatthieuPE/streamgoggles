@@ -83,7 +83,50 @@ PHASES["phase2"] = [
     for depth in (2, 3, 4)
     for width in (12, 24)
 ]
-SEEDS = {"phase1": [42, 43], "phase2": [42, 43]}
+# The candidates phase 2 leaves in contention, confirmed with 4 seeds as the
+# protocol requires (seeds 42/43 are already trained by phase 2 and skipped).
+PHASES["phase2_confirm"] = [
+    configuration(
+        steps_per_epoch=120, training_sb="sb32-34.5", depth=depth, base_width=width
+    )
+    for depth, width in ((3, 12), (4, 12), (4, 24))
+]
+# Depth at width 12, with enough seeds to separate the configurations: with 4
+# seeds the candidates were indistinguishable (85/38/17 vs 86/36/10 vs 80/33/9
+# at SB 33/33.5/34), because training-to-training variation is larger than the
+# differences (one depth-3 seed reached 75% at SB 33.5, another 15%). Six seeds
+# give ~120 streams per surface brightness, about +-4 points.
+PHASES["depth"] = [
+    configuration(
+        steps_per_epoch=120, training_sb="sb32-34.5", depth=depth, base_width=12
+    )
+    for depth in (2, 3, 4)
+]
+# Phase 1's comparisons, re-measured with 6 seeds: with 2 seeds the same
+# configuration measured 88/17/0 at SB 33/33.5/34 and with 6 seeds 92/48/20,
+# so the phase-1 differences were mostly the seed lottery.
+PHASES["training_data"] = [
+    configuration(steps_per_epoch=steps, training_sb=sb)
+    for sb in TRAINING_SB
+    for steps in (30, 120)
+]
+# How far does more training data go? The ladder 1200 -> 19200 windows on the
+# faint range, with several seeds each, measures both the average detection and
+# the spread between trainings. 19200 windows is also four times 4800, so a
+# single long training can be compared with an ensemble of four short ones at
+# equal total training cost (scripts/experiments/hyperparameters/ensemble.py).
+PHASES["training_length"] = [
+    configuration(steps_per_epoch=steps, training_sb="sb32-34.5")
+    for steps in (240, 480)
+]
+SEEDS = {
+    "phase1": [42, 43],
+    "training_data": [42, 43, 44, 45, 46, 47],
+    "training_length": [42, 43, 44, 45, 46, 47],
+    "phase2": [42, 43],
+    "phase2_confirm": [42, 43, 44, 45],
+    "depth": [42, 43, 44, 45, 46, 47],
+}
 
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]
 N_REALIZATIONS = 20
