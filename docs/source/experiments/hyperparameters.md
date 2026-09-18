@@ -67,18 +67,48 @@ and survey noise — on a background catalog the model never saw.
 Raising that count makes the *measurement* of a model more precise. It cannot
 make the model better, and it is not what the training-length section varies.
 
-**How much the models actually saw in training**, for contrast: a training
-window is one injected stream, and its surface brightness is drawn uniformly
-from the training range's values, so a 4800-window model trained on SB 32-34.5
-saw about 912 distinct streams at each of the five values (4800 windows, 5% of
-them stream-free). The ladder in section 2 is:
+**Counting the training set.** Training is counted in windows, and the
+conversion to streams is worth spelling out because the two units appear side
+by side on this page.
 
-| Training windows | Streams per SB value in training |
-|---|---|
-| 1200 | ~228 |
-| 4800 | ~912 |
-| 9600 | ~1824 |
-| 19200 | ~3648 |
+A training window is drawn fresh each time it is needed — the dataset is
+generated on the fly, never reshuffled from a fixed pool — so the number of
+windows a run consumes is
+
+$$
+\text{windows} = \text{epochs} \times \text{windows per epoch}
+$$
+
+which for every model here is 40 epochs of 30, 120, 240 or 480, giving the
+1200, 4800, 9600 and 19200 of section 2. `steps_per_epoch` in the code is that
+windows-per-epoch count, not a count of optimizer steps: at batch 8, 120
+windows per epoch is 15 optimizer steps.
+
+Each window is either a **stream window** (probability
+$1 - f_\text{bg}$, with `background_fraction` $f_\text{bg} = 0.05$) or a
+stream-free **background window**. A stream window contains exactly one freshly
+injected stream, whose surface brightness is drawn uniformly at random from the
+$V$ discrete values of the training range ($V = 4$ for SB 31-34, $V = 5$ for
+SB 32-34.5), and the window is positioned so that at least 5° of the stream's
+8° track lies inside it. So the expected number of distinct streams a model
+sees at each surface brightness value is
+
+$$
+\frac{\text{windows} \times (1 - f_\text{bg})}{V}
+$$
+
+| Training windows | Stream windows | Streams per SB value (SB 32-34.5, $V=5$) |
+|---|---|---|
+| 1200 | 1140 | ~228 |
+| 4800 | 4560 | ~912 |
+| 9600 | 9120 | ~1824 |
+| 19200 | 18240 | ~3648 |
+
+The per-value counts are expectations, not exact: the surface brightness is
+drawn per window, so the realized count fluctuates by about
+$\sqrt{N p (1-p)} \approx 27$ streams for the 4800-window models. No stream is
+ever seen twice, so "more windows" always means more distinct streams rather
+than more passes over the same ones.
 
 Those are the numbers that change the model. The 20/100/500 above are the
 numbers that change the error bar on its measured performance.
@@ -420,26 +450,74 @@ point before differences of 15 points mean anything. Evaluation streams are
 simulated on demand and cost about 0.5 to 0.9 s each, so this is a compute
 choice rather than a limitation of the data.
 
-## What to use
+## Conclusion: the configuration to use from here
 
-For the streams this project targets, on this training population:
+**The model this experiment selects**, and which the rest of the project should
+start from unless a later experiment overrides it:
 
-- **Set the threshold from a false-alarm budget, not to 0.5.** This is the
-  first decision, not the last one: at 0.5 two models that differ only in
-  training length sit at false-alarm rates an order of magnitude apart, and
-  comparing them there points the wrong way (section 2).
-- **Train on SB 32-34.5**, bracketing the target rather than matching it. Its
-  advantage at a fixed threshold is mostly an operating-point shift, but the
-  longer trainings and the ensembles that do help are all on this range, and
-  the narrow range saturates below them (section 6).
-- **Train as long as you can afford**: 19200 windows is the best model here at
-  a matched false-alarm rate, and 4800 is a reasonable compromise at a quarter
-  of the cost.
-- **Depth 2, width 12.** Nothing larger helped, so the cheapest network wins.
-- **Average about six trainings** into one prediction. This is what turns a
-  model that may or may not see SB 34 streams into one that reliably sees some
-  of them. Four is not enough at a matched false-alarm rate, even though it
-  looks equivalent at threshold 0.5.
+| Setting | Value | Set by |
+|---|---|---|
+| loss | batch Dice | {doc}`loss_selection` |
+| batch size | 8 | {doc}`loss_selection` |
+| background fraction | 0.05 | {doc}`loss_selection` |
+| magnitude range (g, r) | 16-24.5 | catalog cut, fixed here |
+| **training surface brightness** | **32, 33, 33.5, 34, 34.5** | section 1, 6 |
+| **training length** | **4800 windows** (40 epochs x 120), 19200 if affordable | section 2, 6 |
+| **network** | **depth 2, base width 12** | section 3 |
+| learning rate | 2e-3 | not varied yet |
+| **deployment** | **average 6 independent trainings into one prediction** | section 5, 6 |
+| **threshold** | **set from a false-alarm budget**, not fixed at 0.5 | section 6 |
+
+Written as a decision list, strongest first:
+
+1. **Deploy an average of about six trainings, not a single model.** A single
+   training is a lottery draw at the faint end (15% to 90% of SB 33.5 streams,
+   section 4). Averaging six removes that and is the only change that raises
+   detection *and* lowers the false-alarm rate: SB 33.5 goes from 44% to 61%
+   at a matched background of 1e-3. Four models are not enough — they look
+   equivalent at threshold 0.5 only because they sit at a dirtier operating
+   point.
+2. **Train on SB 32-34.5**, bracketing the SB 33-34 target rather than matching
+   it. At a fixed threshold this looks like the biggest effect on the page; at
+   a matched false-alarm rate most of it is the operating point moving. Keep it
+   anyway: the narrow range saturates around 35% at SB 33.5 whatever threshold
+   it is given, and every configuration that does better is trained on the
+   wider range.
+3. **Train as long as the budget allows**, 4800 windows as the working default.
+   This is the one lever that improves the detection-versus-false-alarm curve
+   monotonically (SB 33.5 at a background of 1e-3: 31% at 1200 windows, 44% at
+   4800, 47% at 9600, 60% at 19200). At equal total cost, four averaged
+   4800-window trainings and one 19200-window training perform the same, so
+   spend the budget on whichever is easier to run — and prefer the ensemble,
+   since its result is reproducible.
+4. **Keep the network small**: depth 2, base width 12. Depth 3 and 4 and width
+   24 changed nothing outside the seed spread, so the cheapest network wins.
+5. **Choose the threshold last, from an acceptable false-alarm rate.** At 0.5,
+   models that differ only in training length sit at false-alarm rates an order
+   of magnitude apart, and comparing them there points the wrong way.
+
+**What this configuration achieves**, six averaged 4800-window trainings, 100
+injected streams per surface brightness, on a background the models never saw:
+
+| Surface brightness | detected at threshold 0.5 | detected at a background density of 1e-3 |
+|---|---|---|
+| 32 | 100% | 100% |
+| 33 | 95% | 98% |
+| 33.5 | 52% | 61% |
+| 34 | 14% | 17% |
+| 34.5 | 3% | 7% |
+
+Against the stated goal — most streams at SB 33, a gradual decline through
+SB 34 rather than a cliff — this configuration reaches the first and roughly
+half of the second: SB 33 is essentially solved, SB 33.5 is a coin flip, and
+SB 34 is reached for one stream in six or seven rather than never. The DES 2018
+targets at SB 34 to 34.3 are therefore partially in reach, and not yet at the
+rate a survey search would want.
+
+**What is not settled and should not be assumed:** the learning rate and batch
+size were never varied (phase 3); the threshold has no tuned value yet; and
+every number here is for one stream shape at one distance, so nothing about the
+choices above is guaranteed to hold once the stream parameters vary.
 
 ## Caveats
 

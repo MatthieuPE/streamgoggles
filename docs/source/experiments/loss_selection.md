@@ -192,6 +192,37 @@ contrast at SB 32 going from 405 to 149. Where to set it depends on what the
 maps are used for; choosing it, and checking it on skies not used for the
 choice, is the next experiment (see {doc}`index`).
 
+## Conclusion: what this experiment fixes
+
+**Selected, and used by every later experiment and notebook:**
+
+| Setting | Value | Why |
+|---|---|---|
+| **loss** | **batch Dice** | the only loss that keeps the background clean; per-window Dice cannot learn to suppress false alarms, because an empty window's Dice is ~1 whatever it predicts |
+| **batch size** | **8** | the widest usable range of thresholds and the highest contrast at SB 32, with one of the smallest spreads between seeds |
+| **background fraction** | **0.05** | indistinguishable from 0.3, and it keeps training on windows that contain a stream |
+
+These three are settled; nothing measured since has argued against them.
+
+**What this experiment did *not* settle**, and what later work changed:
+
+- The **threshold** is still a free parameter. This page compares at 0.5 and
+  0.9, and {doc}`hyperparameters` section 6 shows that comparing two models at
+  a fixed threshold can point the wrong way — models should be compared at a
+  matched false-alarm rate, and the threshold chosen last from a false-alarm
+  budget.
+- The **training surface brightness range and training length** used here
+  (SB 31-34, 1200 windows) were the starting point, not a result.
+  {doc}`hyperparameters` replaces them with SB 32-34.5 and 4800 windows.
+- A **single trained model** is what this page scores. The faint-end numbers
+  above are one draw from a wide seed-to-seed distribution;
+  {doc}`hyperparameters` concludes that a deployed model should be an average
+  of about six trainings.
+
+So the configuration to carry forward is this page's loss, batch size and
+background fraction, with the training range, length and ensembling from
+{doc}`hyperparameters`.
+
 ## Limitations
 
 - **Contrast measured on one stream per sky**, in the neighbourhood tiled

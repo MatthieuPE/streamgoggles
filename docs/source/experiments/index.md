@@ -5,6 +5,27 @@ model: what was asked, how it was measured, what came out, and what was
 decided. Each page is self-contained, and its figures can be regenerated from
 the scripts it points to.
 
+## The configuration these experiments have selected
+
+What to use today, with the page that decided each line. Anything not listed
+has not been varied yet and is a default rather than a result.
+
+| Setting | Value | Decided by |
+|---|---|---|
+| loss | batch Dice | {doc}`loss_selection` |
+| batch size | 8 | {doc}`loss_selection` |
+| background fraction | 0.05 | {doc}`loss_selection` |
+| training surface brightness | 32, 33, 33.5, 34, 34.5 | {doc}`hyperparameters` |
+| training length | 4800 windows (19200 if affordable) | {doc}`hyperparameters` |
+| network | U-Net, depth 2, base width 12, sigmoid head | {doc}`hyperparameters` |
+| deployment | average 6 independent trainings into one prediction | {doc}`hyperparameters` |
+| threshold | chosen from a false-alarm budget, not fixed at 0.5 | {doc}`hyperparameters` |
+| learning rate | 2e-3 (not varied yet) | — |
+
+That model detects 95% of injected streams at SB 33, 52% at SB 33.5 and 14% at
+SB 34 at threshold 0.5, on skies it never saw, with a background density of a
+few 1e-4. `notebooks/train_model.ipynb` builds and scores it end to end.
+
 ## Shared protocol
 
 Every experiment follows the same conventions, so results can be compared
