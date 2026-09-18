@@ -217,7 +217,7 @@ def figure_variability(results):
         if data.empty:
             continue
         for sb, group in data.groupby("richness"):
-            x = sb + (i - 1) * 0.12
+            x = sb + (i - 1) * 0.07
             ax.plot(
                 np.full(len(group), x),
                 group["detection_fraction"],
@@ -227,7 +227,7 @@ def figure_variability(results):
                 ms=7,
             )
             ax.plot(
-                [x - 0.05, x + 0.05],
+                [x - 0.03, x + 0.03],
                 [group["detection_fraction"].mean()] * 2,
                 color=color,
                 lw=2.5,
