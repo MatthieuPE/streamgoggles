@@ -35,7 +35,13 @@ SEEDS = [42, 43, 44, 45, 46, 47]
 # 4 is the equal-cost comparison against one training on 4 x 4800 windows.
 ENSEMBLE_SIZES = [1, 2, 3, 4, 6]
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]
-N_REALIZATIONS = 100  # one prediction per ensemble, so this is its whole sample
+# Streams injected PER surface brightness, so this many times the 6 entries of
+# EVAL_SB. An ensemble is one prediction with no seeds to pool over, unlike a
+# configuration curve (6 trainings x 20 = 120 per point), so this number alone
+# sets its sampling interval: +-11 points at 20, +-5 at 100, +-2 at 500. The
+# streams are simulated on demand and never seen in training, so the only limit
+# is time: about 0.45 s per stream for one model, 0.85 s for six averaged.
+N_REALIZATIONS = 500
 N_NULL_BANDS = 200
 EVAL_SEED = 2026
 INDEPENDENT_BACKGROUND_SEED = 777

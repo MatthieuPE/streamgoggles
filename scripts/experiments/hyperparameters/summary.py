@@ -13,8 +13,9 @@ One figure per statement the page makes:
   6_matched_background.png  every model compared at the same background level,
                          since a fixed 0.5 threshold puts them at very
                          different operating points
-  7_sampling.png         20 against 100 streams per surface brightness, the
-                         sample size behind the ensemble curves
+  7_sampling.png         the same models scored on 20 against 100 streams per
+                         surface brightness -- evaluation precision, not a
+                         difference between models
 
 Two different uncertainties appear here, drawn differently:
 
@@ -435,7 +436,7 @@ def figure_sampling(results):
             color=colour,
             capsize=3,
             lw=1.8,
-            label=f"{n} streams per point",
+            label=f"{n} evaluation streams per point",
         )
     decorate(axes[0])
     legend(axes[0])
@@ -467,7 +468,7 @@ def figure_sampling(results):
                 capsize=4,
                 ms=8,
                 lw=2,
-                label=f"{n} streams per point" if size == 1 else None,
+                label=f"{n} evaluation streams per point" if size == 1 else None,
             )
             axes[1].annotate(
                 f"{k}/{n}",
@@ -486,7 +487,10 @@ def figure_sampling(results):
     axes[1].grid(alpha=0.3, axis="y")
     legend(axes[1], loc="upper left")
     axes[1].set_title("SB 33.5, matched background 1e-3", fontsize=11)
-    fig.suptitle("Streams per surface brightness: 20 against 100", fontsize=11)
+    fig.suptitle(
+        "Same trained models, scored on 20 against 100 streams per surface brightness",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(FIGURES / "7_sampling.png", dpi=DPI, bbox_inches="tight")
     plt.close(fig)

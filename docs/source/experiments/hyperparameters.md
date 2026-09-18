@@ -54,13 +54,34 @@ not put two models at the same false-alarm rate, so figure 6 redoes every
 comparison at matched background instead — and it changes some of the
 conclusions, which is why it is worth reading before acting on figures 1 to 3.
 
-**Streams per point.** Every count of injected streams on this page is **per
-surface brightness**, not a total. "20 streams" means 20 independently injected
-streams at SB 32, 20 more at SB 33, and so on over the six evaluation
-brightnesses — 120 injections for that model in total, but 20 behind each
+**Streams per point: an evaluation quantity, never a training one.** Every
+count of injected streams on this page — 20, 100, 500 — describes how a trained
+model was *scored*, and says nothing about what it was trained on. It is also
+**per surface brightness**, not a total: "20 streams" means 20 independently
+injected streams at SB 32, 20 more at SB 33, and so on over the six evaluation
+brightnesses, so 120 injections for that model in total but 20 behind each
 plotted point, which is what its error bar is computed from. Each one is a
-fresh full-sky injection: different stream realization, placement, orientation
-and survey noise.
+fresh full-sky injection — different stream realization, placement, orientation
+and survey noise — on a background catalog the model never saw.
+
+Raising that count makes the *measurement* of a model more precise. It cannot
+make the model better, and it is not what the training-length section varies.
+
+**How much the models actually saw in training**, for contrast: a training
+window is one injected stream, and its surface brightness is drawn uniformly
+from the training range's values, so a 4800-window model trained on SB 32-34.5
+saw about 912 distinct streams at each of the five values (4800 windows, 5% of
+them stream-free). The ladder in section 2 is:
+
+| Training windows | Streams per SB value in training |
+|---|---|
+| 1200 | ~228 |
+| 4800 | ~912 |
+| 9600 | ~1824 |
+| 19200 | ~3648 |
+
+Those are the numbers that change the model. The 20/100/500 above are the
+numbers that change the error bar on its measured performance.
 
 **Two different uncertainties**, which the figures draw differently:
 
@@ -360,20 +381,25 @@ longer trainings and the ensembles reach the numbers above. But the headline
 "training range doubles the SB 34 detections" is an operating-point effect,
 and should be reported as one.
 
-### 7. How many streams per point it takes to say any of this
+### 7. How many evaluation streams it takes to say any of this
 
-**Statement.** The ensembles were first scored on 20 streams per surface
-brightness, which was not enough to decide whether averaging survives the
-matched-background test; at 100 streams per point it is. The estimates barely
-moved — the extra streams bought precision, not a different answer.
+This section is about measurement precision, not about the models. Nothing is
+retrained here: the same trained ensembles are scored twice, on 20 and on 100
+injected streams per surface brightness.
+
+**Statement.** At 20 evaluation streams per point the ensembles were too
+imprecisely measured to decide whether averaging survives the
+matched-background test; at 100 they are. The estimates barely moved — the
+extra streams bought precision, not a different answer.
 
 ```{image} figures/hyperparameters/7_sampling.png
 :alt: The six-model ensemble scored on 20 and on 100 streams per surface brightness, and the single-model against six-model comparison at both sample sizes
 :width: 100%
 ```
 
-*Left: the same six-model ensemble, the same trained models, scored on 20 and
-on 100 streams per surface brightness, with Wilson 68% bars. The 20-stream
+*Left: the same six-model ensemble — identical weights in both curves — scored
+on 20 and on 100 evaluation streams per surface brightness, with Wilson 68%
+bars. The 20-stream
 realizations are the first 20 of the 100 — the realization seed is (base seed,
 surface-brightness index, realization index) — so this is a pure sample-size
 comparison, not two different experiments. Right: the comparison that motivated
@@ -388,9 +414,11 @@ sizes to within their bars everywhere, so nothing about the earlier figures was
 biased — they were simply too imprecise for that particular claim.
 
 The practical rule this suggests: a configuration curve pools several
-trainings, so 20 streams per point is enough for it; a single prediction — an
-ensemble, or a model you intend to deploy — needs about 100 per point before
-differences of 15 points mean anything.
+trainings, so 20 evaluation streams per point is enough for it; a single
+prediction — an ensemble, or a model you intend to deploy — needs about 100 per
+point before differences of 15 points mean anything. Evaluation streams are
+simulated on demand and cost about 0.5 to 0.9 s each, so this is a compute
+choice rather than a limitation of the data.
 
 ## What to use
 

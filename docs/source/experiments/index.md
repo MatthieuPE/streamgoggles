@@ -24,9 +24,13 @@ survey noise). Each sky is tiled, predicted, stitched back to HEALPix and
 scored per pixel. Differences between models therefore come from the models,
 not from the skies they were shown.
 
-**Realizations are counted per grid point.** `n_realizations` is the number of
-independent injections *per parameter set* — per surface brightness, or per
-cell when a grid varies two parameters — not a total. An experiment scoring 20
+**Realizations are counted per grid point, and they are an evaluation
+quantity.** `n_realizations` is the number of independent injections used to
+*score* a trained model, *per parameter set* — per surface brightness, or per
+cell when a grid varies two parameters — not a total, and never a description
+of what the model was trained on (that is counted in training windows). Raising
+it tightens the error bar on a model's measured performance; it cannot change
+the model. An experiment scoring 20
 realizations over 6 surface brightnesses injects 120 streams, with 20 behind
 each plotted point, and that 20 is what the point's error bar is computed from.
 The realization seed is (base seed, parameter-set index, realization index), so
