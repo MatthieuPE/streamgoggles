@@ -51,6 +51,21 @@ DEFAULT = {
     "base_width": 12,
     "lr": 2e-3,
     "batch_size": 8,
+    "decoy": "shifted",
+}
+
+# The decoy input channel, written out here rather than read from the notebook
+# so that editing the notebook can never silently change what an experiment
+# trained on. "shifted" is what every model before the fixed_decoy phase used
+# (PLAN.md 6.32); "box" is the fixed colour-magnitude box the notebooks use now.
+DECOYS = {
+    "shifted": {
+        "type": "shifted_box",
+        "reference": "good",
+        "color_shift": 0.5,
+        "color_width": 0.3,
+    },
+    "box": {"type": "box", "color_range": (1.2, 1.5), "mag_range": (18.0, 24.5)},
 }
 
 
@@ -60,6 +75,10 @@ def configuration(**overrides):
         f"w{40 * config['steps_per_epoch']}_{config['training_sb']}_d{config['depth']}"
         f"_b{config['base_width']}_lr{config['lr']:g}_bs{config['batch_size']}"
     )
+    # The shifted decoy keeps the original names, so every model and result
+    # trained before the decoy switch stays addressable as it was.
+    if config["decoy"] != "shifted":
+        config["name"] += f"_{config['decoy']}decoy"
     return config
 
 
@@ -119,7 +138,18 @@ PHASES["training_length"] = [
     configuration(steps_per_epoch=steps, training_sb="sb32-34.5")
     for steps in (240, 480)
 ]
+# Does the selected configuration survive the switch to the fixed decoy box?
+# Every conclusion above was reached with the shifted box; the first model
+# trained with the fixed one (train_model.ipynb) came out about 20 points low at
+# SB 33.5 (PLAN.md 6.35). 4800 windows sits next to 19200 so the same run also
+# says what the four-times-longer training buys with the new inputs -- training
+# speed matters for everything that comes after.
+PHASES["fixed_decoy"] = [
+    configuration(steps_per_epoch=steps, training_sb="sb32-34.5", decoy="box")
+    for steps in (120, 480)
+]
 SEEDS = {
+    "fixed_decoy": [42, 43, 44, 45, 46, 47],
     "phase1": [42, 43],
     "training_data": [42, 43, 44, 45, 46, 47],
     "training_length": [42, 43, 44, 45, 46, 47],
@@ -175,20 +205,13 @@ def main(phase):
     g = {"__name__": "notebook"}
     for cell_id in SETUP_CELLS:
         run_cell(cell_id, g)
-    # This experiment's models all use the shifted decoy box, which is what the
-    # notebook had when they were trained (PLAN.md 6.32). Pinning it here keeps
-    # every model in data/experiments/hyperparameters/ comparable and lets them
-    # be re-scored later; a new experiment should train fresh models with the
-    # notebook's current filters rather than edit this.
-    g["filters_cfg"] = {
-        **g["filters_cfg"],
-        "decoy": {
-            "type": "shifted_box",
-            "reference": "good",
-            "color_shift": 0.5,
-            "color_width": 0.3,
-        },
-    }
+    # The decoy channel is part of the configuration (see DECOYS). The
+    # background and injectors are built once per run, so a phase trains one
+    # decoy only.
+    decoys = {config["decoy"] for config in PHASES[phase]}
+    if len(decoys) != 1:
+        raise ValueError(f"phase {phase!r} mixes decoys {sorted(decoys)}")
+    g["filters_cfg"] = {**g["filters_cfg"], "decoy": DECOYS[decoys.pop()]}
     base_train_cfg = copy.deepcopy(g["train_cfg"])
     base_stream_cfg = copy.deepcopy(g["stream_param_cfg"])
     base_model_cfg = copy.deepcopy(g["model_cfg"])
