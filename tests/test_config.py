@@ -227,6 +227,37 @@ def test_matched_filter_config_load(write_yaml, default_matched_filter_dict):
     assert config.finalize_config["enabled"] is False
 
 
+def test_matched_filter_config_reads_the_filters_section(
+    write_yaml, default_matched_filter_dict
+):
+    from streamgoggles.matched_filter import ColorBoxFilter, build_matched_filters
+
+    filters = {
+        "good": {
+            "type": "isochrone",
+            "reference_isochrone": {"age": 12.5, "z": 0.0002},
+        },
+        "decoy": {"type": "box", "color_range": [1.2, 1.5], "mag_range": [18.0, 24.5]},
+    }
+    config = MatchedFilterConfig.load(
+        write_yaml({**default_matched_filter_dict, "filters": filters})
+    )
+    assert list(config.filters) == ["good", "decoy"]
+    # A YAML list becomes the filter's limits, the same as a tuple in a notebook.
+    built = build_matched_filters(config.filters, namespace="lsst_yr1")
+    assert isinstance(built["decoy"], ColorBoxFilter)
+    assert built["decoy"].color_range == (1.2, 1.5)
+
+
+def test_matched_filter_config_without_filters_uses_its_isochrone(
+    write_yaml, default_matched_filter_dict
+):
+    config = MatchedFilterConfig.load(write_yaml(default_matched_filter_dict))
+    assert config.filters == {
+        "good": {"type": "isochrone", "reference_isochrone": {"age": 12.5, "z": 0.0002}}
+    }
+
+
 def test_matched_filter_config_distance_moduli_fixed(
     write_yaml, default_matched_filter_dict
 ):

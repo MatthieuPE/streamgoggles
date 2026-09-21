@@ -428,6 +428,103 @@ class ColorBoxFilter(MatchedFilter):
         )
 
 
+# The keys each filter type takes in a filters config, required and optional.
+FILTER_TYPES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "isochrone": (frozenset({"reference_isochrone"}), frozenset()),
+    "box": (frozenset({"color_range", "mag_range"}), frozenset()),
+    "shifted_box": (
+        frozenset({"reference", "color_shift"}),
+        frozenset({"color_width"}),
+    ),
+}
+
+
+def build_matched_filters(
+    filters_cfg: dict[str, dict], namespace: str | None = None
+) -> dict[str, MatchedFilter]:
+    """Build the named matched filters from a plain configuration.
+
+    This is the one place a filters configuration becomes filters, so choosing
+    them is a matter of editing a dict (in a notebook) or the ``filters``
+    section of ``config/matched_filter.yaml`` -- never code. ``filters_cfg``
+    maps a channel name to one filter spec; its order is kept, and it is the
+    order of the network's input channels at each trial distance. Three types:
+
+    - ``{"type": "isochrone", "reference_isochrone": {"age": 12.5, "z": 0.0002}}``
+      -- `StreamobsSplineFilter`, the real matched filter around an isochrone.
+    - ``{"type": "box", "color_range": (1.2, 1.5), "mag_range": (18.0, 24.5)}``
+      -- `ColorBoxFilter`, a decoy at absolute colour and magnitude limits: the
+      same selection at every trial distance and in every run.
+    - ``{"type": "shifted_box", "reference": "good", "color_shift": 0.5,
+      "color_width": 0.3}`` -- `ShiftedColorBoxFilter`, the older decoy placed
+      relative to an isochrone filter defined earlier in the same config.
+
+    Parameters:
+        filters_cfg: channel name -> filter spec, as above.
+        namespace: survey/release column namespace (e.g. "lsst_yr1") of the
+            catalogs the filters will be applied to.
+
+    Returns:
+        Channel name -> filter, in the order of ``filters_cfg``.
+
+    Raises:
+        ValueError for an unknown type, a missing or unexpected key, or a
+        ``shifted_box`` whose reference is not an isochrone filter defined
+        before it.
+    """
+    filters: dict[str, MatchedFilter] = {}
+    for name, spec in filters_cfg.items():
+        spec = dict(spec)
+        kind = spec.pop("type", None)
+        if kind not in FILTER_TYPES:
+            raise ValueError(
+                f"filter {name!r}: unknown type {kind!r}, expected one of "
+                f"{sorted(FILTER_TYPES)}"
+            )
+        required, optional = FILTER_TYPES[kind]
+        missing = required - spec.keys()
+        unexpected = spec.keys() - required - optional
+        if missing or unexpected:
+            raise ValueError(
+                f"filter {name!r} ({kind}): "
+                + "; ".join(
+                    part
+                    for part in (
+                        f"missing {sorted(missing)}" if missing else "",
+                        f"unexpected {sorted(unexpected)}" if unexpected else "",
+                    )
+                    if part
+                )
+            )
+        if kind == "isochrone":
+            filters[name] = StreamobsSplineFilter(
+                iso_config=dict(spec["reference_isochrone"]), namespace=namespace
+            )
+        elif kind == "box":
+            filters[name] = ColorBoxFilter(
+                color_range=tuple(spec["color_range"]),
+                mag_range=tuple(spec["mag_range"]),
+                namespace=namespace,
+            )
+        else:
+            reference = filters.get(spec["reference"])
+            if not isinstance(reference, StreamobsSplineFilter):
+                raise ValueError(
+                    f"filter {name!r} (shifted_box): reference {spec['reference']!r} "
+                    "must be an isochrone filter defined earlier in the config"
+                )
+            filters[name] = ShiftedColorBoxFilter(
+                reference_filter=reference,
+                color_shift=spec["color_shift"],
+                **(
+                    {"color_width": spec["color_width"]}
+                    if "color_width" in spec
+                    else {}
+                ),
+            )
+    return filters
+
+
 def make_raw_map(
     catalog: pd.DataFrame,
     selected: np.ndarray,

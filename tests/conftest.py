@@ -70,7 +70,10 @@ def write_yaml(tmp_path):
 
     def _write(data: dict, filename: str = "config.yaml"):
         path = tmp_path / filename
-        path.write_text(yaml.safe_dump(data))
+        # sort_keys=False: the default sorts keys alphabetically, which would
+        # silently reorder anything whose order means something -- the filters
+        # section's order is the network's input channel order.
+        path.write_text(yaml.safe_dump(data, sort_keys=False))
         return path
 
     return _write

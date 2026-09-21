@@ -312,6 +312,13 @@ class MatchedFilterConfig:
         distance_value: single distance modulus (if mode is "fixed")
         distance_range: dict with min, max, step (if mode is "scan")
         finalize_config: dict with enabled, smoothing_deg, background_subtract
+        filters: channel name -> filter spec, the input of
+            `matched_filter.build_matched_filters`. Read from the YAML's
+            ``filters`` section; a file without one gets the single isochrone
+            filter its ``reference_isochrone`` names. The order is the input
+            channel order, and loading keeps the file's order -- but a config
+            written with ``yaml.safe_dump`` must pass ``sort_keys=False``, or
+            the filters come out alphabetical and the channels swap.
     """
 
     reference_isochrone: dict
@@ -323,6 +330,7 @@ class MatchedFilterConfig:
     finalize_config: dict = dataclasses.field(
         default_factory=lambda: {"enabled": False}
     )
+    filters: dict = dataclasses.field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path) -> "MatchedFilterConfig":
@@ -350,6 +358,13 @@ class MatchedFilterConfig:
             distance_value=distance.get("value"),
             distance_range=distance_range or None,
             finalize_config=raw.get("finalize", {"enabled": False}),
+            filters=raw.get("filters")
+            or {
+                "good": {
+                    "type": "isochrone",
+                    "reference_isochrone": raw["reference_isochrone"],
+                }
+            },
         )
 
     def distance_moduli(self) -> list[float]:

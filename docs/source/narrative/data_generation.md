@@ -135,7 +135,24 @@ bands, distance_modulus) -> bool array`:
 - `ShiftedColorBoxFilter` is the earlier version of that companion, defined
   relative to a reference filter's polygon. It moves with the isochrone, the
   bands and the trial distance, and it selects real stream members at the
-  bright end; it is kept for the tests that compare the two.
+  bright end; it is kept so the models trained with it can still be re-scored.
+
+Which filters feed the network is configuration, not code:
+{py:func}`~streamgoggles.matched_filter.build_matched_filters` turns a
+`{channel name: spec}` mapping into filters, in channel order, with a `type` of
+`"isochrone"`, `"box"` or `"shifted_box"`. The notebooks pass it their
+`filters_cfg` dict, and `config/matched_filter.yaml` holds the same mapping
+under `filters`:
+
+```yaml
+filters:
+  good: {type: isochrone, reference_isochrone: {age: 12.5, z: 0.0002}}
+  decoy: {type: box, color_range: [1.2, 1.5], mag_range: [18.0, 24.5]}
+```
+
+The order is the channel order, so a config written from Python must use
+`yaml.safe_dump(..., sort_keys=False)`: the default sorts keys alphabetically
+and would swap the channels.
 
 `finalize_full` optionally applies HEALPix-sphere Gaussian smoothing
 (`healpy.smoothing`) and a polynomial background subtraction before a map

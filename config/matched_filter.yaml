@@ -6,6 +6,23 @@ reference_isochrone: {age: 12.5, z: 0.0002}   # age in Gyr, metallicity Z (mass 
                                                 # fixed reference isochrone used to build the
                                                 # matched-filter polygon (streamobs.match_filter.build_match_filter)
 
+# The filters whose star counts form the network's input channels, one channel
+# per filter at each trial distance, IN THIS ORDER (it is the channel order, so
+# write this file by hand or dump it with sort_keys=False). Built by
+# streamgoggles.matched_filter.build_matched_filters, the same function the
+# notebooks' filters_cfg dict goes through. Types:
+#   isochrone    reference_isochrone: {age, z}   -- the real matched filter
+#   box          color_range, mag_range          -- a decoy at fixed limits
+#   shifted_box  reference, color_shift[, color_width]
+#                                                -- the older decoy, placed relative
+#                                                   to an isochrone filter above it
+# The decoy is a negative control: background stars, no stream stars. The fixed
+# box sits redder than any star of the isochrone (g-r -0.5 to ~1.15), so it
+# selects none; g from 18 because brighter stars are saturated and too few.
+filters:
+  good: {type: isochrone, reference_isochrone: {age: 12.5, z: 0.0002}}
+  decoy: {type: box, color_range: [1.2, 1.5], mag_range: [18.0, 24.5]}
+
 bands: [g, r]   # photometric bands entering the color-magnitude selection: color = bands[0] - bands[1],
                 # magnitude axis = bands[0]
 
