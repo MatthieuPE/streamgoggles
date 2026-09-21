@@ -47,7 +47,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from streamgoggles.evaluation.footprint import THRESHOLD_GRID, stream_detection
+from streamgoggles.evaluation.footprint import (
+    THRESHOLD_GRID,
+    detection_at_false_alarm_rate,
+    stream_detection,
+)
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 REPO = Path(__file__).resolve().parents[3]
@@ -365,29 +369,17 @@ MATCHED_TARGETS = (1e-4, 1e-3)
 
 
 def matched_background(frame, keys):
-    """Detection when each model is thresholded at its own background density.
+    """Detection with each group's threshold set by a false-alarm budget.
 
-    For every model the threshold is the first one on THRESHOLD_GRID whose
-    stream-free density is at or below the target, so the models are compared
-    at the same false-alarm rate instead of at the same threshold. Detection
-    here is the ">= 20 flagged pixels" condition alone: the SNR compares the
-    band with the background, which this construction already fixes.
+    A thin adapter over the library's `detection_at_false_alarm_rate`, keeping
+    the ``detected`` column name the figures below use.
     """
-    rows = []
-    for key, group in frame[frame["n_above_band"].notna()].groupby(list(keys)):
-        control = np.sum(np.stack(list(group["n_above_no_stream"])), axis=0)
-        control_pixels = float((group["fp_no_stream"] + group["tn_no_stream"]).sum())
-        density = control / control_pixels
-        flagged = np.stack(list(group["n_above_band"]))
-        for target in MATCHED_TARGETS:
-            reachable = np.flatnonzero(density <= target)
-            if not reachable.size:
-                continue
-            row = dict(zip(keys, key, strict=True))
-            row["target"] = target
-            row["detected"] = (flagged[:, reachable[0]] >= 20).mean()
-            rows.append(row)
-    return pd.DataFrame(rows)
+    table = detection_at_false_alarm_rate(
+        frame, THRESHOLD_GRID, targets=MATCHED_TARGETS, group_by=list(keys)
+    )
+    return table.rename(columns={"detection_fraction": "detected"})[
+        [*keys, "target", "detected"]
+    ]
 
 
 def _wilson(k, n, z=1.0):

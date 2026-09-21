@@ -20,6 +20,7 @@ from streamgoggles.evaluation.footprint import (
     THRESHOLD_GRID,
     background_only_sky,
     band_snr,
+    detection_at_false_alarm_rate,
     detection_metrics,
     evaluate_footprint_realizations,
     plot_confusion_matrix,
@@ -704,6 +705,74 @@ def _detection_rows():
             {**row([0, 0], [0, 0]), "n_above_band": None},
         ]
     )
+
+
+def _budget_rows(model, flagged_by_threshold, control_by_threshold):
+    """Two realizations of one model at one SB, thresholds [0.1, 0.5, 0.9].
+
+    Each realization's stream-free control covers 1000 pixels, so the pooled
+    background density at a threshold is (sum of control counts) / 2000.
+    """
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "model": model,
+                "richness": 33.0,
+                "n_above_band": np.array(flagged),
+                "n_above_no_stream": np.array(control),
+                "fp_no_stream": 0,
+                "tn_no_stream": 1000,
+            }
+            for flagged, control in zip(
+                flagged_by_threshold, control_by_threshold, strict=True
+            )
+        ]
+    )
+
+
+def test_detection_at_false_alarm_rate_picks_each_models_own_threshold():
+    import pandas as pd
+
+    thresholds = np.array([0.1, 0.5, 0.9])
+    # A cautious model: clean already at 0.1, so it is read at 0.1 and both
+    # streams (30 and 25 flagged pixels) pass.
+    cautious = _budget_rows("cautious", [[30, 10, 0], [25, 8, 0]], [[1, 0, 0]] * 2)
+    # A loose model: density 20/2000 = 1e-2 at 0.1 and 2/2000 = 1e-3 at 0.5,
+    # so a 1e-3 budget reads it at 0.5, where only one stream keeps 20 pixels.
+    loose = _budget_rows("loose", [[90, 40, 5], [60, 15, 1]], [[10, 1, 0]] * 2)
+    d = detection_at_false_alarm_rate(
+        pd.concat([cautious, loose]), thresholds, targets=(1e-3,), group_by=["model"]
+    ).set_index("model")
+
+    assert d.loc["cautious", "threshold"] == 0.1
+    assert d.loc["cautious", "detection_fraction"] == 1.0
+    assert d.loc["loose", "threshold"] == 0.5
+    assert d.loc["loose", "background_density"] == pytest.approx(1e-3)
+    assert d.loc["loose", "detection_fraction"] == 0.5
+    # At a fixed 0.5 the loose model would look as good as the cautious one
+    # read at 0.1 does here; the budget is what separates them.
+
+
+def test_detection_at_false_alarm_rate_leaves_out_an_unreachable_budget():
+    thresholds = np.array([0.1, 0.5, 0.9])
+    # Never below 5e-3 even at 0.9: a 1e-3 budget cannot be met on this grid.
+    stubborn = _budget_rows("stubborn", [[50, 40, 30]] * 2, [[20, 12, 5]] * 2)
+    d = detection_at_false_alarm_rate(
+        stubborn, thresholds, targets=(1e-3, 1e-2), group_by=["model"]
+    )
+    assert list(d["target"]) == [1e-2]
+
+
+def test_detection_at_false_alarm_rate_needs_the_control():
+    import pandas as pd
+
+    with pytest.raises(ValueError, match="n_above_no_stream"):
+        detection_at_false_alarm_rate(
+            pd.DataFrame({"richness": [33.0], "n_above_band": [np.array([1])]}),
+            np.array([0.5]),
+        )
 
 
 def test_band_snr_normalizes_by_area_and_floors_the_noise():

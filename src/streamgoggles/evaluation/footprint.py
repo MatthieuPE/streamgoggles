@@ -1117,6 +1117,97 @@ def stream_detection(
     return pd.DataFrame(rows)
 
 
+def detection_at_false_alarm_rate(
+    results: pd.DataFrame,
+    thresholds: np.ndarray,
+    targets: tuple[float, ...] = (1e-4, 1e-3),
+    group_by: list[str] | tuple[str, ...] = ("richness",),
+    min_pixels: int = 20,
+) -> pd.DataFrame:
+    """Fraction of streams detected when the threshold is set by a false-alarm budget.
+
+    A fixed probability threshold puts different models at different
+    false-alarm rates -- two models can flag stream-free sky at rates an order
+    of magnitude apart at 0.5 -- so comparing their detections there mixes
+    what each model can see with how cautious it happens to be. Here each
+    group gets its own threshold: the lowest on ``thresholds`` at which the
+    fraction of stream-free sky it flags (the no-stream control of
+    `evaluate_footprint_realizations`, pooled over the group's realizations)
+    is at most the target. Detection is then read at that threshold.
+
+    One realization counts as detected if at least ``min_pixels`` pixels are
+    flagged within 1 sigma of its track. The SNR condition of
+    `stream_detection` is not applied: it compares the band with the
+    background, and choosing the threshold by background density already
+    fixes that comparison for every group. Realizations without band
+    statistics count as not detected, as in `stream_detection`.
+
+    Group by whatever defines one model: ``("richness",)`` for a single model,
+    or add a seed or configuration column to give each trained model its own
+    threshold before averaging them.
+
+    Parameters:
+        results: output of `evaluate_footprint_realizations` with
+            ``thresholds`` and ``no_stream_control=True``.
+        thresholds: the threshold array passed there, in increasing order.
+        targets: false-alarm budgets, as fractions of stream-free pixels.
+        group_by: columns defining a group.
+        min_pixels: minimum flagged pixels within 1 sigma of the track.
+
+    Returns:
+        DataFrame with the group columns, ``target``, the chosen ``threshold``
+        and the ``background_density`` it achieves, ``n_realizations``,
+        ``n_detected``, ``detection_fraction`` and its Wilson 68% interval
+        ``detection_low``/``detection_high``. A group that never gets down to
+        a target on the grid has no row for it: report how many groups reach
+        each target rather than averaging over a silently shrinking set.
+
+    Raises:
+        ValueError if the band statistics or the no-stream control are missing.
+    """
+    missing = {"n_above_band", "n_above_no_stream"} - set(results.columns)
+    if missing:
+        raise ValueError(
+            f"detection_at_false_alarm_rate needs {sorted(missing)}: run "
+            "evaluate_footprint_realizations with thresholds and no_stream_control=True"
+        )
+    group_by = list(group_by)
+    rows = []
+    for keys, group in results.groupby(group_by):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        control = np.sum(np.stack(list(group["n_above_no_stream"])), axis=0)
+        control_pixels = float((group["fp_no_stream"] + group["tn_no_stream"]).sum())
+        density = control / control_pixels
+        banded = group[group["n_above_band"].notna()]
+        flagged = (
+            np.stack(list(banded["n_above_band"]))
+            if len(banded)
+            else np.empty((0, len(thresholds)))
+        )
+        n = len(group)
+        for target in targets:
+            reachable = np.flatnonzero(density <= target)
+            if not reachable.size:
+                continue
+            k = int(reachable[0])
+            n_detected = int((flagged[:, k] >= min_pixels).sum())
+            low, high = _wilson_interval(n_detected, n)
+            rows.append(
+                {
+                    **dict(zip(group_by, keys, strict=True)),
+                    "target": target,
+                    "threshold": float(thresholds[k]),
+                    "background_density": float(density[k]),
+                    "n_realizations": n,
+                    "n_detected": n_detected,
+                    "detection_fraction": n_detected / n if n else np.nan,
+                    "detection_low": low,
+                    "detection_high": high,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def _wilson_interval(
     successes: int, trials: int, z: float = 1.0
 ) -> tuple[float, float]:
