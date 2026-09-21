@@ -110,10 +110,11 @@ background:
 Two lessons the notebook draws from it. At 0.5 this model is cautious, so its
 detections there understate it; the matched false-alarm rate is the fair
 reading. And on its own training background it flags no stream-free pixel at
-all, so a model's cleanliness must be judged on a sky it never saw. The
-notebook also records an open discrepancy: at SB 33.5 this model sits about 20
-points below the hyperparameter experiment's 19200-window models, which were
-trained with the older shifted decoy box rather than the fixed one used here.
+all, so a model's cleanliness must be judged on a sky it never saw. At SB 33.5
+this one model sits about 20 points below the hyperparameter experiment's six
+fixed-box 19200-window models (60%); the experiment shows the decoy is not the
+cause, so the gap is the sampling of one model on a small evaluation, and the
+experiment's numbers are the ones to quote.
 
 The whole notebook runs in about half an hour on a laptop CPU, most of it the
 19200-window training and the two footprint evaluations.

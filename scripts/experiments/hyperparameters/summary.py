@@ -13,9 +13,10 @@ One figure per statement the page makes:
   6_matched_background.png  every model compared at the same background level,
                          since a fixed 0.5 threshold puts them at very
                          different operating points
-  7_sampling.png         the same models scored on 20 against 100 streams per
+  7_sampling.png         the same models scored on 20, 100 and 500 streams per
                          surface brightness -- evaluation precision, not a
                          difference between models
+  8_decoy.png            the fixed decoy box against the shifted one
 
 Two different uncertainties appear here, drawn differently:
 
@@ -569,6 +570,76 @@ def figure_matched_background(results):
     plt.close(fig)
 
 
+def figure_decoy(results):
+    """8: the fixed decoy box against the shifted one, at a matched 1e-3."""
+    names = {
+        "w4800_sb32-34.5_d2_b12_lr0.002_bs8": (
+            "4800 w, shifted box",
+            "#fdae6b",
+            "o",
+            "--",
+        ),
+        "w4800_sb32-34.5_d2_b12_lr0.002_bs8_boxdecoy": (
+            "4800 w, fixed box",
+            "#e6550d",
+            "o",
+            "-",
+        ),
+        "w19200_sb32-34.5_d2_b12_lr0.002_bs8": (
+            "19200 w, shifted box",
+            "#9ecae1",
+            "s",
+            "--",
+        ),
+        "w19200_sb32-34.5_d2_b12_lr0.002_bs8_boxdecoy": (
+            "19200 w, fixed box",
+            "#08519c",
+            "s",
+            "-",
+        ),
+    }
+    subset = results[results.configuration.isin(names)]
+    if subset.empty or subset.configuration.nunique() < len(names):
+        return
+    # Each trained model gets its own threshold, then the streams detected by
+    # the models of one configuration are pooled, so the Wilson bar reflects
+    # every stream behind the point.
+    matched = detection_at_false_alarm_rate(
+        subset,
+        THRESHOLD_GRID,
+        targets=(1e-3,),
+        group_by=["configuration", "seed", "richness"],
+    )
+    fig, ax = plt.subplots(figsize=(8, 5.2))
+    for i, (name, (text, color, marker, ls)) in enumerate(names.items()):
+        pooled = (
+            matched[matched.configuration == name]
+            .groupby("richness")[["n_detected", "n_realizations"]]
+            .sum()
+        )
+        k = pooled["n_detected"].to_numpy()
+        n = pooled["n_realizations"].to_numpy()
+        y = k / n
+        low, high = np.array([_wilson(a, b) for a, b in zip(k, n, strict=True)]).T
+        ax.errorbar(
+            pooled.index + (i - 1.5) * 0.02,
+            y,
+            yerr=[np.clip(y - low, 0, None), np.clip(high - y, 0, None)],
+            marker=marker,
+            color=color,
+            ls=ls,
+            capsize=2.5,
+            lw=1.7,
+            label=text,
+        )
+    decorate(ax)
+    legend(ax)
+    ax.set_title("Decoy channel, at 1e-3 of stream-free sky flagged", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(FIGURES / "8_decoy.png", dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     results = load()
     table = detection(results)
@@ -580,6 +651,7 @@ def main():
     figure_ensemble(results, per_seed)
     figure_matched_background(results)
     figure_sampling(results)
+    figure_decoy(results)
     pd.set_option("display.width", 220)
     print("== streams detected at threshold 0.5 (all seeds of each configuration)")
     print(

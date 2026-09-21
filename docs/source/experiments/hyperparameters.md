@@ -13,9 +13,9 @@ beyond matter, not only at 33. How detectable a real stream is will also
 depend on where it lies (survey depth, extinction, footprint edges), which
 these simulations do not vary.
 
-**Status.** Training range, training length, network size and model averaging
-are done: 58 trainings, up to 6 seeds per configuration, each scored on 20
-injected streams at each of 6 surface brightnesses. Learning rate and batch
+**Status.** Training range, training length, network size, model averaging and
+the decoy channel are done: 70 trainings, up to 6 seeds per configuration, each
+scored on 20 injected streams at each of 6 surface brightnesses. Learning rate and batch
 size are not varied yet.
 
 ## Starting point
@@ -463,6 +463,56 @@ to deploy — needs a few hundred per point before a 10-point difference means
 anything. Evaluation streams are simulated on demand and cost 0.5 to 0.9 s
 each, so this is a compute choice, not a limit of the data.
 
+### 8. The fixed decoy box changes nothing
+
+Every model in sections 1-7 was trained with the older decoy channel, a
+colour-magnitude box shifted off the isochrone filter's polygon. The notebooks
+now use a fixed box at absolute limits (colour 1.2-1.5, g 18-24.5), which
+selects no stream star at all and is the same selection at every trial distance
+(see {doc}`../narrative/data_generation`). Since that changes an input channel,
+the two configurations the conclusion rests on were retrained with it, 6 seeds
+each, and scored exactly like the rest of this page.
+
+**Statement.** The fixed decoy costs no sensitivity. At 19200 windows the two
+decoys give the same detection rate to the stream, and at 4800 windows the
+differences go both ways and are not significant. Every conclusion on this page
+holds for the fixed box.
+
+```{image} figures/hyperparameters/8_decoy.png
+:alt: Fraction of streams detected against surface brightness at a matched false-alarm rate of 1e-3, for 4800 and 19200 training windows with the shifted and the fixed decoy box
+:width: 100%
+```
+
+*Fraction of injected streams detected when each trained model is thresholded
+to flag 1e-3 of stream-free sky. Each point pools the streams scored by the six
+trainings of a configuration (120 per surface brightness, fewer where a model
+never reaches the budget), with the Wilson 68% interval on that pooled count.*
+
+| Matched 1e-3 | SB 33 | SB 33.5 | SB 34 | training time |
+|---|---|---|---|---|
+| 19200 w, fixed box | 94% | 60% | 21% | ~10 min |
+| 19200 w, shifted box | 93% | 60% | 22% | ~10 min |
+| 4800 w, fixed box | 87% | 52% | 13% | ~3 min |
+| 4800 w, shifted box | 88% | 44% | 18% | ~3 min |
+
+At SB 33.5 the 19200-window models detect 60 streams out of 100 with either
+decoy; at 4800 windows, 62 of 120 against 53 (Fisher p = 0.30), and at SB 34, 16
+against 22 (p = 0.38). The per-seed spread is also unchanged: 45% to 65% at
+SB 33.5 for the fixed box at 19200 windows, 55% to 65% for the shifted one.
+
+This also settles the discrepancy that prompted the retraining. The first
+fixed-box model, trained and scored in `notebooks/train_model.ipynb`, detected
+40% of SB 33.5 streams at a matched 1e-3 — one model, scored on 30 streams per
+point, on different evaluation skies and with a threshold chosen per surface
+brightness. With six trainings on this page's evaluation, the fixed box gives
+60%. The notebook's number was the sampling of one model on a small evaluation,
+not the decoy.
+
+One practical difference: at threshold 0.5 the quick fixed-box model is more
+cautious (it flags 8e-4 of stream-free sky, against 1.5e-3 with the shifted
+box), so at 0.5 it would look worse than it is. As everywhere on this page, the
+matched false-alarm rate is the fair reading.
+
 ## Conclusion: the configuration to use from here
 
 **The model this experiment selects**, and which the rest of the project should
@@ -474,8 +524,9 @@ start from unless a later experiment overrides it:
 | batch size | 8 | {doc}`loss_selection` |
 | background fraction | 0.05 | {doc}`loss_selection` |
 | magnitude range (g, r) | 16-24.5 | catalog cut, fixed here |
+| decoy channel | fixed box, colour 1.2-1.5, g 18-24.5 | section 8 |
 | **training surface brightness** | **32, 33, 33.5, 34, 34.5** | sections 1, 6 |
-| **training length** | **4800 windows while exploring; 19200 for final results** | sections 2, 5, 6 |
+| **training length** | **4800 windows while exploring (~3 min); 19200 for final results (~10 min)** | sections 2, 5, 6, 8 |
 | **network** | **depth 2, base width 12** | section 3 |
 | **deployment** | **one model** | section 5 |
 | learning rate | 2e-3 | not varied yet |
@@ -485,7 +536,7 @@ Written as a decision list, strongest first:
 
 1. **Explore with 4800 windows, report with 19200.** Two tiers, because
    training time multiplies across every experiment still to come (each needs
-   several seeds per parameter value). The quick model — about 4 minutes — is
+   several seeds per parameter value). The quick model — about 3 minutes — is
    the tool for exploring, on the assumption that it ranks configurations the
    way the long one would. That assumption is only partly tested: the training
    range ranked the same at 1200 and 4800 windows, but no comparison has been
@@ -500,7 +551,7 @@ Written as a decision list, strongest first:
    beats four averaged 4800-window trainings of the same total cost (36%) and
    matches six of them (55%), with one forward pass instead of six. Training
    longer also removes most of the seed lottery that averaging was meant to
-   fix. It costs about 11 minutes on this laptop.
+   fix. It costs about 10 minutes on this laptop.
 3. **Do not average short trainings instead.** Averaging six 4800-window models
    does help against one of them (37% → 55% at a matched 1e-3), but it costs
    more training than one long model and gets no further. It is kept as a
@@ -520,41 +571,40 @@ Written as a decision list, strongest first:
    strict budget of 1e-4, no model on this page gets past about a third of
    SB 33.5 streams, so the budget matters as much as the model.
 
-**What the final configuration achieves**: one 19200-window training, mean over its
-six trainings (120 injected streams per surface brightness), on a background
-the models never saw:
+**What the final configuration achieves**: one 19200-window training with the
+fixed decoy box, mean over six trainings (120 injected streams per surface
+brightness), on a background the models never saw:
 
 | Surface brightness | detected at threshold 0.5 | detected at a background density of 1e-3 |
 |---|---|---|
 | 32 | 100% | 100% |
-| 33 | 95% | 92% |
-| 33.5 | 62% | 60% |
-| 34 | 28% | 22% |
-| 34.5 | 6% | 3% |
+| 33 | 93% | 94% |
+| 33.5 | 58% | 60% |
+| 34 | 21% | 21% |
+| 34.5 | 3% | 1% |
 
-At threshold 0.5 it flags about 1e-3 of stream-free sky. Against the stated goal
-— most streams at SB 33, a gradual decline through SB 34 rather than a cliff —
-it reaches the first and roughly half of the second: SB 33 is essentially
-solved, SB 33.5 is detected more often than not, and SB 34 about one stream in
-four. The DES 2018 targets at SB 34 to 34.3 are therefore partially in reach,
-and not yet at the rate a survey search would want.
+At threshold 0.5 it flags about 1e-3 of stream-free sky. The quick 4800-window
+model gives 87%, 52% and 13% at SB 33, 33.5 and 34 at the same false-alarm
+rate. Against the stated goal — most streams at SB 33, a gradual decline
+through SB 34 rather than a cliff — the final model reaches the first and
+roughly half of the second: SB 33 is essentially solved, SB 33.5 is detected
+more often than not, and SB 34 about one stream in five.
+
+**These are known-location rates.** Each stream is judged along its own,
+known track. That is the right measure for recovering streams whose position is
+already known — the first real-data target, the DES 2018 streams found by
+visual inspection. A blind search for new streams tries every position and
+orientation, and would need a stricter, look-elsewhere-corrected threshold;
+that belongs to the discovery stage, after validation on real data.
 
 **What is not settled and should not be assumed:**
 
-- **The decoy channel changed after these models were trained.** Every model on
-  this page used the older shifted decoy box; the notebooks now use a fixed
-  colour-magnitude box. The one 19200-window model trained with the fixed box
-  so far (`notebooks/train_model.ipynb`) detects 97%, 40% and 17% of streams at
-  SB 33, 33.5 and 34 at a matched 1e-3, against 92%, 60% and 22% here. SB 33.5
-  is below all six of this page's seeds. One model on 30 streams per point
-  cannot say whether that is the decoy or chance; retraining this configuration
-  with the fixed box over several seeds is the test, and until it is run the
-  numbers above describe the old inputs.
 - The learning rate and batch size were never varied, and averaging several
   long trainings is untested.
 - The threshold has no tuned value yet.
 - Every number here is for one stream shape at one distance, so nothing above
-  is guaranteed to hold once the stream parameters vary.
+  is guaranteed to hold once the stream parameters vary — which the DES 2018
+  streams will require, since their distances, widths and lengths differ.
 
 ## Caveats
 
