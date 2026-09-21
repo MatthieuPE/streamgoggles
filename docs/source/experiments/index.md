@@ -16,16 +16,20 @@ has not been varied yet and is a default rather than a result.
 | batch size | 8 | {doc}`loss_selection` |
 | background fraction | 0.05 | {doc}`loss_selection` |
 | training surface brightness | 32, 33, 33.5, 34, 34.5 | {doc}`hyperparameters` |
-| training length | 19200 windows | {doc}`hyperparameters` |
+| training length | 4800 windows while exploring (~4 min); 19200 for final results (~16 min) | {doc}`hyperparameters` |
 | network | U-Net, depth 2, base width 12, sigmoid head | {doc}`hyperparameters` |
 | deployment | one model (averaging short trainings is an equivalent but costlier fallback) | {doc}`hyperparameters` |
 | threshold | chosen from a false-alarm budget, not fixed at 0.5 | {doc}`hyperparameters` |
 | learning rate | 2e-3 (not varied yet) | — |
 
-That model detects 95% of injected streams at SB 33, 62% at SB 33.5 and 28% at
-SB 34 at threshold 0.5, on a background it never saw, flagging about 1e-3 of
-stream-free sky. At a matched false-alarm rate of 1e-3 it is the best model the
-experiments found: 92%, 60% and 22%.
+The final (19200-window) model detects 95% of injected streams at SB 33, 62% at
+SB 33.5 and 28% at SB 34 at threshold 0.5, on a background it never saw,
+flagging about 1e-3 of stream-free sky. At a matched false-alarm rate of 1e-3 it
+is the best model the experiments found: 92%, 60% and 22%. The quick
+(4800-window) model, at a quarter of the training time, finds 44% at SB 33.5 at
+the same false-alarm rate; use it to explore, assuming it ranks configurations
+as the long one would (tested only across 1200 and 4800 windows so far), and
+re-measure final numbers with the long one.
 
 ## Shared protocol
 

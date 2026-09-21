@@ -475,7 +475,7 @@ start from unless a later experiment overrides it:
 | background fraction | 0.05 | {doc}`loss_selection` |
 | magnitude range (g, r) | 16-24.5 | catalog cut, fixed here |
 | **training surface brightness** | **32, 33, 33.5, 34, 34.5** | sections 1, 6 |
-| **training length** | **19200 windows** (40 epochs × 480) | sections 2, 5, 6 |
+| **training length** | **4800 windows while exploring; 19200 for final results** | sections 2, 5, 6 |
 | **network** | **depth 2, base width 12** | section 3 |
 | **deployment** | **one model** | section 5 |
 | learning rate | 2e-3 | not varied yet |
@@ -483,33 +483,44 @@ start from unless a later experiment overrides it:
 
 Written as a decision list, strongest first:
 
-1. **Train one model on 19200 windows.** At a matched false-alarm rate this is
+1. **Explore with 4800 windows, report with 19200.** Two tiers, because
+   training time multiplies across every experiment still to come (each needs
+   several seeds per parameter value). The quick model — about 4 minutes — is
+   the tool for exploring, on the assumption that it ranks configurations the
+   way the long one would. That assumption is only partly tested: the training
+   range ranked the same at 1200 and 4800 windows, but no comparison has been
+   repeated at 19200. It also understates the faint end (44% of SB 33.5 streams at a
+   matched 1e-3, against 60%), and its seeds scatter twice as much, so: use
+   about six seeds per quick comparison, treat its numbers as relative, and
+   re-measure anything that goes into a final statement with the long model —
+   or switch to the long model when a task turns out to need its sensitivity.
+2. **The final model is one training on 19200 windows.** At a matched false-alarm rate this is
    the best model on the page: SB 33.5 detected at 60% on average and 55% to 65%
    whichever seed it gets, where a 4800-window training gets 35% to 55%. It
    beats four averaged 4800-window trainings of the same total cost (36%) and
    matches six of them (55%), with one forward pass instead of six. Training
    longer also removes most of the seed lottery that averaging was meant to
    fix. It costs about 11 minutes on this laptop.
-2. **Do not average short trainings instead.** Averaging six 4800-window models
+3. **Do not average short trainings instead.** Averaging six 4800-window models
    does help against one of them (37% → 55% at a matched 1e-3), but it costs
    more training than one long model and gets no further. It is kept as a
    fallback, not a default. Averaging several *19200-window* trainings is the
    untested combination and the obvious next thing to try if more sensitivity
    is needed (see below).
-3. **Train on SB 32-34.5**, bracketing the SB 33-34 target rather than matching
+4. **Train on SB 32-34.5**, bracketing the SB 33-34 target rather than matching
    it. At a fixed threshold this looks like the biggest effect on the page; at
    a matched false-alarm rate most of it is the operating point moving. Keep it
    anyway: the narrow range saturates around 35% at SB 33.5 whatever threshold
    it is given, and every model that does better is trained on the wider range.
-4. **Keep the network small**: depth 2, base width 12. Depth 3 and 4 and width
+5. **Keep the network small**: depth 2, base width 12. Depth 3 and 4 and width
    24 changed nothing outside the seed spread, so the cheapest network wins.
-5. **Choose the threshold last, from an acceptable false-alarm rate.** At 0.5,
+6. **Choose the threshold last, from an acceptable false-alarm rate.** At 0.5,
    models that differ only in training length sit at false-alarm rates an order
    of magnitude apart, and comparing them there points the wrong way. At the
    strict budget of 1e-4, no model on this page gets past about a third of
    SB 33.5 streams, so the budget matters as much as the model.
 
-**What this configuration achieves**: one 19200-window training, mean over its
+**What the final configuration achieves**: one 19200-window training, mean over its
 six trainings (120 injected streams per surface brightness), on a background
 the models never saw:
 
