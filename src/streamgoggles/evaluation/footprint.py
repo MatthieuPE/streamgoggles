@@ -21,6 +21,10 @@ HEALPix map. This module evaluates that path:
    contamination and contrast at any threshold, from the per-threshold
    counts: the area-independent view used to compare models
    (docs: "Experiments and tests").
+6. `stream_detection` / `plot_stream_detection` -- per stream rather than
+   per pixel: the fraction of injected streams showing a line of flagged
+   pixels along their track, denser than stream-shaped bands of background
+   (`track_band_statistics`).
 
 Everything is per-pixel on HEALPix, so a map containing several streams is
 scored exactly like a map containing one: the label is the union, and each
@@ -300,6 +304,166 @@ def background_only_sky(injector: "StreamInjector", full_sky: dict) -> dict:
     }
 
 
+def stream_frame_coordinates(
+    vectors: np.ndarray, center_ra: float, center_dec: float, rotation_deg: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Positions in a stream's own frame, (phi1 along the track, phi2 across).
+
+    The frame is the one `injector.place_stream_in_footprint` uses: a great
+    circle through (center_ra, center_dec), its phi1 axis leaving the centre
+    at position angle ``rotation_deg`` (east of north), phi1 = phi2 = 0 at the
+    centre.
+
+    Parameters:
+        vectors: (N, 3) unit vectors (e.g. ``hp.pix2vec`` of HEALPix pixels).
+        center_ra, center_dec, rotation_deg: the placement, in degrees
+            (``inject_stream_full_sky(...)["placement"]``).
+
+    Returns:
+        (phi1, phi2) in degrees, each of shape (N,).
+    """
+    ra, dec = np.radians(center_ra), np.radians(center_dec)
+    origin = np.array([np.cos(dec) * np.cos(ra), np.cos(dec) * np.sin(ra), np.sin(dec)])
+    north = np.array(
+        [-np.sin(dec) * np.cos(ra), -np.sin(dec) * np.sin(ra), np.cos(dec)]
+    )
+    east = np.array([-np.sin(ra), np.cos(ra), 0.0])
+    theta = np.radians(rotation_deg)
+    along = np.cos(theta) * north + np.sin(theta) * east
+    pole = np.cross(origin, along)
+    phi2 = np.degrees(np.arcsin(np.clip(vectors @ pole, -1.0, 1.0)))
+    phi1 = np.degrees(np.arctan2(vectors @ along, vectors @ origin))
+    return phi1, phi2
+
+
+def track_band_statistics(
+    prediction: np.ndarray,
+    control_prediction: np.ndarray,
+    covered: np.ndarray,
+    placement: dict,
+    width: float,
+    length: float,
+    thresholds: np.ndarray,
+    rng: np.random.Generator,
+    n_null_bands: int = 200,
+    min_band_coverage: float = 0.9,
+) -> dict:
+    """Flagged pixels along a stream's track, against stream-shaped background bands.
+
+    A stream is found in a map by a line of flagged pixels denser than the
+    background's false alarms, not by any single pixel. For one realization:
+
+    - **band**: pixels within 1 width-sigma of the injected track
+      (``|phi2| < width``, ``|phi1| <= length / 2``) on the map with the
+      stream;
+    - **side bands**: pixels between 1 and 2 sigma (``width <= |phi2| <
+      2 width``), just beside the track. They are not pure background: about
+      27% of a Gaussian stream's stars fall there, and the prediction can be
+      wider than the stream;
+    - **background bands**: the same 1-sigma band shape placed at
+      ``n_null_bands`` random positions and orientations on the map with the
+      stream removed (``control_prediction``), keeping only placements with
+      at least ``min_band_coverage`` of the band's area scored. Their flagged
+      densities are the distribution the background alone produces in a
+      region of the stream's shape, clustering of false alarms included.
+
+    Densities (flagged pixels / band pixels) are compared rather than counts,
+    since bands cut by the footprint have fewer pixels.
+
+    Parameters:
+        prediction, control_prediction: stitched HEALPix probability maps with
+            and without the stream (NaN where not scored).
+        covered: bool HEALPix mask of pixels any tile reached.
+        placement: ``{"center_ra", "center_dec", "rotation_deg"}``.
+        width: the stream's cross-track Gaussian sigma, degrees.
+        length: the stream's length, degrees.
+        thresholds: probability thresholds (e.g. `THRESHOLD_GRID`).
+        rng: generator for the background-band placements.
+        n_null_bands: number of background bands.
+        min_band_coverage: minimum scored fraction of a background band.
+
+    Returns:
+        dict with, per threshold (arrays over ``thresholds``):
+        ``n_above_band`` and ``n_above_side`` (flagged counts in the band and
+        side bands), ``null_density_mean``, ``null_density_std``,
+        ``null_density_median`` and ``null_density_high`` (mean, standard
+        deviation, median and 97.7th percentile of the background-band
+        densities) and
+        ``band_p_value`` (fraction of background bands at least as dense as
+        the stream band, with a +1 correction); and the scalars
+        ``band_pixels``, ``side_pixels``, ``n_null_bands``.
+    """
+    nside = hp.npix2nside(len(prediction))
+    scored = covered & np.isfinite(prediction)
+    pixels = np.flatnonzero(scored)
+    vectors = np.array(hp.pix2vec(nside, pixels)).T
+    phi1, phi2 = stream_frame_coordinates(vectors, **placement)
+    along = np.abs(phi1) <= length / 2
+    in_band = along & (np.abs(phi2) < width)
+    in_side = along & (np.abs(phi2) >= width) & (np.abs(phi2) < 2 * width)
+    values = prediction[pixels]
+    n_above_band = _count_above(values[in_band], thresholds)
+    n_above_side = _count_above(values[in_side], thresholds)
+
+    band_area = 2 * width * length
+    expected_pixels = band_area / hp.nside2pixarea(nside, degrees=True)
+    control_scored = covered & np.isfinite(control_prediction)
+    control_pixels = np.flatnonzero(control_scored)
+    control_vectors = np.array(hp.pix2vec(nside, control_pixels)).T
+    control_values = control_prediction[control_pixels]
+    reach = np.cos(np.radians(np.hypot(length / 2, width)))
+    densities = []
+    attempts = 0
+    while len(densities) < n_null_bands and attempts < 50 * n_null_bands:
+        attempts += 1
+        centre = int(rng.integers(len(control_pixels)))
+        near = np.flatnonzero(control_vectors @ control_vectors[centre] >= reach)
+        centre_ra, centre_dec = hp.pix2ang(nside, control_pixels[centre], lonlat=True)
+        p1, p2 = stream_frame_coordinates(
+            control_vectors[near],
+            float(centre_ra),
+            float(centre_dec),
+            float(rng.uniform(0.0, 360.0)),
+        )
+        members = near[(np.abs(p1) <= length / 2) & (np.abs(p2) < width)]
+        if len(members) < min_band_coverage * expected_pixels:
+            continue
+        densities.append(
+            _count_above(control_values[members], thresholds) / len(members)
+        )
+    null = np.array(densities) if densities else np.full((0, len(thresholds)), np.nan)
+
+    band_density = n_above_band / max(int(in_band.sum()), 1)
+    at_least_as_dense = (null >= band_density[None, :]).sum(axis=0)
+    empty = np.full(len(thresholds), np.nan)
+    return {
+        "band_pixels": int(in_band.sum()),
+        "side_pixels": int(in_side.sum()),
+        "n_null_bands": len(null),
+        "n_above_band": n_above_band,
+        "n_above_side": n_above_side,
+        "null_density_mean": null.mean(axis=0) if len(null) else empty,
+        "null_density_std": null.std(axis=0) if len(null) else empty,
+        "null_density_median": np.median(null, axis=0) if len(null) else empty,
+        "null_density_high": np.percentile(null, 97.7, axis=0) if len(null) else empty,
+        "band_p_value": (1 + at_least_as_dense) / (len(null) + 1),
+    }
+
+
+_BAND_KEYS = (
+    "band_pixels",
+    "side_pixels",
+    "n_null_bands",
+    "n_above_band",
+    "n_above_side",
+    "null_density_mean",
+    "null_density_std",
+    "null_density_median",
+    "null_density_high",
+    "band_p_value",
+)
+
+
 def evaluate_footprint_realizations(
     model,
     injector: "StreamInjector",
@@ -314,6 +478,7 @@ def evaluate_footprint_realizations(
     device: str = "cpu",
     no_stream_control: bool = True,
     thresholds: np.ndarray | None = None,
+    n_null_bands: int = 200,
 ) -> pd.DataFrame:
     """Score the model on many independent realizations of each parameter set.
 
@@ -352,6 +517,13 @@ def evaluate_footprint_realizations(
             ``n_above_background`` (see `score_footprint`), and, with the
             control, ``n_above_no_stream``: counts above each threshold on
             the no-stream sky, out of ``fp_no_stream + tn_no_stream`` pixels.
+            With both ``thresholds`` and the control, and a stream with a
+            ``width`` and ``length`` (uniform morphology), each row also holds
+            `track_band_statistics`: flagged pixels within 1 sigma of the
+            track and between 1 and 2 sigma, and the densities of
+            ``n_null_bands`` stream-shaped bands on the no-stream sky
+            (used by `stream_detection`).
+        n_null_bands: number of background bands per realization.
 
     Returns:
         DataFrame, one row per realization: every key of the parameter set,
@@ -391,6 +563,7 @@ def evaluate_footprint_realizations(
                                 "n_above_stream",
                                 "n_above_background",
                                 "n_above_no_stream",
+                                *_BAND_KEYS,
                             )
                             if no_stream_control
                             else ("n_above_stream", "n_above_background"),
@@ -445,6 +618,24 @@ def evaluate_footprint_realizations(
                 if thresholds is not None:
                     # The control has no stream: every pixel is background.
                     row["n_above_no_stream"] = scores["n_above_background"]
+                    if "width" in params and "length" in params:
+                        row.update(
+                            track_band_statistics(
+                                maps["prediction"],
+                                control["prediction"],
+                                maps["covered"],
+                                full_sky["placement"],
+                                float(params["width"]),
+                                float(params["length"]),
+                                thresholds,
+                                np.random.default_rng(
+                                    [seed, set_index, realization, 1]
+                                ),
+                                n_null_bands,
+                            )
+                        )
+                    else:
+                        row.update(dict.fromkeys(_BAND_KEYS, None))
             rows.append(row)
     return pd.DataFrame(rows)
 
@@ -770,3 +961,316 @@ def plot_detection_metrics(
         ax.grid(alpha=0.3, which="both" if log else "major")
     axes[0].legend(fontsize=8)
     return axes
+
+
+def band_snr(
+    flagged: np.ndarray,
+    band_pixels: np.ndarray,
+    background_mean: np.ndarray,
+    background_std: np.ndarray,
+) -> np.ndarray:
+    """Signal-to-noise of flagged pixels along a track, normalized by area.
+
+    ``SNR = (rho_band - <rho_bg>) / sigma_bg``, with ``rho_band = flagged /
+    band_pixels`` the flagged density within 1 sigma of the track, and
+    ``<rho_bg>``, ``sigma_bg`` the mean and scatter of the flagged density in
+    background bands of the same shape (`track_band_statistics`). The scatter
+    is floored at the Poisson noise of the expected background count, and at
+    one pixel when the background is clean: ``sqrt(max(<rho_bg> N, 1)) / N``
+    for a band of N pixels, so an empty background never gives an infinite
+    SNR.
+
+    All arguments broadcast; returns the SNR (NaN where ``band_pixels`` is 0).
+    """
+    flagged = np.asarray(flagged, dtype=float)
+    n = np.asarray(band_pixels, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        density = flagged / n
+        floor = np.sqrt(np.maximum(background_mean * n, 1.0)) / n
+        noise = np.maximum(background_std, floor)
+        snr = (density - background_mean) / noise
+    return np.where(n > 0, snr, np.nan)
+
+
+def stream_detection(
+    results: pd.DataFrame,
+    thresholds: np.ndarray,
+    at: tuple[float, ...] = (0.5,),
+    min_pixels: int = 20,
+    min_snr: float = 2.0,
+    group_by: list[str] | tuple[str, ...] = ("richness",),
+) -> pd.DataFrame:
+    """Fraction of injected streams detected, per group and threshold.
+
+    A search finds a stream as a line of flagged pixels denser than the
+    background's false alarms, so detection is judged along the track
+    (`track_band_statistics`). One realization is **detected** at threshold t
+    if, within 1 width-sigma of its track:
+
+    - at least ``min_pixels`` pixels are flagged (a real search would not
+      follow up a handful of pixels), and
+    - the flagged density stands out from the background: `band_snr` >=
+      ``min_snr``, comparing densities (flagged pixels per pixel of area) in
+      the band and in stream-shaped bands placed on the same sky without the
+      stream.
+
+    Realizations without band statistics (no tile, or a stream without
+    width/length) count as not detected, reported in ``n_without_band``.
+
+    Parameters:
+        results: output of `evaluate_footprint_realizations` with
+            ``thresholds`` and ``no_stream_control=True``.
+        thresholds: the threshold array passed there.
+        at: thresholds to report (nearest grid values).
+        min_pixels: minimum flagged pixels within 1 sigma of the track.
+        min_snr: minimum `band_snr`.
+        group_by: columns defining a group.
+
+    Returns:
+        DataFrame with the group columns, ``threshold``, ``n_realizations``,
+        ``n_without_band``, ``n_detected``, ``detection_fraction`` and its
+        Wilson 68% interval ``detection_low``/``detection_high``;
+        ``median_snr``; mean counts ``flagged_in_band`` (within 1 sigma),
+        ``flagged_in_side`` (1-2 sigma), ``band_pixels``, ``side_pixels``;
+        pooled densities ``band_density``, ``side_density``, and the mean
+        ``background_density`` of the background bands; ``local_contrast``
+        (band / side density) and ``background_contrast`` (band / background
+        density), NaN when the denominator is 0; and ``median_p_value``, the
+        median fraction of background bands at least as dense as the stream
+        band.
+
+    Raises:
+        ValueError if the band statistics are missing.
+    """
+    if "n_above_band" not in results:
+        raise ValueError(
+            "stream_detection needs track band statistics: run "
+            "evaluate_footprint_realizations with thresholds and no_stream_control=True"
+        )
+    group_by = list(group_by)
+    indices = sorted({int(np.argmin(np.abs(thresholds - t))) for t in at})
+    rows = []
+    for keys, group in results.groupby(group_by):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        banded = group[group["n_above_band"].notna()]
+        n = len(group)
+
+        def column(name, k, frame=banded):
+            return np.array([row[k] for row in frame[name]], dtype=float)
+
+        for k in indices:
+            flagged = column("n_above_band", k)
+            side = column("n_above_side", k)
+            background_mean = column("null_density_mean", k)
+            band_pixels = banded["band_pixels"].to_numpy(dtype=float)
+            side_pixels = banded["side_pixels"].to_numpy(dtype=float)
+            snr = band_snr(
+                flagged, band_pixels, background_mean, column("null_density_std", k)
+            )
+            detected = (flagged >= min_pixels) & (snr >= min_snr)
+            n_detected = int(detected.sum())
+            low, high = _wilson_interval(n_detected, n)
+            band_density = (
+                flagged.sum() / band_pixels.sum() if band_pixels.sum() else np.nan
+            )
+            side_density = (
+                side.sum() / side_pixels.sum() if side_pixels.sum() else np.nan
+            )
+            background_density = (
+                float(np.nanmean(background_mean)) if len(background_mean) else np.nan
+            )
+            rows.append(
+                {
+                    **dict(zip(group_by, keys, strict=True)),
+                    "threshold": float(thresholds[k]),
+                    "n_realizations": n,
+                    "n_without_band": n - len(banded),
+                    "n_detected": n_detected,
+                    "detection_fraction": n_detected / n if n else np.nan,
+                    "detection_low": low,
+                    "detection_high": high,
+                    "median_snr": float(np.nanmedian(snr)) if len(snr) else np.nan,
+                    "flagged_in_band": float(flagged.mean())
+                    if len(flagged)
+                    else np.nan,
+                    "flagged_in_side": float(side.mean()) if len(side) else np.nan,
+                    "band_pixels": float(band_pixels.mean())
+                    if len(band_pixels)
+                    else np.nan,
+                    "side_pixels": float(side_pixels.mean())
+                    if len(side_pixels)
+                    else np.nan,
+                    "band_density": band_density,
+                    "side_density": side_density,
+                    "background_density": background_density,
+                    "local_contrast": band_density / side_density
+                    if side_density
+                    else np.nan,
+                    "background_contrast": band_density / background_density
+                    if background_density
+                    else np.nan,
+                    "median_p_value": float(np.median(column("band_p_value", k)))
+                    if len(banded)
+                    else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def detection_at_false_alarm_rate(
+    results: pd.DataFrame,
+    thresholds: np.ndarray,
+    targets: tuple[float, ...] = (1e-4, 1e-3),
+    group_by: list[str] | tuple[str, ...] = ("richness",),
+    min_pixels: int = 20,
+) -> pd.DataFrame:
+    """Fraction of streams detected when the threshold is set by a false-alarm budget.
+
+    A fixed probability threshold puts different models at different
+    false-alarm rates -- two models can flag stream-free sky at rates an order
+    of magnitude apart at 0.5 -- so comparing their detections there mixes
+    what each model can see with how cautious it happens to be. Here each
+    group gets its own threshold: the lowest on ``thresholds`` at which the
+    fraction of stream-free sky it flags (the no-stream control of
+    `evaluate_footprint_realizations`, pooled over the group's realizations)
+    is at most the target. Detection is then read at that threshold.
+
+    One realization counts as detected if at least ``min_pixels`` pixels are
+    flagged within 1 sigma of its track. The SNR condition of
+    `stream_detection` is not applied: it compares the band with the
+    background, and choosing the threshold by background density already
+    fixes that comparison for every group. Realizations without band
+    statistics count as not detected, as in `stream_detection`.
+
+    Group by whatever defines one model: ``("richness",)`` for a single model,
+    or add a seed or configuration column to give each trained model its own
+    threshold before averaging them.
+
+    Parameters:
+        results: output of `evaluate_footprint_realizations` with
+            ``thresholds`` and ``no_stream_control=True``.
+        thresholds: the threshold array passed there, in increasing order.
+        targets: false-alarm budgets, as fractions of stream-free pixels.
+        group_by: columns defining a group.
+        min_pixels: minimum flagged pixels within 1 sigma of the track.
+
+    Returns:
+        DataFrame with the group columns, ``target``, the chosen ``threshold``
+        and the ``background_density`` it achieves, ``n_realizations``,
+        ``n_detected``, ``detection_fraction`` and its Wilson 68% interval
+        ``detection_low``/``detection_high``. A group that never gets down to
+        a target on the grid has no row for it: report how many groups reach
+        each target rather than averaging over a silently shrinking set.
+
+    Raises:
+        ValueError if the band statistics or the no-stream control are missing.
+    """
+    missing = {"n_above_band", "n_above_no_stream"} - set(results.columns)
+    if missing:
+        raise ValueError(
+            f"detection_at_false_alarm_rate needs {sorted(missing)}: run "
+            "evaluate_footprint_realizations with thresholds and no_stream_control=True"
+        )
+    group_by = list(group_by)
+    rows = []
+    for keys, group in results.groupby(group_by):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        control = np.sum(np.stack(list(group["n_above_no_stream"])), axis=0)
+        control_pixels = float((group["fp_no_stream"] + group["tn_no_stream"]).sum())
+        density = control / control_pixels
+        banded = group[group["n_above_band"].notna()]
+        flagged = (
+            np.stack(list(banded["n_above_band"]))
+            if len(banded)
+            else np.empty((0, len(thresholds)))
+        )
+        n = len(group)
+        for target in targets:
+            reachable = np.flatnonzero(density <= target)
+            if not reachable.size:
+                continue
+            k = int(reachable[0])
+            n_detected = int((flagged[:, k] >= min_pixels).sum())
+            low, high = _wilson_interval(n_detected, n)
+            rows.append(
+                {
+                    **dict(zip(group_by, keys, strict=True)),
+                    "target": target,
+                    "threshold": float(thresholds[k]),
+                    "background_density": float(density[k]),
+                    "n_realizations": n,
+                    "n_detected": n_detected,
+                    "detection_fraction": n_detected / n if n else np.nan,
+                    "detection_low": low,
+                    "detection_high": high,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _wilson_interval(
+    successes: int, trials: int, z: float = 1.0
+) -> tuple[float, float]:
+    """Wilson score interval for a binomial fraction (z=1: ~68%)."""
+    if trials == 0:
+        return np.nan, np.nan
+    p = successes / trials
+    denominator = 1 + z**2 / trials
+    centre = (p + z**2 / (2 * trials)) / denominator
+    half = z * np.sqrt(p * (1 - p) / trials + z**2 / (4 * trials**2)) / denominator
+    return max(centre - half, 0.0), min(centre + half, 1.0)
+
+
+def plot_stream_detection(
+    detection: pd.DataFrame,
+    param: str = "richness",
+    ax=None,
+    highlight: float | None = 0.5,
+    training_range: tuple[float, float] | None = None,
+):
+    """Plot the fraction of streams detected against a parameter.
+
+    One line per threshold, with Wilson 68% intervals (the number of
+    realizations per point is small, so the interval matters).
+
+    Parameters:
+        detection: output of `stream_detection`.
+        param: column for the x axis.
+        ax: matplotlib Axes (created if None).
+        highlight: threshold drawn thicker, or None.
+        training_range: optional (min, max) of ``param`` used in training.
+
+    Returns:
+        The Axes.
+    """
+    import matplotlib.pyplot as plt
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(6.5, 4.2))
+    thresholds = sorted(detection["threshold"].unique())
+    cmap = plt.get_cmap("viridis")
+    for j, threshold in enumerate(thresholds):
+        data = detection[detection["threshold"] == threshold].sort_values(param)
+        emphasis = highlight is not None and np.isclose(threshold, highlight)
+        y = data["detection_fraction"].to_numpy(dtype=float)
+        ax.errorbar(
+            data[param].to_numpy(dtype=float),
+            y,
+            yerr=[
+                np.clip(y - data["detection_low"].to_numpy(dtype=float), 0, None),
+                np.clip(data["detection_high"].to_numpy(dtype=float) - y, 0, None),
+            ],
+            marker="o",
+            capsize=3,
+            color=cmap(j / max(len(thresholds) - 1, 1)),
+            lw=2.6 if emphasis else 1.4,
+            label=f"threshold {threshold:.3g}",
+        )
+    if training_range is not None:
+        ax.axvspan(*training_range, color="0.93", zorder=0)
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_xlabel(param)
+    ax.set_ylabel("fraction of streams detected")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+    return ax

@@ -19,13 +19,19 @@ from streamgoggles.evaluation.completeness_purity import aggregate_over_replicat
 from streamgoggles.evaluation.footprint import (
     THRESHOLD_GRID,
     background_only_sky,
+    band_snr,
+    detection_at_false_alarm_rate,
     detection_metrics,
     evaluate_footprint_realizations,
     plot_confusion_matrix,
     plot_detection_metrics,
     plot_detection_rates,
+    plot_stream_detection,
     score_footprint,
+    stream_detection,
+    stream_frame_coordinates,
     tiles_around_stream,
+    track_band_statistics,
 )
 from streamgoggles.injector import StreamInjector
 from streamgoggles.matched_filter import (
@@ -575,3 +581,275 @@ def test_detection_metrics_matches_the_confusion_counts_end_to_end(injector):
         assert row.S_t == group["tp"].sum() + group["fn"].sum()
         assert row.B_s == group["fp"].sum()
         assert row.B_t == group["fp"].sum() + group["tn"].sum()
+
+
+# ---------------------------------------------------------------------------
+# Track bands and per-stream detection
+# ---------------------------------------------------------------------------
+
+
+def test_stream_frame_coordinates_invert_the_injector_placement():
+    """Recover (phi1, phi2) of a placed stream from its ra/dec, with the same
+    frame convention as injector.place_stream_in_footprint (gala)."""
+    import pandas as pd
+
+    from streamgoggles.injector import place_stream_in_footprint
+
+    nside = 64
+    phi1, phi2 = np.meshgrid(np.linspace(-4, 4, 9), np.linspace(-0.6, 0.6, 7))
+    stream = pd.DataFrame({"phi1": phi1.ravel(), "phi2": phi2.ravel()})
+    footprint = np.zeros(hp.nside2npix(nside), dtype=bool)
+    footprint[hp.ang2pix(nside, 20.0, -35.0, lonlat=True)] = True
+
+    placed = place_stream_in_footprint(
+        stream, footprint, nside, np.random.default_rng(0), rotation_deg=37.0
+    )
+    placement = placed.attrs["placement"]
+    assert placement["rotation_deg"] == 37.0
+
+    vectors = np.array(
+        hp.ang2vec(placed["ra"].to_numpy(), placed["dec"].to_numpy(), lonlat=True)
+    )
+    got_phi1, got_phi2 = stream_frame_coordinates(vectors, **placement)
+    np.testing.assert_allclose(got_phi1, stream["phi1"], atol=1e-6)
+    np.testing.assert_allclose(got_phi2, stream["phi2"], atol=1e-6)
+
+
+def _band_maps(nside=256):
+    """A stream band flagged at 0.9 inside a 15-degree covered disc, empty elsewhere."""
+    npix = hp.nside2npix(nside)
+    placement = {"center_ra": 30.0, "center_dec": -30.0, "rotation_deg": 20.0}
+    width, length = 0.5, 8.0
+    vectors = np.array(hp.pix2vec(nside, np.arange(npix))).T
+    phi1, phi2 = stream_frame_coordinates(vectors, **placement)
+    band = (np.abs(phi1) <= length / 2) & (np.abs(phi2) < width)
+    covered = np.zeros(npix, dtype=bool)
+    centre = hp.ang2vec(placement["center_ra"], placement["center_dec"], lonlat=True)
+    covered[hp.query_disc(nside, centre, np.radians(15.0))] = True
+    prediction = np.where(covered, 0.0, np.nan)
+    prediction[band] = 0.9
+    control = np.where(covered, 0.0, np.nan)
+    return prediction, control, covered, placement, width, length, band
+
+
+def test_track_band_statistics_measures_the_band_and_its_sides():
+    prediction, control, covered, placement, width, length, band = _band_maps()
+    thresholds = np.array([0.5, 0.95])
+    stats = track_band_statistics(
+        prediction,
+        control,
+        covered,
+        placement,
+        width,
+        length,
+        thresholds,
+        np.random.default_rng(0),
+        n_null_bands=50,
+    )
+    assert stats["band_pixels"] == band.sum()
+    assert list(stats["n_above_band"]) == [band.sum(), 0]
+    assert list(stats["n_above_side"]) == [0, 0]
+    assert stats["side_pixels"] > 0
+    assert stats["n_null_bands"] == 50
+    # An empty background: the flagged band beats every background band.
+    assert stats["band_p_value"][0] == pytest.approx(1 / 51)
+    assert list(stats["null_density_median"]) == [0.0, 0.0]
+    # At 0.95 nothing is flagged anywhere: no evidence at all.
+    assert stats["band_p_value"][1] == pytest.approx(1.0)
+
+
+def test_track_band_statistics_background_as_dense_as_the_stream_gives_no_significance():
+    prediction, control, covered, placement, width, length, _ = _band_maps()
+    control = np.where(covered, 0.9, np.nan)  # the background is flagged everywhere
+    stats = track_band_statistics(
+        prediction,
+        control,
+        covered,
+        placement,
+        width,
+        length,
+        np.array([0.5]),
+        np.random.default_rng(0),
+        n_null_bands=30,
+    )
+    assert stats["null_density_median"][0] == pytest.approx(1.0)
+    assert stats["band_p_value"][0] == pytest.approx(1.0)
+
+
+def _detection_rows():
+    """Four realizations at one SB, thresholds [0.1, 0.5], bands of 200 px."""
+    import pandas as pd
+
+    def row(flagged, side, background=(0.0, 0.0), scatter=(0.0, 0.0)):
+        return {
+            "richness": 33.0,
+            "n_above_band": np.array(flagged),
+            "n_above_side": np.array(side),
+            "band_p_value": np.array([0.01, 0.01]),
+            "null_density_mean": np.array(background),
+            "null_density_std": np.array(scatter),
+            "null_density_median": np.array(background),
+            "band_pixels": 200,
+            "side_pixels": 200,
+        }
+
+    return pd.DataFrame(
+        [
+            # clean background: SNR = density / (1 pixel / 200) = 60, then 40
+            row([60, 40], [10, 4]),
+            # SNR 25 then 12, but only 12 pixels at 0.5 (< 20)
+            row([25, 12], [5, 2]),
+            # dense, but so is the background: SNR (0.4 - 0.3) / 0.1 = 1, then 0.5
+            row([80, 70], [70, 60], (0.3, 0.3), (0.1, 0.1)),
+            # no tile, so no band
+            {**row([0, 0], [0, 0]), "n_above_band": None},
+        ]
+    )
+
+
+def _budget_rows(model, flagged_by_threshold, control_by_threshold):
+    """Two realizations of one model at one SB, thresholds [0.1, 0.5, 0.9].
+
+    Each realization's stream-free control covers 1000 pixels, so the pooled
+    background density at a threshold is (sum of control counts) / 2000.
+    """
+    import pandas as pd
+
+    return pd.DataFrame(
+        [
+            {
+                "model": model,
+                "richness": 33.0,
+                "n_above_band": np.array(flagged),
+                "n_above_no_stream": np.array(control),
+                "fp_no_stream": 0,
+                "tn_no_stream": 1000,
+            }
+            for flagged, control in zip(
+                flagged_by_threshold, control_by_threshold, strict=True
+            )
+        ]
+    )
+
+
+def test_detection_at_false_alarm_rate_picks_each_models_own_threshold():
+    import pandas as pd
+
+    thresholds = np.array([0.1, 0.5, 0.9])
+    # A cautious model: clean already at 0.1, so it is read at 0.1 and both
+    # streams (30 and 25 flagged pixels) pass.
+    cautious = _budget_rows("cautious", [[30, 10, 0], [25, 8, 0]], [[1, 0, 0]] * 2)
+    # A loose model: density 20/2000 = 1e-2 at 0.1 and 2/2000 = 1e-3 at 0.5,
+    # so a 1e-3 budget reads it at 0.5, where only one stream keeps 20 pixels.
+    loose = _budget_rows("loose", [[90, 40, 5], [60, 15, 1]], [[10, 1, 0]] * 2)
+    d = detection_at_false_alarm_rate(
+        pd.concat([cautious, loose]), thresholds, targets=(1e-3,), group_by=["model"]
+    ).set_index("model")
+
+    assert d.loc["cautious", "threshold"] == 0.1
+    assert d.loc["cautious", "detection_fraction"] == 1.0
+    assert d.loc["loose", "threshold"] == 0.5
+    assert d.loc["loose", "background_density"] == pytest.approx(1e-3)
+    assert d.loc["loose", "detection_fraction"] == 0.5
+    # At a fixed 0.5 the loose model would look as good as the cautious one
+    # read at 0.1 does here; the budget is what separates them.
+
+
+def test_detection_at_false_alarm_rate_leaves_out_an_unreachable_budget():
+    thresholds = np.array([0.1, 0.5, 0.9])
+    # Never below 5e-3 even at 0.9: a 1e-3 budget cannot be met on this grid.
+    stubborn = _budget_rows("stubborn", [[50, 40, 30]] * 2, [[20, 12, 5]] * 2)
+    d = detection_at_false_alarm_rate(
+        stubborn, thresholds, targets=(1e-3, 1e-2), group_by=["model"]
+    )
+    assert list(d["target"]) == [1e-2]
+
+
+def test_detection_at_false_alarm_rate_needs_the_control():
+    import pandas as pd
+
+    with pytest.raises(ValueError, match="n_above_no_stream"):
+        detection_at_false_alarm_rate(
+            pd.DataFrame({"richness": [33.0], "n_above_band": [np.array([1])]}),
+            np.array([0.5]),
+        )
+
+
+def test_band_snr_normalizes_by_area_and_floors_the_noise():
+    # The same density (0.1) in bands of different sizes gives the same SNR.
+    snr = band_snr(np.array([20, 40]), np.array([200, 400]), 0.02, 0.01)
+    assert snr[0] == pytest.approx((0.1 - 0.02) / 0.01)
+    assert snr[1] == pytest.approx(snr[0])
+    # A clean background: the noise is one pixel, not zero.
+    assert band_snr(20, 200, 0.0, 0.0) == pytest.approx(0.1 / (1 / 200))
+    # The Poisson noise of the expected background count wins over a smaller
+    # measured scatter.
+    assert band_snr(20, 200, 0.05, 0.001) == pytest.approx(
+        (0.1 - 0.05) / (np.sqrt(0.05 * 200) / 200)
+    )
+    assert np.isnan(band_snr(0, 0, 0.0, 0.0))
+
+
+def test_stream_detection_needs_enough_pixels_and_a_high_snr():
+    d = stream_detection(_detection_rows(), np.array([0.1, 0.5]), at=(0.1, 0.5))
+    d = d.set_index("threshold")
+
+    assert d.loc[0.1, "n_detected"] == 2  # 60 and 25 pixels, high SNR
+    assert d.loc[0.5, "n_detected"] == 1  # 12 pixels is below 20
+    assert d.loc[0.5, "n_realizations"] == 4
+    assert d.loc[0.5, "n_without_band"] == 1
+    assert d.loc[0.5, "detection_fraction"] == pytest.approx(0.25)
+    assert d.loc[0.5, "detection_low"] <= 0.25 <= d.loc[0.5, "detection_high"]
+
+
+def test_stream_detection_reports_counts_densities_and_contrasts():
+    d = stream_detection(_detection_rows(), np.array([0.1, 0.5]), at=(0.5,)).iloc[0]
+    assert d.flagged_in_band == pytest.approx((40 + 12 + 70) / 3)
+    assert d.flagged_in_side == pytest.approx((4 + 2 + 60) / 3)
+    assert d.band_density == pytest.approx(122 / 600)
+    assert d.side_density == pytest.approx(66 / 600)
+    assert d.local_contrast == pytest.approx(122 / 66)
+    assert d.background_density == pytest.approx(0.3 / 3)
+    assert d.background_contrast == pytest.approx((122 / 600) / 0.1)
+    assert d.median_snr == pytest.approx(12.0)
+
+
+def test_stream_detection_needs_the_band_statistics():
+    with pytest.raises(ValueError, match="band statistics"):
+        stream_detection(
+            _detection_rows().drop(columns=["n_above_band"]), np.array([0.5])
+        )
+
+
+def test_plot_stream_detection_renders_intervals():
+    d = stream_detection(_detection_rows(), np.array([0.1, 0.5]), at=(0.1, 0.5))
+    ax = plot_stream_detection(d, highlight=0.5, training_range=(31, 34))
+    assert ax.get_legend_handles_labels()[1] == ["threshold 0.1", "threshold 0.5"]
+    assert ax.get_ylabel() == "fraction of streams detected"
+
+
+def test_stream_detection_end_to_end(injector):
+    import torch
+
+    torch.manual_seed(0)
+    model = UNet(in_channels=2, out_channels=2, base_width=4, depth=1, head="sigmoid")
+    results = evaluate_footprint_realizations(
+        model,
+        injector,
+        _identity_transform,
+        _param_sets(),
+        n_realizations=2,
+        channel=0,
+        thresholds=THRESHOLD_GRID,
+        n_null_bands=20,
+    )
+    for _, row in results.iterrows():
+        assert len(row["n_above_band"]) == len(THRESHOLD_GRID)
+        # nside 64 pixels (~0.9 deg) are wider than the 0.2 deg stream, so the
+        # 1-2 sigma side bands may hold no pixel centre; the band must not.
+        assert row["band_pixels"] > 0 and row["side_pixels"] >= 0
+        assert 0 < row["n_null_bands"] <= 20
+        assert np.all((row["band_p_value"] > 0) & (row["band_p_value"] <= 1))
+    d = stream_detection(results, THRESHOLD_GRID, at=(0.5,))
+    assert list(d["richness"]) == [3000, 6000]
+    assert (d["n_realizations"] == 2).all()

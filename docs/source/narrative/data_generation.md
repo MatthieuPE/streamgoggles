@@ -125,11 +125,34 @@ bands, distance_modulus) -> bool array`:
 - `StreamobsSplineFilter` wraps `streamobs.match_filter.build_match_filter`
   — an isochrone-shaped color-magnitude polygon at a given age/metallicity/
   distance.
-- `ShiftedColorBoxFilter` is the deliberately "bad" companion: a plain
-  box cut sharing the reference filter's magnitude range at the same
-  distance, shifted off the isochrone locus in color. It still lets
-  background contamination through without preferring real stream stars —
-  exactly the negative example the network needs to see.
+- `ColorBoxFilter` is the deliberately "bad" companion the notebooks use: a
+  plain box cut at absolute colour and magnitude limits, sitting redder than
+  the isochrone locus. Being fixed is the point — it selects the same region
+  of colour-magnitude space in every sample, at every trial distance and in
+  every experiment, so the decoy channel means the same thing everywhere. It
+  still lets background contamination through without preferring real stream
+  stars, which is exactly the negative example the network needs to see.
+- `ShiftedColorBoxFilter` is the earlier version of that companion, defined
+  relative to a reference filter's polygon. It moves with the isochrone, the
+  bands and the trial distance, and it selects real stream members at the
+  bright end; it is kept so the models trained with it can still be re-scored.
+
+Which filters feed the network is configuration, not code:
+{py:func}`~streamgoggles.matched_filter.build_matched_filters` turns a
+`{channel name: spec}` mapping into filters, in channel order, with a `type` of
+`"isochrone"`, `"box"` or `"shifted_box"`. The notebooks pass it their
+`filters_cfg` dict, and `config/matched_filter.yaml` holds the same mapping
+under `filters`:
+
+```yaml
+filters:
+  good: {type: isochrone, reference_isochrone: {age: 12.5, z: 0.0002}}
+  decoy: {type: box, color_range: [1.2, 1.5], mag_range: [18.0, 24.5]}
+```
+
+The order is the channel order, so a config written from Python must use
+`yaml.safe_dump(..., sort_keys=False)`: the default sorts keys alphabetically
+and would swap the channels.
 
 `finalize_full` optionally applies HEALPix-sphere Gaussian smoothing
 (`healpy.smoothing`) and a polynomial background subtraction before a map
@@ -341,14 +364,14 @@ positive threshold at zero count).
   stream richness and comparing the "good" filter's positive-pixel count
   against the "decoy" filter's at each combination
   (`create_data.ipynb`'s "Calibrating count_threshold empirically"
-  section) — the finding was a genuine, irreducible trade-off: too high a
-  threshold leaves this project's faintest working streams
-  (surface_brightness up to 35) with an entirely empty label; too low, and
-  the decoy filter's own positive-pixel count becomes a substantial
-  fraction of the real filter's at the bright end. 1.0 is the lowest value
-  that keeps every richness point non-empty, accepting real (not fully
-  suppressed) decoy contamination at the bright end in exchange for
-  faint-end sensitivity.
+  section). Too high a threshold leaves this project's faintest working
+  streams (surface_brightness up to 35) with an entirely empty label, so 1.0
+  is the lowest value that keeps every richness point non-empty. With the
+  shifted decoy box this was a genuine trade-off — at a low threshold the
+  decoy's positive-pixel count reached about two thirds of the real filter's
+  at the bright end. The fixed `ColorBoxFilter` removes that side of it: its
+  label is empty at every threshold and every surface brightness, so the
+  choice is now about faint-end sensitivity alone.
 - The pre-pivot mechanism ({py:mod}`streamgoggles.rasterize`) —
   `rasterize_binary`, `rasterize_density`, a `soft_distance` stub — remains
   implemented and selectable via the same `label_policy`, for a single

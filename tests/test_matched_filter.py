@@ -7,10 +7,12 @@ import pytest
 from astropy.coordinates import angular_separation
 
 from streamgoggles.matched_filter import (
+    ColorBoxFilter,
     PixelizationSpec,
     ShiftedColorBoxFilter,
     StreamobsSplineFilter,
     _tangent_plane_radec,
+    build_matched_filters,
     combine_full_maps,
     crop_window,
     finalize_full,
@@ -145,6 +147,70 @@ def cmd_spanning_catalog():
     color = rng.uniform(poly[:, 0].min() - 1.0, poly[:, 0].max() + 1.0, n)
     mag_g = mag_r + color
     return ref, poly, pd.DataFrame({"g_obs": mag_g, "r_obs": mag_r})
+
+
+# ---------------------------------------------------------------------------
+# ColorBoxFilter (fixed limits, no reference filter)
+# ---------------------------------------------------------------------------
+
+
+def test_color_box_filter_selects_exactly_its_limits(cmd_spanning_catalog):
+    _ref, _poly, catalog = cmd_spanning_catalog
+    decoy = ColorBoxFilter(color_range=(1.0, 1.3), mag_range=(18.0, 24.5))
+    selected = decoy.select(catalog, ["g", "r"], distance_modulus=16.8)
+
+    assert selected.sum() > 0
+    mag_g = catalog["g_obs"].to_numpy()[selected]
+    color = mag_g - catalog["r_obs"].to_numpy()[selected]
+    assert (mag_g >= 18.0).all() and (mag_g <= 24.5).all()
+    assert (color >= 1.0).all() and (color <= 1.3).all()
+    # and everything inside those limits is selected
+    all_mag_g = catalog["g_obs"].to_numpy()
+    all_color = all_mag_g - catalog["r_obs"].to_numpy()
+    inside = (
+        (all_mag_g >= 18.0)
+        & (all_mag_g <= 24.5)
+        & (all_color >= 1.0)
+        & (all_color <= 1.3)
+    )
+    np.testing.assert_array_equal(selected, inside)
+
+
+def test_color_box_filter_does_not_move_with_the_trial_distance(cmd_spanning_catalog):
+    """The point of fixed limits: the decoy channel means the same thing at
+    every trial distance, unlike a box tied to a reference filter's polygon."""
+    ref, _poly, catalog = cmd_spanning_catalog
+    fixed = ColorBoxFilter(color_range=(1.0, 1.3), mag_range=(18.0, 24.5))
+    shifted = ShiftedColorBoxFilter(reference_filter=ref, color_shift=0.5)
+
+    near = fixed.select(catalog, ["g", "r"], distance_modulus=16.0)
+    far = fixed.select(catalog, ["g", "r"], distance_modulus=18.0)
+    np.testing.assert_array_equal(near, far)
+
+    moved = shifted.select(
+        catalog, ["g", "r"], distance_modulus=16.0
+    ) != shifted.select(catalog, ["g", "r"], distance_modulus=18.0)
+    assert moved.any(), "the shifted box is expected to move with the distance"
+
+
+def test_color_box_filter_keeps_its_own_namespace():
+    decoy = ColorBoxFilter(
+        color_range=(1.0, 1.3), mag_range=(18.0, 24.5), namespace="lsst_yr1"
+    )
+    assert decoy.namespace == "lsst_yr1"
+
+
+@pytest.mark.parametrize(
+    ("color_range", "mag_range"),
+    [
+        ((1.3, 1.0), (18.0, 24.5)),
+        ((1.0, 1.3), (24.5, 18.0)),
+        ((1.0, 1.0), (18.0, 24.5)),
+    ],
+)
+def test_color_box_filter_rejects_empty_or_reversed_limits(color_range, mag_range):
+    with pytest.raises(ValueError, match="max > min"):
+        ColorBoxFilter(color_range=color_range, mag_range=mag_range)
 
 
 def test_shifted_color_box_filter_namespace_matches_reference():
@@ -712,3 +778,75 @@ def test_window_to_healpix_indices_are_unique_and_inside_the_image():
     assert rows.min() >= 0 and rows.max() < 32
     assert cols.min() >= 0 and cols.max() < 32
     assert margin.max() > margin.min(), "margin must vary from edge to centre"
+
+
+# ---------------------------------------------------------------------------
+# build_matched_filters: filters from a plain configuration
+# ---------------------------------------------------------------------------
+
+NOTEBOOK_FILTERS = {
+    "good": {"type": "isochrone", "reference_isochrone": {"age": 12.5, "z": 0.0002}},
+    "decoy": {"type": "box", "color_range": (1.2, 1.5), "mag_range": (18.0, 24.5)},
+}
+
+
+def test_build_matched_filters_turns_the_notebook_config_into_filters():
+    filters = build_matched_filters(NOTEBOOK_FILTERS, namespace="lsst_yr1")
+
+    # The config's order is the channel order.
+    assert list(filters) == ["good", "decoy"]
+    assert isinstance(filters["good"], StreamobsSplineFilter)
+    assert filters["good"].iso_config == {"age": 12.5, "z": 0.0002}
+    assert filters["good"].namespace == "lsst_yr1"
+    assert isinstance(filters["decoy"], ColorBoxFilter)
+    assert filters["decoy"].color_range == (1.2, 1.5)
+    assert filters["decoy"].mag_range == (18.0, 24.5)
+
+
+def test_build_matched_filters_places_a_shifted_box_on_its_reference():
+    filters = build_matched_filters(
+        {
+            "good": NOTEBOOK_FILTERS["good"],
+            "old": {"type": "shifted_box", "reference": "good", "color_shift": 0.5},
+            "wide": {
+                "type": "shifted_box",
+                "reference": "good",
+                "color_shift": 0.5,
+                "color_width": 0.6,
+            },
+        }
+    )
+    assert filters["old"].reference_filter is filters["good"]
+    assert filters["old"].color_width == 0.3  # the class default
+    assert filters["wide"].color_width == 0.6
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        ({"type": "polygon"}, "unknown type 'polygon'"),
+        ({"type": "box", "color_range": (1.2, 1.5)}, r"missing \['mag_range'\]"),
+        (
+            {**NOTEBOOK_FILTERS["decoy"], "colour_range": (0, 1)},
+            r"unexpected \['colour_range'\]",
+        ),
+        (
+            {"type": "shifted_box", "reference": "missing", "color_shift": 0.5},
+            "defined earlier",
+        ),
+    ],
+)
+def test_build_matched_filters_rejects_a_bad_spec(spec, message):
+    with pytest.raises(ValueError, match=message):
+        build_matched_filters({"good": NOTEBOOK_FILTERS["good"], "bad": spec})
+
+
+def test_build_matched_filters_needs_the_reference_before_the_shifted_box():
+    # Order matters: the shifted box is built from a filter that already exists.
+    with pytest.raises(ValueError, match="defined earlier"):
+        build_matched_filters(
+            {
+                "old": {"type": "shifted_box", "reference": "good", "color_shift": 0.5},
+                "good": NOTEBOOK_FILTERS["good"],
+            }
+        )

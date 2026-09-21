@@ -7,6 +7,7 @@ from scipy import stats
 
 from streamgoggles.windows import (
     Window,
+    _stream_arc_length_coord,
     sample_random_window,
     sample_stream_window,
     tile_footprint,
@@ -373,6 +374,66 @@ def test_sample_stream_window_succeeds_when_stream_longer_than_window(footprint)
         in_ra = long_ra[inside]
         covered_length = float(in_ra.max() - in_ra.min()) if inside.sum() > 1 else 0.0
         assert covered_length >= 5.0 - 1e-6
+
+
+def _angular_length_deg(ra, dec):
+    """Largest angular separation between any two of the given points."""
+    vectors = np.array(hp.ang2vec(ra, dec, lonlat=True))
+    return float(np.degrees(np.arccos(np.clip((vectors @ vectors.T).min(), -1, 1))))
+
+
+def test_stream_arc_length_is_measured_correctly_across_ra_zero():
+    """A stream crossing RA = 0/360 used to be projected around RA ~ 180 deg
+    (the mean of the RAs), giving lengths of millions of degrees."""
+    t = np.linspace(0.0, 1.0, 300)
+    dec = np.full_like(t, -30.0)
+    crossing = (356.0 + 8.0 * t) % 360.0
+    elsewhere = 176.0 + 8.0 * t
+
+    span_crossing = np.ptp(_stream_arc_length_coord(crossing, dec))
+    span_elsewhere = np.ptp(_stream_arc_length_coord(elsewhere, dec))
+    assert span_crossing == pytest.approx(span_elsewhere, rel=1e-3)
+    assert span_crossing == pytest.approx(_angular_length_deg(crossing, dec), rel=0.01)
+
+
+def test_sample_stream_window_overlap_constraint_holds_across_ra_zero():
+    nside = 32
+    _, dec_pixels = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    mask = np.abs(dec_pixels + 30.0) < 20.0
+    t = np.linspace(0.0, 1.0, 400)
+    ra = (356.0 + 8.0 / np.cos(np.radians(30.0)) * t) % 360.0  # ~8 deg on the sky
+    dec = np.full_like(t, -30.0)
+    rng = np.random.default_rng(4)
+    for _ in range(40):
+        w = sample_stream_window(ra, dec, 0.2, mask, nside, size_deg=11.0, rng=rng)
+        inside = w.contains(ra, dec)
+        assert _angular_length_deg(ra[inside], dec[inside]) >= 5.0 - 0.05
+
+
+def test_sample_stream_window_rarely_needs_many_attempts(footprint, straight_stream):
+    """Most candidates should land on the stream: with a proposal as wide as a
+    whole window, about half missed it and a failure after 100 attempts became
+    likely over the thousands of samples of one training run."""
+    from streamgoggles import windows
+
+    accepted = 0
+    rng = np.random.default_rng(5)
+    for _ in range(300):
+        try:
+            windows.sample_stream_window(
+                straight_stream["ra"],
+                straight_stream["dec"],
+                straight_stream["width_deg"],
+                footprint["mask"],
+                footprint["nside"],
+                size_deg=11.0,
+                max_attempts=1,
+                rng=rng,
+            )
+            accepted += 1
+        except RuntimeError:
+            pass
+    assert accepted / 300 > 0.25
 
 
 def test_sample_stream_window_raises_after_max_attempts(footprint, straight_stream):

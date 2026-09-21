@@ -8,6 +8,7 @@
 
    .. autosummary::
    
+      build_matched_filters
       combine_full_maps
       crop_window
       finalize_full
@@ -22,6 +23,7 @@
 
    .. autosummary::
    
+      ColorBoxFilter
       MatchedFilter
       PixelizationSpec
       ShiftedColorBoxFilter

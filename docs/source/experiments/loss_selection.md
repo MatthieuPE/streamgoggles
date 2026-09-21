@@ -38,8 +38,8 @@ Exact formulas and the gradient argument are in {doc}`../narrative/datasets_and_
 ("Formulas").
 
 **Evaluation**, following the {doc}`shared protocol <index>`: surface
-brightness 31 to 35, 10 realizations each, on the training background and an
-independent one; completeness $C = S_s/S_t$, contamination $F = B_s/B_t$,
+brightness 31 to 35, 10 injected streams per surface brightness (50 in total
+per model), on the training background and an independent one; completeness $C = S_s/S_t$, contamination $F = B_s/B_t$,
 contrast $C/F$; models compared at threshold 0.5, cross-checked at 0.9.
 Curves show $C$ and $F$ averaged over the 4 seeds and the contrast as the
 ratio of those averages; bars are the per-seed minimum and maximum. Hollow
@@ -192,6 +192,37 @@ contrast at SB 32 going from 405 to 149. Where to set it depends on what the
 maps are used for; choosing it, and checking it on skies not used for the
 choice, is the next experiment (see {doc}`index`).
 
+## Conclusion: what this experiment fixes
+
+**Selected, and used by every later experiment and notebook:**
+
+| Setting | Value | Why |
+|---|---|---|
+| **loss** | **batch Dice** | the only loss that keeps the background clean; per-window Dice cannot learn to suppress false alarms, because an empty window's Dice is ~1 whatever it predicts |
+| **batch size** | **8** | the widest usable range of thresholds and the highest contrast at SB 32, with one of the smallest spreads between seeds |
+| **background fraction** | **0.05** | indistinguishable from 0.3, and it keeps training on windows that contain a stream |
+
+These three are settled; nothing measured since has argued against them.
+
+**What this experiment did *not* settle**, and what later work changed:
+
+- The **threshold** is still a free parameter. This page compares at 0.5 and
+  0.9, and {doc}`hyperparameters` section 6 shows that comparing two models at
+  a fixed threshold can point the wrong way — models should be compared at a
+  matched false-alarm rate, and the threshold chosen last from a false-alarm
+  budget.
+- The **training surface brightness range and training length** used here
+  (SB 31-34, 1200 windows) were the starting point, not a result.
+  {doc}`hyperparameters` replaces them with SB 32-34.5 and 4800 windows.
+- The faint-end numbers above are **one draw from a wide seed-to-seed
+  distribution** for these short trainings. {doc}`hyperparameters` finds that
+  training for longer (19200 windows) both raises them and narrows that
+  spread, which does more than averaging several short trainings.
+
+So the configuration to carry forward is this page's loss, batch size and
+background fraction, with the training range and length from
+{doc}`hyperparameters`.
+
 ## Limitations
 
 - **Contrast measured on one stream per sky**, in the neighbourhood tiled
@@ -206,6 +237,13 @@ choice, is the next experiment (see {doc}`index`).
   part of the planned hyperparameter experiment.
 - **Dice+BCE was tested with a single weighting (1:1).** A smaller BCE weight
   or a Dice warm-up might avoid its collapses.
+- **Training windows near RA = 0 were not all checked properly.** Found
+  later, during the hyperparameter experiment: the "at least 5° of stream in
+  the window" check broke for streams crossing RA 0°/360° (about 13% of
+  training streams in this study region, which is centred on RA 0). Those
+  windows could contain less of the stream. Every configuration was trained
+  the same way, so the comparison is fair, but absolute numbers may shift a
+  little with the fix.
 - **One set of stream parameters.** Distance modulus, width, length, age and
   metallicity were fixed; the conclusions need checking when they vary.
 
