@@ -174,8 +174,30 @@ def main(configuration):
     param_sets = [dict(base, richness=sb) for sb in EVAL_SB]
     channel = g["injector"].filter_names.index("good")
 
+    # Resumable: a size already scored with this N_REALIZATIONS for every
+    # surface brightness is kept and skipped, so an interrupted run (a sleeping
+    # laptop, a closed session) loses at most the size in progress. Anything
+    # scored with a different N_REALIZATIONS is dropped and redone, so the file
+    # never mixes sample sizes.
     frames = []
+    if RESULTS.exists():
+        previous = pd.read_pickle(RESULTS)
+        previous = previous[previous.configuration == configuration]
+        for size, group in previous.groupby("ensemble_size"):
+            counts = group.groupby("richness").size()
+            if (
+                size in ENSEMBLE_SIZES
+                and set(counts.index) == set(EVAL_SB)
+                and (counts == N_REALIZATIONS).all()
+            ):
+                frames.append(group)
+    done = {int(frame["ensemble_size"].iloc[0]) for frame in frames}
+    if done:
+        print(f"already scored with {N_REALIZATIONS} streams per point: {sorted(done)}")
+
     for size in ENSEMBLE_SIZES:
+        if size in done:
+            continue
         members = list(range(size))
         ensemble = Ensemble(
             [models[i] for i in members],
