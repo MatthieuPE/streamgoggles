@@ -16,6 +16,7 @@
    
       background_only_sky
       band_snr
+      detection_at_false_alarm_rate
       detection_metrics
       evaluate_footprint_realizations
       plot_confusion_matrix

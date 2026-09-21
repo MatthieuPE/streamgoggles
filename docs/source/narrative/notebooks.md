@@ -64,8 +64,8 @@ problem entirely:
 - **The configuration the experiments selected** ({doc}`../experiments/index`):
   `head="sigmoid"`, batch Dice loss, batch 8, `background_fraction=0.05`
   ({doc}`../experiments/loss_selection`); training on surface brightness 32,
-  33, 33.5, 34 and 34.5 with 4800 windows (`epochs=40`,
-  `steps_per_epoch=120`), U-Net depth 2 and base width 12
+  33, 33.5, 34 and 34.5 with 19200 windows (`epochs=40`,
+  `steps_per_epoch=480`), U-Net depth 2 and base width 12
   ({doc}`../experiments/hyperparameters`). The head's bias starts at the logit
   of the per-channel positive-pixel fraction, so the model begins at the
   class prior rather than a default ~0.5.
@@ -77,7 +77,7 @@ problem entirely:
 prediction against its label, a per-surface-brightness Dice curve against the
 k·σ baseline (§7, 5 realizations per point), and §8's check of SB 33 and 34 on
 8 more realizations each. SB 33 responds on every draw, with a Dice between
-0.03 and 0.70; SB 34 gets no response from this single model.
+0.50 and 0.69; SB 34 gets no response in these windows.
 
 §9-§11 move from windows to the HEALPix map that stream searches actually
 produce (see {doc}`training_and_evaluation`, "Footprint-level detection"):
@@ -89,24 +89,31 @@ produce (see {doc}`training_and_evaluation`, "Footprint-level detection"):
   33, 33.5, 34, 34.5 and 35: a row-normalized confusion matrix, and the found
   fraction next to the fraction of background flagged, with the stream and on
   the same tiles without it. At 0.5, half the true pixels are found down to
-  SB ≈ 32.7, and with the stream removed not one background pixel is flagged.
+  SB ≈ 33.0, and with the stream removed not one background pixel is flagged.
 - **§11** turns the same realizations into completeness $C$, contamination $F$
   and contrast $C/F$ against surface brightness, one line per threshold.
 
-§12 builds **the model a survey would deploy**: six independent trainings
-(seeds 42-47) whose probability maps are averaged into one prediction, scored
-on the same realizations as §10 so the two are directly comparable. §12.1
-scores it again on a background catalog none of the six models saw. Fraction
-of injected streams detected at threshold 0.5, 30 per surface brightness:
+§12 counts **streams detected** rather than pixels, with the criterion the
+experiments use (20 flagged pixels within 1σ of the track, SNR ≥ 2 against
+stream-shaped background bands), and reads it two ways: at threshold 0.5, and
+at the threshold where the model flags 1e-3 of stream-free sky. It does so on
+the training background and on an independently seeded one the model never
+saw. Fraction of injected streams detected, 30 per surface brightness, unseen
+background:
 
-| Surface brightness | one training | six averaged | six averaged, unseen background |
-|---|---|---|---|
-| 33 | 80% | 97% | 97% |
-| 33.5 | 17% | 50% | 43% |
-| 34 | 0% | 17% | 17% |
+| Surface brightness | threshold 0.5 | 1e-3 of stream-free sky flagged |
+|---|---|---|
+| 33 | 97% | 97% |
+| 33.5 | 27% | 40% |
+| 34 | 17% | 17% |
 
-The average is what makes the faint end usable, and it holds on sky the models
-never trained on, so these are the numbers to quote for a survey search.
+Two lessons the notebook draws from it. At 0.5 this model is cautious, so its
+detections there understate it; the matched false-alarm rate is the fair
+reading. And on its own training background it flags no stream-free pixel at
+all, so a model's cleanliness must be judged on a sky it never saw. The
+notebook also records an open discrepancy: at SB 33.5 this model sits about 20
+points below the hyperparameter experiment's 19200-window models, which were
+trained with the older shifted decoy box rather than the fixed one used here.
 
-The whole notebook runs in about 45 minutes on a laptop CPU, most of it the six
-trainings and the three footprint evaluations.
+The whole notebook runs in about half an hour on a laptop CPU, most of it the
+19200-window training and the two footprint evaluations.

@@ -528,11 +528,22 @@ solved, SB 33.5 is detected more often than not, and SB 34 about one stream in
 four. The DES 2018 targets at SB 34 to 34.3 are therefore partially in reach,
 and not yet at the rate a survey search would want.
 
-**What is not settled and should not be assumed:** the learning rate and batch
-size were never varied; averaging several long trainings is untested; the
-threshold has no tuned value yet; and every number here is for one stream shape
-at one distance, so nothing above is guaranteed to hold once the stream
-parameters vary.
+**What is not settled and should not be assumed:**
+
+- **The decoy channel changed after these models were trained.** Every model on
+  this page used the older shifted decoy box; the notebooks now use a fixed
+  colour-magnitude box. The one 19200-window model trained with the fixed box
+  so far (`notebooks/train_model.ipynb`) detects 97%, 40% and 17% of streams at
+  SB 33, 33.5 and 34 at a matched 1e-3, against 92%, 60% and 22% here. SB 33.5
+  is below all six of this page's seeds. One model on 30 streams per point
+  cannot say whether that is the decoy or chance; retraining this configuration
+  with the fixed box over several seeds is the test, and until it is run the
+  numbers above describe the old inputs.
+- The learning rate and batch size were never varied, and averaging several
+  long trainings is untested.
+- The threshold has no tuned value yet.
+- Every number here is for one stream shape at one distance, so nothing above
+  is guaranteed to hold once the stream parameters vary.
 
 ## Caveats
 
