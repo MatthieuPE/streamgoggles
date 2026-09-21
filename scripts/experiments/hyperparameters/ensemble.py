@@ -14,12 +14,23 @@ first training windows. The ensemble feeds every model the input in *its* own
 normalization, converting from the shared one it is given:
     x_i = (x_shared * std_shared + mean_shared - mean_i) / std_i
 
+Which trainings are averaged is a named member set. "nested" averages the
+first N seeds for N = 1, 2, 3, 4, 6 -- the original design, where "how many"
+and "which" are confounded. "halves" averages two disjoint triples and all six,
+so the gain from averaging can be told apart from the luck of which trainings
+went in.
+
+Results go to one file per configuration and number of streams, so runs never
+overwrite each other or mix sample sizes; the original 4800-window run at 500
+streams keeps its name, ensemble_results.pkl.
+
 Run from the repository root:
-  python scripts/experiments/hyperparameters/ensemble.py [configuration_name]
+  python scripts/experiments/hyperparameters/ensemble.py [configuration]
+      [--sets nested|halves] [--streams N]
 """
 
+import argparse
 import json
-import sys
 import time
 import warnings
 from pathlib import Path
@@ -32,8 +43,11 @@ NOTEBOOK = REPO / "notebooks" / "train_model.ipynb"
 
 DEFAULT_CONFIGURATION = "w4800_sb32-34.5_d2_b12_lr0.002_bs8"
 SEEDS = [42, 43, 44, 45, 46, 47]
-# 4 is the equal-cost comparison against one training on 4 x 4800 windows.
-ENSEMBLE_SIZES = [1, 2, 3, 4, 6]
+MEMBER_SETS = {
+    # 4 is the equal-cost comparison against one training on 4 x 4800 windows.
+    "nested": [tuple(SEEDS[:n]) for n in (1, 2, 3, 4, 6)],
+    "halves": [tuple(SEEDS[:3]), tuple(SEEDS[3:]), tuple(SEEDS)],
+}
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]
 # Streams injected PER surface brightness, so this many times the 6 entries of
 # EVAL_SB. An ensemble is one prediction with no seeds to pool over, unlike a
@@ -50,7 +64,18 @@ BACKGROUND_CELL, INJECTOR_CELL = "06d604ea", "d4da0c1e"
 TRAIN_CELLS = ["a680f20b", "b2785c24", "d0449892", "c1aae991"]
 
 
-def main(configuration):
+def results_path(configuration, n_streams):
+    """One file per configuration and sample size."""
+    if configuration == DEFAULT_CONFIGURATION and n_streams == N_REALIZATIONS:
+        return RESULTS
+    return DATA / f"ensemble_results_{configuration}_{n_streams}streams.pkl"
+
+
+def members_label(seeds):
+    return ",".join(str(seed) for seed in seeds)
+
+
+def main(configuration, sets="nested", n_streams=N_REALIZATIONS):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -114,26 +139,19 @@ def main(configuration):
         "batch_size": settings["batch_size"],
     }
     g["stream_param_cfg"] = {**g["stream_param_cfg"], "richness": None}
-    # The models in data/experiments/hyperparameters/models/ were all trained
-    # with the shifted decoy box, before the notebook switched to the fixed one
-    # (PLAN.md 6.32). Their second input channel IS that shifted box, so the
-    # experiment keeps building it: re-scoring them against the fixed box would
-    # feed them a channel they never saw. A new experiment should train fresh
-    # models with the notebook's current filters instead of editing this.
-    g["filters_cfg"] = {
-        **g["filters_cfg"],
-        "decoy": {
-            "type": "shifted_box",
-            "reference": "good",
-            "color_shift": 0.5,
-            "color_width": 0.3,
-        },
-    }
     from importlib.util import module_from_spec, spec_from_file_location
 
     spec = spec_from_file_location("run", Path(__file__).parent / "run.py")
     run = module_from_spec(spec)
     spec.loader.exec_module(run)
+    # Rebuild the decoy channel these models were trained with, from their own
+    # saved configuration: feeding a model a decoy it never saw would score
+    # noise. Models saved before the decoy became a setting used the shifted
+    # box (PLAN.md 6.32).
+    g["filters_cfg"] = {
+        **g["filters_cfg"],
+        "decoy": run.DECOYS[settings.get("decoy", "shifted")],
+    }
     g["stream_param_cfg"]["richness"] = run.TRAINING_SB[settings["training_sb"]]
     g["model_cfg"] = {
         **g["model_cfg"],
@@ -174,31 +192,36 @@ def main(configuration):
     param_sets = [dict(base, richness=sb) for sb in EVAL_SB]
     channel = g["injector"].filter_names.index("good")
 
-    # Resumable: a size already scored with this N_REALIZATIONS for every
+    # Resumable: a member set already scored with this many streams for every
     # surface brightness is kept and skipped, so an interrupted run (a sleeping
-    # laptop, a closed session) loses at most the size in progress. Anything
-    # scored with a different N_REALIZATIONS is dropped and redone, so the file
-    # never mixes sample sizes.
+    # laptop, a closed session) loses at most the set in progress. The file is
+    # specific to this configuration and sample size, so it never mixes them,
+    # and sets scored by an earlier run with other --sets are kept too.
+    results_file = results_path(configuration, n_streams)
     frames = []
-    if RESULTS.exists():
-        previous = pd.read_pickle(RESULTS)
+    if results_file.exists():
+        previous = pd.read_pickle(results_file)
         previous = previous[previous.configuration == configuration]
-        for size, group in previous.groupby("ensemble_size"):
+        if "members" not in previous:
+            # Written before member sets existed: always the first N seeds.
+            previous = previous.assign(
+                members=previous["ensemble_size"].map(
+                    lambda n: members_label(SEEDS[: int(n)])
+                )
+            )
+        for _, group in previous.groupby("members"):
             counts = group.groupby("richness").size()
-            if (
-                size in ENSEMBLE_SIZES
-                and set(counts.index) == set(EVAL_SB)
-                and (counts == N_REALIZATIONS).all()
-            ):
+            if set(counts.index) == set(EVAL_SB) and (counts == n_streams).all():
                 frames.append(group)
-    done = {int(frame["ensemble_size"].iloc[0]) for frame in frames}
+    done = {frame["members"].iloc[0] for frame in frames}
     if done:
-        print(f"already scored with {N_REALIZATIONS} streams per point: {sorted(done)}")
+        print(f"already scored with {n_streams} streams per point: {sorted(done)}")
 
-    for size in ENSEMBLE_SIZES:
-        if size in done:
+    for seeds in MEMBER_SETS[sets]:
+        label = members_label(seeds)
+        if label in done:
             continue
-        members = list(range(size))
+        members = [SEEDS.index(seed) for seed in seeds]
         ensemble = Ensemble(
             [models[i] for i in members],
             [means[i] for i in members],
@@ -214,25 +237,29 @@ def main(configuration):
                 g["injector"],
                 g["eval_transform"],
                 param_sets,
-                n_realizations=N_REALIZATIONS,
+                n_realizations=n_streams,
                 channel=channel,
                 seed=EVAL_SEED,
                 thresholds=THRESHOLD_GRID,
                 n_null_bands=N_NULL_BANDS,
             )
-        frames.append(scored.assign(configuration=configuration, ensemble_size=size))
-        pd.concat(frames, ignore_index=True).to_pickle(RESULTS)
-        print(f"ensemble of {size}: scored in {time.time() - start:.0f}s", flush=True)
+        frames.append(
+            scored.assign(
+                configuration=configuration, ensemble_size=len(seeds), members=label
+            )
+        )
+        pd.concat(frames, ignore_index=True).to_pickle(results_file)
+        print(f"ensemble of {label}: scored in {time.time() - start:.0f}s", flush=True)
 
     results = pd.concat(frames, ignore_index=True)
     detection = stream_detection(
-        results, THRESHOLD_GRID, at=(0.1, 0.5), group_by=["ensemble_size", "richness"]
+        results, THRESHOLD_GRID, at=(0.1, 0.5), group_by=["members", "richness"]
     )
     pd.set_option("display.width", 220)
     print(f"\n== {configuration}: streams detected, ensemble of N trainings")
     print(
         detection.pivot_table(
-            index=["ensemble_size", "threshold"],
+            index=["members", "threshold"],
             columns="richness",
             values="detection_fraction",
         ).to_string(float_format=lambda v: f"{v:.2f}")
@@ -241,7 +268,7 @@ def main(configuration):
     at_half = detection[np.isclose(detection.threshold, 0.5)]
     print(
         at_half.pivot_table(
-            index="ensemble_size",
+            index="members",
             columns="richness",
             values=["flagged_in_band", "background_density"],
         ).to_string(float_format=lambda v: f"{v:.3g}")
@@ -250,4 +277,9 @@ def main(configuration):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CONFIGURATION)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("configuration", nargs="?", default=DEFAULT_CONFIGURATION)
+    parser.add_argument("--sets", choices=sorted(MEMBER_SETS), default="nested")
+    parser.add_argument("--streams", type=int, default=N_REALIZATIONS)
+    arguments = parser.parse_args()
+    main(arguments.configuration, arguments.sets, arguments.streams)
