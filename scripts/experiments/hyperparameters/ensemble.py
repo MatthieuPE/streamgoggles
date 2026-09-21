@@ -26,7 +26,7 @@ streams keeps its name, ensemble_results.pkl.
 
 Run from the repository root:
   python scripts/experiments/hyperparameters/ensemble.py [configuration]
-      [--sets nested|halves] [--streams N]
+      [--sets nested|halves|singles] [--streams N]
 """
 
 import argparse
@@ -47,6 +47,10 @@ MEMBER_SETS = {
     # 4 is the equal-cost comparison against one training on 4 x 4800 windows.
     "nested": [tuple(SEEDS[:n]) for n in (1, 2, 3, 4, 6)],
     "halves": [tuple(SEEDS[:3]), tuple(SEEDS[3:]), tuple(SEEDS)],
+    # Each training on its own, on as many skies as the averages: a model meant
+    # for deployment is a single prediction, so its absolute rate needs a few
+    # hundred streams per point, not the 20 shared skies of run.py.
+    "singles": [(seed,) for seed in SEEDS],
 }
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]
 # Streams injected PER surface brightness, so this many times the 6 entries of
