@@ -118,9 +118,8 @@ numbers that change the error bar on its measured performance.
 - **Error bars are sampling uncertainty.** Each model is scored on 20 injected
   streams per surface brightness, so a configuration curve with 6 seeds has
   120 streams behind each point. An ensemble has no seeds to pool — it is one
-  prediction — so it is scored on 100 streams per surface brightness instead,
-  which gives it a comparable interval (±5 points against ±4.5); figure 7 shows
-  what that changed. "k of n streams detected" is binomial — n is fixed and k ≤ n —
+  prediction — so it is scored on 500 streams per surface brightness instead
+  (±2 points against ±4.5); figure 7 shows what that changed. "k of n streams detected" is binomial — n is fixed and k ≤ n —
   so the bars are a **Wilson 68% interval**: the set of detection rates p for
   which the observed k is within one standard deviation, solved for p rather
   than centred on k/n. Unlike a √k bar it stays inside [0, 1] and keeps a
@@ -149,7 +148,7 @@ later without retraining.
 | training surface brightness | 31-34 (starting point); 32-34.5 | 6 each, except 2 for 9600 windows on 31-34 | more examples near the detection edge |
 | training length | 1200, 4800, 9600, 19200 windows | 6 | the batch-8 models look undertrained |
 | network depth and base width | depth 2, 3, 4; width 12, 24 | 6 at width 12, 2-4 at width 24 | a faint stream is only visible by adding up pixels along its track (~70 px long), while a depth-2 network sees ~30-40 px at once |
-| models averaged into one prediction | 1, 2, 3, 4, 6 | one prediction each, 100 streams per point | trainings differ a lot; does averaging them recover the faint end? |
+| models averaged into one prediction | 1, 2, 3, 4, 6 | one prediction each, 500 streams per point | trainings differ a lot; does averaging them recover the faint end? |
 
 ## Results
 
@@ -290,20 +289,21 @@ Standard deviation over trainings, at threshold 0.5:
 
 Two consequences. First, any comparison of two configurations that differ by
 less than ~15 points at SB 33.5 is not established, however clean the curves
-look. Second, a single trained model is not a reliable product: the
+look. Second, a single short training is not a reliable product: the
 configuration says what the *typical* model does, and the one you actually
-trained may sit anywhere in that range. That is the problem the next figure
-addresses.
+trained may sit anywhere in that range. There are two ways out — average
+several trainings, or train one for longer. The last row already hints at the
+second: at 19200 windows the spread falls to 0.07. Section 5 compares the two.
 
-### 5. Averaging several trainings is what recovers the faint end
+### 5. Averaging several trainings helps, but training longer helps more
 
-**Statement.** Averaging the per-pixel probabilities of N independently
-trained models, then thresholding once, detects more faint streams than any of
-the models alone, and removes the seed lottery: six averaged models take
-SB 33.5 from 27% to 52% and SB 34 from 2% to 14%. The gain survives the
-matched-background test of section 6 at a false-alarm rate of 1e-3, so it is a
-better model and not a looser threshold. At equal training cost, averaging four
-short trainings matches a single long one.
+**Statement.** Averaging the per-pixel probabilities of several independently
+trained 4800-window models, then thresholding once, detects more faint streams
+than one of them alone: six averaged take SB 33.5 from 37% to 55% at a matched
+false-alarm rate of 1e-3. But the same compute spent on one longer training
+does better. One 19200-window training detects 55-65% whichever seed it gets,
+against 36% for four averaged 4800-window trainings of the same total cost, and
+it needs one forward pass instead of four.
 
 ```{image} figures/hyperparameters/5_ensemble.png
 :alt: Detection fraction for ensembles of 1 to 6 averaged models, and the equal-cost comparison between four averaged 4800-window models and single 19200-window models
@@ -311,60 +311,58 @@ short trainings matches a single long one.
 ```
 
 *Left: N models of 4800 windows (SB 32-34.5) whose probability maps are
-averaged into one prediction, which is then thresholded at 0.5 — the curves
-are model averages, one prediction each, scored on 100 streams per surface
-brightness, with Wilson 68% sampling bars. Right: the same total
-training cost spent two ways. Thin blue lines are individual 19200-window
-trainings, one per seed, and the thick blue line is the average of those
-curves — a summary of several models, not a model you could deploy. The
-orange curve is the model average of four 4800-window trainings (4 × 4800 =
-19200 windows), the same object as the left panel's, with its sampling bars.*
+averaged into one prediction, which is then thresholded at 0.5 — the curves are
+model averages, one prediction each, scored on 500 streams per surface
+brightness, with Wilson 68% sampling bars. Right: the same total training cost
+spent two ways, at threshold 0.5. Thin blue lines are individual 19200-window
+trainings, one per seed, and the thick blue line is the average of those curves
+— a summary of several models, not a model you could deploy. The orange curve
+is the model average of four 4800-window trainings (4 × 4800 = 19200 windows),
+the same object as the left panel's.*
 
-At threshold 0.5 and SB 33.5, scored on 100 streams each:
+At SB 33.5, the averages scored on 500 streams each:
 
-| Models averaged | detected | background density | detected at 1e-4 | at 1e-3 |
+| Models averaged | detected at 0.5 | background density at 0.5 | detected at 1e-4 | at 1e-3 |
 |---|---|---|---|---|
-| 1 | 27% | 7.5e-6 | 32% | 44% |
-| 2 | 22% | 7.3e-6 | 32% | 53% |
-| 3 | 32% | 4.8e-5 | 31% | 44% |
-| 4 | 56% | 7.1e-4 | 31% | 43% |
-| 6 | 52% | 3.3e-4 | 43% | 61% |
+| 1 | 24% | 6.3e-6 | 32% | 37% |
+| 2 | 20% | 6.0e-6 | 28% | 48% |
+| 3 | 28% | 4.0e-5 | 27% | 38% |
+| 4 | 54% | 6.9e-4 | 27% | 36% |
+| 6 | 47% | 3.1e-4 | 34% | 55% |
 
-Two and three models change nothing; the gain appears at four. The mechanism is
-the one figure 4 exposes: each training flags a different, partly random subset
-of the marginal pixels, so the false alarms average down while the pixels that
-many models agree on survive. This costs N trainings and N forward passes per
-prediction — expensive, but the forward passes are cheap compared with
-training, and they parallelize.
+**What averaging does.** At threshold 0.5, four or six averaged models detect
+twice as many SB 33.5 streams as one (54% and 47% against 24%). Part of that is
+the operating point: the averages flag 50 to 100 times more background at 0.5.
+Held at a matched false-alarm rate, the six-model average still gains at 1e-3
+(55% against 37%, Fisher p = 1.5e-8), but not at the stricter 1e-4 (34% against
+32%, p = 0.25). The mechanism is the one figure 4 exposes: each training flags a
+different, partly random subset of the marginal pixels, so the false alarms
+average down while the pixels that many models agree on survive.
 
-The last two columns are why the recommendation is six and not four. The
-4-model average's jump at threshold 0.5 comes with a background 100 times
-dirtier than the single model's, and at a matched false-alarm rate it is flat
-(31% and 43%, against the single model's 32% and 44%): that jump is the
-operating point moving. Only the 6-model average gains at a matched rate (43%
-and 61%, Fisher p = 0.07 and 0.01 against the single model).
+**How many is not the right question.** The sizes are nested: size N averages
+the first N of the same six trainings. At 1e-3 the 2-model average gains
+(48%), the 3- and 4-model averages do not (38%, 36%), and the 6-model average
+does (55%). A trend in N would not go up, down and up again. Which trainings
+enter the average matters as much as how many, and these data cannot separate
+the two.
 
-One caveat on reading the sizes as a trend: they are nested — size N averages
-the first N of the same six trainings — so "how many models" and "which models"
-are confounded. What the data supports is that averaging around six trainings
-helps, not that the curve is monotone in N.
-
-The equal-cost comparison matters for how to spend a fixed budget. Four
-averaged trainings of 4800 windows and one training of 19200 windows use the
-same number of simulated windows. The single long training does well on
-average — and the two curves agree within their bars at every surface
-brightness (56% against 63% at SB 33.5) — but its individual curves scatter
-(thin lines), and you get one draw from that scatter. The average of four gives
-one prediction, whose remaining spread is much smaller. At this budget the
-choice is therefore about reproducibility rather than sensitivity.
+**Equal cost: one long training wins.** Four averaged 4800-window trainings and
+one 19200-window training use the same number of simulated windows. At
+threshold 0.5 they look alike (54% against 62% at SB 33.5, right panel). At a
+matched false-alarm rate of 1e-3 they are not alike: the long training detects
+60% on average, and 55% to 65% for each of its seeds, against 36% for the
+four-model average. It even matches the six-model average (55%), which costs
+half as much training again and six forward passes per prediction. Training
+longer also shrinks the seed lottery averaging was meant to fix: at 1e-3 the
+19200-window trainings span 10 points at SB 33.5, the 4800-window ones 20.
 
 ### 6. Which of those effects are real, and which are the threshold moving
 
 **Statement.** Compared at the threshold where each model flags the same
 fraction of stream-free sky, the training range's large advantage nearly
-disappears, while training length and model averaging keep theirs. The
-training range mostly moves the operating point; training length and averaging
-move the model.
+disappears, while training length keeps all of its advantage and model
+averaging keeps part of it. The training range mostly moves the operating
+point; training length moves the model.
 
 ```{image} figures/hyperparameters/6_matched_background.png
 :alt: Detection fraction against surface brightness for four configurations and for one versus six averaged models, each thresholded at its own background density of 1e-4 and 1e-3
@@ -391,64 +389,79 @@ the false-alarm rate is the resource being spent. At a matched rate, at SB 33.5:
 | 4800 w, SB 32-34.5 | 21% | 44% |
 | 1200 w, SB 32-34.5 | 7% | 31% |
 | 19200 w, SB 32-34.5 | 32% | 60% |
-| 1 model (4800 w) | 32% | 44% |
-| 6 models averaged | 43% | 61% |
+| 1 model (4800 w), 500 streams | 32% | 37% |
+| 6 models averaged, 500 streams | 34% | 55% |
 
 The two training ranges are within a few points of each other — nothing like
 the 48% against 20% that figure 1 shows at threshold 0.5. Training on fainter
 streams mainly makes the model less conservative, which a threshold can do
-too. What survives the matched comparison is training length (31% → 60% at 1e-3 and
-7% → 32% at 1e-4, monotone in both) and averaging six trainings (44% → 61% at
-1e-3, Fisher p = 0.01; 32% → 43% at 1e-4, p = 0.07, so clear at the looser
-budget and suggestive at the stricter one). Those ensemble numbers are scored
-on 100 streams each; at the 20 streams used initially the same comparison was
-7/20 against 11/20 and could not be called.
+too. What survives the matched comparison is training length (31% → 60% at 1e-3
+and 7% → 32% at 1e-4, monotone in both), which is the strongest effect on this
+page, and averaging six trainings at the looser budget only (37% → 55% at 1e-3,
+Fisher p = 1.5e-8; 32% → 34% at 1e-4, p = 0.25, no gain).
+
+One caution on the 1e-4 column: some models never flag as little as 1e-4 of
+the background at any threshold on the grid, and those are left out of that
+column's mean — only 3 of the six 19200-window trainings and 4 of the six
+4800-window ones reach it at SB 33.5. The 1e-3 column includes every model and
+is the one to rely on.
 
 This does not make the training range irrelevant. A model trained on 31-34
 cannot be pushed to the faint end by lowering its threshold indefinitely — at
 1e-3 it saturates around 35% at SB 33.5 — and the faint range is what lets the
-longer trainings and the ensembles reach the numbers above. But the headline
+longer trainings reach the numbers above. But the headline
 "training range doubles the SB 34 detections" is an operating-point effect,
 and should be reported as one.
 
 ### 7. How many evaluation streams it takes to say any of this
 
 This section is about measurement precision, not about the models. Nothing is
-retrained here: the same trained ensembles are scored twice, on 20 and on 100
-injected streams per surface brightness.
+retrained here: the same trained ensembles are scored three times, on 20, 100
+and 500 injected streams per surface brightness.
 
-**Statement.** At 20 evaluation streams per point the ensembles were too
-imprecisely measured to decide whether averaging survives the
-matched-background test; at 100 they are. The estimates barely moved — the
-extra streams bought precision, not a different answer.
+**Statement.** 20 evaluation streams per point could not tell whether averaging
+survives the matched-background test. 100 streams seemed to settle it, including
+a small gain at the strict 1e-4 budget. 500 kept the 1e-3 gain and erased the
+1e-4 one. The curves themselves barely moved; what changed is which claims
+their precision could carry.
 
 ```{image} figures/hyperparameters/7_sampling.png
-:alt: The six-model ensemble scored on 20 and on 100 streams per surface brightness, and the single-model against six-model comparison at both sample sizes
+:alt: The six-model ensemble scored on 20, 100 and 500 streams per surface brightness, and the single-model against six-model comparison at each sample size
 :width: 100%
 ```
 
-*Left: the same six-model ensemble — identical weights in both curves — scored
-on 20 and on 100 evaluation streams per surface brightness, with Wilson 68%
-bars. The 20-stream
-realizations are the first 20 of the 100 — the realization seed is (base seed,
-surface-brightness index, realization index) — so this is a pure sample-size
-comparison, not two different experiments. Right: the comparison that motivated
-the rerun, at SB 33.5 and a matched background density of 1e-3, annotated with
-the raw counts.*
+*Left: the same six-model ensemble — identical weights in all three curves —
+scored on 20, 100 and 500 evaluation streams per surface brightness, with
+Wilson 68% bars. The scorings are nested: the realization seed is (base seed,
+surface-brightness index, realization index), so the first 20 of the 100 and
+the first 100 of the 500 are the same skies, and this is a pure sample-size
+comparison. Right: the comparison that motivated the reruns, at SB 33.5 and a
+matched background density of 1e-3, annotated with the raw counts.*
 
-At 20 streams per point the question "does averaging help at a matched
-false-alarm rate?" was 7/20 against 11/20: the intervals overlap and the
-comparison cannot be called. At 100 it is 44/100 against 61/100, which
-separates (Fisher p = 0.01). The point estimates agree between the two sample
-sizes to within their bars everywhere, so nothing about the earlier figures was
-biased — they were simply too imprecise for that particular claim.
+At SB 33.5 and a matched rate of 1e-3, single model against six averaged:
 
-The practical rule this suggests: a configuration curve pools several
-trainings, so 20 evaluation streams per point is enough for it; a single
-prediction — an ensemble, or a model you intend to deploy — needs about 100 per
-point before differences of 15 points mean anything. Evaluation streams are
-simulated on demand and cost about 0.5 to 0.9 s each, so this is a compute
-choice rather than a limitation of the data.
+| Evaluation streams per point | 1 model | 6 averaged | Fisher p |
+|---|---|---|---|
+| 20 | 7/20 | 11/20 | 0.17 |
+| 100 | 44/100 | 61/100 | 0.01 |
+| 500 | 185/500 | 273/500 | 1.5e-8 |
+
+The gap stays at about 18 points throughout; only its uncertainty shrinks. The
+single model's own rate moved more than the gap did — 44% at 100 streams was a
+high draw, and 37% at 500 is where it settles — which is exactly the kind of
+shift a ±5-point interval allows.
+
+The same reruns are what removed a claim. At the strict 1e-4 budget, 100
+streams showed six averaged models ahead (43/100 against 32/100, p = 0.07,
+"suggestive"); at 500 the two are level (34% against 32%, p = 0.25). A
+suggestive result at 100 streams per point was noise.
+
+The practical rule: a configuration curve pools several trainings, so 20
+evaluation streams per point is enough to compare configurations that differ by
+15 points or more. A single prediction — an ensemble, or the model you intend
+to deploy — needs a few hundred per point before a 10-point difference means
+anything. Evaluation streams are simulated on demand and cost 0.5 to 0.9 s
+each, so this is a compute choice, not a limit of the data.
 
 ## Conclusion: the configuration to use from here
 
@@ -461,63 +474,65 @@ start from unless a later experiment overrides it:
 | batch size | 8 | {doc}`loss_selection` |
 | background fraction | 0.05 | {doc}`loss_selection` |
 | magnitude range (g, r) | 16-24.5 | catalog cut, fixed here |
-| **training surface brightness** | **32, 33, 33.5, 34, 34.5** | section 1, 6 |
-| **training length** | **4800 windows** (40 epochs x 120), 19200 if affordable | section 2, 6 |
+| **training surface brightness** | **32, 33, 33.5, 34, 34.5** | sections 1, 6 |
+| **training length** | **19200 windows** (40 epochs × 480) | sections 2, 5, 6 |
 | **network** | **depth 2, base width 12** | section 3 |
+| **deployment** | **one model** | section 5 |
 | learning rate | 2e-3 | not varied yet |
-| **deployment** | **average 6 independent trainings into one prediction** | section 5, 6 |
 | **threshold** | **set from a false-alarm budget**, not fixed at 0.5 | section 6 |
 
 Written as a decision list, strongest first:
 
-1. **Deploy an average of about six trainings, not a single model.** A single
-   training is a lottery draw at the faint end (15% to 90% of SB 33.5 streams,
-   section 4). Averaging six removes that and is the only change that raises
-   detection *and* lowers the false-alarm rate: SB 33.5 goes from 44% to 61%
-   at a matched background of 1e-3. Four models are not enough — they look
-   equivalent at threshold 0.5 only because they sit at a dirtier operating
-   point.
-2. **Train on SB 32-34.5**, bracketing the SB 33-34 target rather than matching
+1. **Train one model on 19200 windows.** At a matched false-alarm rate this is
+   the best model on the page: SB 33.5 detected at 60% on average and 55% to 65%
+   whichever seed it gets, where a 4800-window training gets 35% to 55%. It
+   beats four averaged 4800-window trainings of the same total cost (36%) and
+   matches six of them (55%), with one forward pass instead of six. Training
+   longer also removes most of the seed lottery that averaging was meant to
+   fix. It costs about 11 minutes on this laptop.
+2. **Do not average short trainings instead.** Averaging six 4800-window models
+   does help against one of them (37% → 55% at a matched 1e-3), but it costs
+   more training than one long model and gets no further. It is kept as a
+   fallback, not a default. Averaging several *19200-window* trainings is the
+   untested combination and the obvious next thing to try if more sensitivity
+   is needed (see below).
+3. **Train on SB 32-34.5**, bracketing the SB 33-34 target rather than matching
    it. At a fixed threshold this looks like the biggest effect on the page; at
    a matched false-alarm rate most of it is the operating point moving. Keep it
    anyway: the narrow range saturates around 35% at SB 33.5 whatever threshold
-   it is given, and every configuration that does better is trained on the
-   wider range.
-3. **Train as long as the budget allows**, 4800 windows as the working default.
-   This is the one lever that improves the detection-versus-false-alarm curve
-   monotonically (SB 33.5 at a background of 1e-3: 31% at 1200 windows, 44% at
-   4800, 47% at 9600, 60% at 19200). At equal total cost, four averaged
-   4800-window trainings and one 19200-window training perform the same, so
-   spend the budget on whichever is easier to run — and prefer the ensemble,
-   since its result is reproducible.
+   it is given, and every model that does better is trained on the wider range.
 4. **Keep the network small**: depth 2, base width 12. Depth 3 and 4 and width
    24 changed nothing outside the seed spread, so the cheapest network wins.
 5. **Choose the threshold last, from an acceptable false-alarm rate.** At 0.5,
    models that differ only in training length sit at false-alarm rates an order
-   of magnitude apart, and comparing them there points the wrong way.
+   of magnitude apart, and comparing them there points the wrong way. At the
+   strict budget of 1e-4, no model on this page gets past about a third of
+   SB 33.5 streams, so the budget matters as much as the model.
 
-**What this configuration achieves**, six averaged 4800-window trainings, 100
-injected streams per surface brightness, on a background the models never saw:
+**What this configuration achieves**: one 19200-window training, mean over its
+six trainings (120 injected streams per surface brightness), on a background
+the models never saw:
 
 | Surface brightness | detected at threshold 0.5 | detected at a background density of 1e-3 |
 |---|---|---|
 | 32 | 100% | 100% |
-| 33 | 95% | 98% |
-| 33.5 | 52% | 61% |
-| 34 | 14% | 17% |
-| 34.5 | 3% | 7% |
+| 33 | 95% | 92% |
+| 33.5 | 62% | 60% |
+| 34 | 28% | 22% |
+| 34.5 | 6% | 3% |
 
-Against the stated goal — most streams at SB 33, a gradual decline through
-SB 34 rather than a cliff — this configuration reaches the first and roughly
-half of the second: SB 33 is essentially solved, SB 33.5 is a coin flip, and
-SB 34 is reached for one stream in six or seven rather than never. The DES 2018
-targets at SB 34 to 34.3 are therefore partially in reach, and not yet at the
-rate a survey search would want.
+At threshold 0.5 it flags about 1e-3 of stream-free sky. Against the stated goal
+— most streams at SB 33, a gradual decline through SB 34 rather than a cliff —
+it reaches the first and roughly half of the second: SB 33 is essentially
+solved, SB 33.5 is detected more often than not, and SB 34 about one stream in
+four. The DES 2018 targets at SB 34 to 34.3 are therefore partially in reach,
+and not yet at the rate a survey search would want.
 
 **What is not settled and should not be assumed:** the learning rate and batch
-size were never varied (phase 3); the threshold has no tuned value yet; and
-every number here is for one stream shape at one distance, so nothing about the
-choices above is guaranteed to hold once the stream parameters vary.
+size were never varied; averaging several long trainings is untested; the
+threshold has no tuned value yet; and every number here is for one stream shape
+at one distance, so nothing above is guaranteed to hold once the stream
+parameters vary.
 
 ## Caveats
 

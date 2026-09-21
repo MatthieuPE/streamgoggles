@@ -400,22 +400,28 @@ def _wilson(k, n, z=1.0):
 
 
 def figure_sampling(results):
-    """7: how many streams per surface brightness the ensembles needed.
+    """7: how many evaluation streams per surface brightness the ensembles needed.
 
-    The 20-stream scoring is nested in the 100-stream one -- the realization
-    seed is [seed, surface-brightness index, realization], so realizations 0-19
-    are the same skies -- which makes this a pure sample-size comparison.
+    The scorings are nested -- the realization seed is [seed, surface-brightness
+    index, realization], so the first 20 of the 100 and the first 100 of the 500
+    are the same skies -- which makes this a pure sample-size comparison of the
+    same trained models.
     """
-    old_path = DATA / "ensemble_results_20streams.pkl"
-    new_path = DATA / "ensemble_results.pkl"
-    if not (old_path.exists() and new_path.exists()):
-        return
-    runs = {
-        20: pd.read_pickle(old_path),
-        100: pd.read_pickle(new_path),
+    paths = {
+        20: DATA / "ensemble_results_20streams.pkl",
+        100: DATA / "ensemble_results_100streams.pkl",
+        500: DATA / "ensemble_results.pkl",
     }
+    runs = {n: pd.read_pickle(path) for n, path in paths.items() if path.exists()}
+    if len(runs) < 2:
+        return
     fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.2))
-    styles = {20: ("#9ecae1", "o", "--"), 100: ("#08519c", "s", "-")}
+    styles = {
+        20: ("#c6dbef", "o", ":"),
+        100: ("#6baed6", "s", "--"),
+        500: ("#08306b", "D", "-"),
+    }
+    shifts = {20: -0.03, 100: 0.0, 500: 0.03}
 
     for n, frame in runs.items():
         table = stream_detection(
@@ -428,7 +434,7 @@ def figure_sampling(results):
         colour, marker, ls = styles[n]
         y = data["detection_fraction"].to_numpy()
         axes[0].errorbar(
-            data["richness"] + (0.02 if n == 100 else -0.02),
+            data["richness"] + shifts[n],
             y,
             yerr=bars(data, y),
             marker=marker,
@@ -445,6 +451,7 @@ def figure_sampling(results):
     # The comparison that 20 streams could not settle: does averaging still
     # help once both models are put at the same false-alarm rate?
     positions = {1: 0.0, 6: 1.0}
+    spread = {20: -0.14, 100: 0.0, 500: 0.14}
     for n, frame in runs.items():
         matched = matched_background(frame, ("ensemble_size", "richness"))
         colour, marker, _ = styles[n]
@@ -458,7 +465,7 @@ def figure_sampling(results):
                 continue
             k = round(row["detected"].iloc[0] * n)
             low, high = _wilson(k, n)
-            x = positions[size] + (0.09 if n == 100 else -0.09)
+            x = positions[size] + spread[n]
             axes[1].errorbar(
                 [x],
                 [k / n],
@@ -474,7 +481,7 @@ def figure_sampling(results):
                 f"{k}/{n}",
                 (x, k / n),
                 textcoords="offset points",
-                xytext=(0, 12 if n == 100 else -18),
+                xytext=(0, 12),
                 ha="center",
                 fontsize=8.5,
                 color=colour,
@@ -488,7 +495,7 @@ def figure_sampling(results):
     legend(axes[1], loc="upper left")
     axes[1].set_title("SB 33.5, matched background 1e-3", fontsize=11)
     fig.suptitle(
-        "Same trained models, scored on 20 against 100 streams per surface brightness",
+        "Same trained models, scored on 20, 100 and 500 streams per surface brightness",
         fontsize=11,
     )
     fig.tight_layout()

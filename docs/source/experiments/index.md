@@ -16,15 +16,16 @@ has not been varied yet and is a default rather than a result.
 | batch size | 8 | {doc}`loss_selection` |
 | background fraction | 0.05 | {doc}`loss_selection` |
 | training surface brightness | 32, 33, 33.5, 34, 34.5 | {doc}`hyperparameters` |
-| training length | 4800 windows (19200 if affordable) | {doc}`hyperparameters` |
+| training length | 19200 windows | {doc}`hyperparameters` |
 | network | U-Net, depth 2, base width 12, sigmoid head | {doc}`hyperparameters` |
-| deployment | average 6 independent trainings into one prediction | {doc}`hyperparameters` |
+| deployment | one model (averaging short trainings is an equivalent but costlier fallback) | {doc}`hyperparameters` |
 | threshold | chosen from a false-alarm budget, not fixed at 0.5 | {doc}`hyperparameters` |
 | learning rate | 2e-3 (not varied yet) | — |
 
-That model detects 95% of injected streams at SB 33, 52% at SB 33.5 and 14% at
-SB 34 at threshold 0.5, on skies it never saw, with a background density of a
-few 1e-4. `notebooks/train_model.ipynb` builds and scores it end to end.
+That model detects 95% of injected streams at SB 33, 62% at SB 33.5 and 28% at
+SB 34 at threshold 0.5, on a background it never saw, flagging about 1e-3 of
+stream-free sky. At a matched false-alarm rate of 1e-3 it is the best model the
+experiments found: 92%, 60% and 22%.
 
 ## Shared protocol
 
@@ -34,8 +35,10 @@ across pages.
 **Several trained models per configuration.** A configuration (loss,
 hyperparameters, training settings) is trained with at least 4 random seeds.
 One training run is a single draw: two seeds of the same configuration can
-differ more than two configurations do. Curves show the mean over seeds, and
-bars the range between seeds.
+differ more than two configurations do. Curves show the mean over seeds; each
+page states what its error bars are (the range between seeds on
+{doc}`loss_selection`, the sampling uncertainty on {doc}`hyperparameters`,
+which shows the seed spread in a figure of its own).
 
 **The same evaluation skies for every model.** Models are scored with
 {py:func}`~streamgoggles.evaluation.footprint.evaluate_footprint_realizations`
@@ -153,7 +156,7 @@ it moves the results.
 |---|---|---|
 | {doc}`loss_selection` | Which training loss, batch size and background fraction? | done: batch Dice, batch 8, background fraction 0.05 |
 | Threshold tuning | Which probability threshold for the final maps, and does it hold on skies not used to choose it? | planned |
-| {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length and network size: train on SB 32-34.5 and average several trainings; learning rate and batch size not run yet |
+| {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length, network size and averaging: one model trained on SB 32-34.5 with 19200 windows; learning rate and batch size not run yet |
 | Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |

@@ -214,13 +214,13 @@ These three are settled; nothing measured since has argued against them.
 - The **training surface brightness range and training length** used here
   (SB 31-34, 1200 windows) were the starting point, not a result.
   {doc}`hyperparameters` replaces them with SB 32-34.5 and 4800 windows.
-- A **single trained model** is what this page scores. The faint-end numbers
-  above are one draw from a wide seed-to-seed distribution;
-  {doc}`hyperparameters` concludes that a deployed model should be an average
-  of about six trainings.
+- The faint-end numbers above are **one draw from a wide seed-to-seed
+  distribution** for these short trainings. {doc}`hyperparameters` finds that
+  training for longer (19200 windows) both raises them and narrows that
+  spread, which does more than averaging several short trainings.
 
 So the configuration to carry forward is this page's loss, batch size and
-background fraction, with the training range, length and ensembling from
+background fraction, with the training range and length from
 {doc}`hyperparameters`.
 
 ## Limitations
