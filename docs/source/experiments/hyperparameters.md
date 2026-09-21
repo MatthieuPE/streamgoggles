@@ -15,7 +15,8 @@ these simulations do not vary.
 
 **Status.** Training range, training length, network size, model averaging and
 the decoy channel are done: 70 trainings, up to 6 seeds per configuration, each
-scored on 20 injected streams at each of 6 surface brightnesses. Learning rate and batch
+scored on the same 20 injected streams at each of 6 surface brightnesses; the
+selected model and the averages also on 300 to 500 streams per point. Learning rate and batch
 size are not varied yet.
 
 ## Starting point
@@ -116,10 +117,17 @@ numbers that change the error bar on its measured performance.
 **Two different uncertainties**, which the figures draw differently:
 
 - **Error bars are sampling uncertainty.** Each model is scored on 20 injected
-  streams per surface brightness, so a configuration curve with 6 seeds has
-  120 streams behind each point. An ensemble has no seeds to pool — it is one
-  prediction — so it is scored on 500 streams per surface brightness instead
-  (±2 points against ±4.5); figure 7 shows what that changed. "k of n streams detected" is binomial — n is fixed and k ≤ n —
+  streams per surface brightness — and every model is scored on **the same 20
+  skies per point**, so that two configurations are always compared on
+  identical skies. That makes comparisons paired and sharp, but it has a cost
+  for absolute rates: a configuration curve pools 6 trainings, yet those are 6
+  models × the same 20 streams, not 120 independent streams. The uncertainty
+  from *which* 20 skies were drawn (about ±11 points at 50%) is shared by every
+  seed and does not average down, so the pooled bars are too narrow for an
+  absolute rate. Use the configuration curves to compare; section 9 measures
+  the selected model's absolute rates on 300 skies per point. An ensemble or a
+  deployed model — one prediction — is scored on a few hundred streams per
+  point for that reason; figure 7 shows what that changes. "k of n streams detected" is binomial — n is fixed and k ≤ n —
   so the bars are a **Wilson 68% interval**: the set of detection rates p for
   which the observed k is within one standard deviation, solved for p rather
   than centred on k/n. Unlike a √k bar it stays inside [0, 1] and keeps a
@@ -349,12 +357,14 @@ the two.
 **Equal cost: one long training wins.** Four averaged 4800-window trainings and
 one 19200-window training use the same number of simulated windows. At
 threshold 0.5 they look alike (54% against 62% at SB 33.5, right panel). At a
-matched false-alarm rate of 1e-3 they are not alike: the long training detects
-60% on average, and 55% to 65% for each of its seeds, against 36% for the
-four-model average. It even matches the six-model average (55%), which costs
-half as much training again and six forward passes per prediction. Training
-longer also shrinks the seed lottery averaging was meant to fix: at 1e-3 the
-19200-window trainings span 10 points at SB 33.5, the 4800-window ones 20.
+matched false-alarm rate of 1e-3 they are not, and the comparison has to be
+made on identical skies, since the long trainings were scored on the shared 20
+and the averages on 500 (see "Error bars" above). On the same 20 skies per
+point, the long training detects 60% of SB 33.5 streams on average against 40%
+for the four-model average, and the six-model average reaches 55%. One long
+training is at least as good as six averaged short ones, for two thirds of the
+training and a sixth of the prediction cost. Training longer also shrinks the
+seed lottery that averaging was meant to fix.
 
 ### 6. Which of those effects are real, and which are the threshold moving
 
@@ -495,7 +505,9 @@ never reaches the budget), with the Wilson 68% interval on that pooled count.*
 | 4800 w, fixed box | 87% | 52% | 13% | ~3 min |
 | 4800 w, shifted box | 88% | 44% | 18% | ~3 min |
 
-At SB 33.5 the 19200-window models detect 60 streams out of 100 with either
+These are the shared 20 skies per point, which is what makes the two decoys
+directly comparable; section 9 gives the selected model's absolute rates on 300
+skies. At SB 33.5 the 19200-window models detect 60 streams out of 100 with either
 decoy; at 4800 windows, 62 of 120 against 53 (Fisher p = 0.30), and at SB 34, 16
 against 22 (p = 0.38). The per-seed spread is also unchanged: 45% to 65% at
 SB 33.5 for the fixed box at 19200 windows, 55% to 65% for the shifted one.
@@ -512,6 +524,57 @@ One practical difference: at threshold 0.5 the quick fixed-box model is more
 cautious (it flags 8e-4 of stream-free sky, against 1.5e-3 with the shifted
 box), so at 0.5 it would look worse than it is. As everywhere on this page, the
 matched false-alarm rate is the fair reading.
+
+### 9. The selected model, measured on 300 skies
+
+Two questions were left about the 19200-window model once section 8 had chosen
+its inputs: does averaging several long trainings help, the one combination
+not yet tried; and what are its absolute detection rates, given that the
+configuration curves above share their 20 skies per point. Both use the six
+fixed-box trainings of section 8, with no retraining: each model on its own,
+two disjoint triples averaged, and all six averaged, each scored on 300 streams
+per surface brightness.
+
+**Statement.** Averaging long trainings adds nothing: the six-model average
+detects 52% of SB 33.5 streams against 49% for one model, within the sampling.
+And the selected model's absolute rates are lower than the shared-sky curves
+suggested: 49% at SB 33.5, not 60%.
+
+```{image} figures/hyperparameters/9_long_models.png
+:alt: Fraction of streams detected against surface brightness at a matched false-alarm rate of 1e-3, for the six single 19200-window models on 300 skies, their mean, their average as one prediction, and the same single models on the shared 20 skies
+:width: 100%
+```
+
+*Each model thresholded to flag 1e-3 of stream-free sky. Thin lines: the six
+trainings on their own, 300 streams per surface brightness; thick blue: their
+mean; orange: the six averaged into one prediction, same 300 streams, with its
+Wilson 68% bars; grey dashed: the same six trainings on the 20 skies per point
+every configuration on this page shares.*
+
+At a matched 1e-3:
+
+| | SB 33 | SB 33.5 | SB 34 |
+|---|---|---|---|
+| one model, 300 skies (mean of 6) | 95% | 49% | 16% |
+| one model, per seed | 90-98% | 36-56% | 8-21% |
+| two disjoint triples averaged | 97-98% | 51-57% | 17% |
+| all six averaged | 97% | 52% | 16% |
+| one model, the shared 20 skies | 94% | 60% | 21% |
+
+**Averaging.** On the same 20 skies, averaging all six gives 65% at SB 33.5
+against 60% for one model; on 300 skies, 52% against 49%. Neither difference is
+significant, and the two disjoint triples agree with each other, because long
+trainings scatter much less than short ones. It is not worth the extra scoring
+time.
+
+**Absolute rates.** The same six models find 60% of SB 33.5 streams on the
+shared 20 skies and 49% on 300. Those 20 skies happen to be easier than average
+for this model — the six-model average shows the same drop, 65% to 52% — which
+is exactly the shared sky-sampling uncertainty described in "How to read the
+figures". It does not undo any comparison on this page, since every
+configuration saw the same 20 skies, but the absolute rates of the selected
+model are the 300-sky ones. The seed spread on 300 skies is also wider than the
+shared skies showed: 36% to 56% at SB 33.5, with one weaker training (seed 46).
 
 ## Conclusion: the configuration to use from here
 
@@ -545,19 +608,17 @@ Written as a decision list, strongest first:
    about six seeds per quick comparison, treat its numbers as relative, and
    re-measure anything that goes into a final statement with the long model —
    or switch to the long model when a task turns out to need its sensitivity.
-2. **The final model is one training on 19200 windows.** At a matched false-alarm rate this is
-   the best model on the page: SB 33.5 detected at 60% on average and 55% to 65%
-   whichever seed it gets, where a 4800-window training gets 35% to 55%. It
-   beats four averaged 4800-window trainings of the same total cost (36%) and
-   matches six of them (55%), with one forward pass instead of six. Training
-   longer also removes most of the seed lottery that averaging was meant to
-   fix. It costs about 10 minutes on this laptop.
-3. **Do not average short trainings instead.** Averaging six 4800-window models
-   does help against one of them (37% → 55% at a matched 1e-3), but it costs
-   more training than one long model and gets no further. It is kept as a
-   fallback, not a default. Averaging several *19200-window* trainings is the
-   untested combination and the obvious next thing to try if more sensitivity
-   is needed (see below).
+2. **The final model is one training on 19200 windows.** At a matched
+   false-alarm rate this is the best single model on the page, and compared on
+   identical skies it beats four averaged 4800-window trainings of the same
+   total cost (60% against 40% at SB 33.5) and matches six of them (55%), with
+   one forward pass instead of six. Measured on 300 skies it detects 95%, 49%
+   and 16% of streams at SB 33, 33.5 and 34 (section 9). It costs about 10
+   minutes on this laptop.
+3. **Do not average — neither short nor long trainings.** Averaging six
+   4800-window models helps against one of them (37% → 55% at a matched 1e-3)
+   but costs more training than one long model and gets no further; averaging
+   six 19200-window models adds nothing measurable (49% → 52%, section 9).
 4. **Train on SB 32-34.5**, bracketing the SB 33-34 target rather than matching
    it. At a fixed threshold this looks like the biggest effect on the page; at
    a matched false-alarm rate most of it is the operating point moving. Keep it
@@ -572,23 +633,25 @@ Written as a decision list, strongest first:
    SB 33.5 streams, so the budget matters as much as the model.
 
 **What the final configuration achieves**: one 19200-window training with the
-fixed decoy box, mean over six trainings (120 injected streams per surface
-brightness), on a background the models never saw:
+fixed decoy box, mean over six trainings each scored on 300 injected streams
+per surface brightness (section 9), on a background the models never saw:
 
 | Surface brightness | detected at threshold 0.5 | detected at a background density of 1e-3 |
 |---|---|---|
 | 32 | 100% | 100% |
-| 33 | 93% | 94% |
-| 33.5 | 58% | 60% |
-| 34 | 21% | 21% |
-| 34.5 | 3% | 1% |
+| 33 | 95% | 95% |
+| 33.5 | 48% | 49% |
+| 34 | 17% | 16% |
+| 34.5 | 3% | 3% |
 
-At threshold 0.5 it flags about 1e-3 of stream-free sky. The quick 4800-window
-model gives 87%, 52% and 13% at SB 33, 33.5 and 34 at the same false-alarm
-rate. Against the stated goal — most streams at SB 33, a gradual decline
-through SB 34 rather than a cliff — the final model reaches the first and
-roughly half of the second: SB 33 is essentially solved, SB 33.5 is detected
-more often than not, and SB 34 about one stream in five.
+At threshold 0.5 it flags about 9e-4 of stream-free sky. One training varies:
+36% to 56% at SB 33.5 between seeds. The quick 4800-window model has only been
+measured on the shared 20 skies (87%, 52% and 13% there, against 94%, 60% and
+21% for the long model on the same skies), so read it relative to the long
+one. Against the stated goal — most streams at SB 33, a gradual decline
+through SB 34 rather than a cliff — the final model reaches the first and about
+half of the second: SB 33 is essentially solved, SB 33.5 is about a coin flip,
+and SB 34 about one stream in six.
 
 **These are known-location rates.** Each stream is judged along its own,
 known track. That is the right measure for recovering streams whose position is
@@ -599,8 +662,7 @@ that belongs to the discovery stage, after validation on real data.
 
 **What is not settled and should not be assumed:**
 
-- The learning rate and batch size were never varied, and averaging several
-  long trainings is untested.
+- The learning rate and batch size were never varied.
 - The threshold has no tuned value yet.
 - Every number here is for one stream shape at one distance, so nothing above
   is guaranteed to hold once the stream parameters vary — which the DES 2018
