@@ -424,6 +424,11 @@ class StreamInjector:
         resolved_params = dict(params)
         resolved_params.setdefault("band_1", self.bands[0])
         resolved_params.setdefault("band_2", self.bands[1])
+        # The stream's true magnitudes must be in the photometric system of the
+        # survey that then observes it: left unset, the stream source falls
+        # back to LSST, and a DES injector would observe LSST-band stars.
+        resolved_params.setdefault("survey", self.survey)
+        resolved_params.setdefault("release", self.release)
         resolved_params = resolve_richness_to_nstars(
             resolved_params, self.richness_kind
         )

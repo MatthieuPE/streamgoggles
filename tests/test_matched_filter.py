@@ -850,3 +850,30 @@ def test_build_matched_filters_needs_the_reference_before_the_shifted_box():
                 "good": NOTEBOOK_FILTERS["good"],
             }
         )
+
+
+def test_isochrone_filter_draws_its_polygon_in_the_catalogs_survey():
+    # The photometric system follows the column namespace, so DES stars are
+    # selected with a DES-band isochrone, not a silently assumed LSST one.
+    assert (
+        StreamobsSplineFilter(
+            {"age": 12.5, "z": 0.0002}, namespace="des_yr6"
+        ).photometric_system
+        == "des"
+    )
+    assert (
+        StreamobsSplineFilter(
+            {"age": 12.5, "z": 0.0002}, namespace="lsst_yr1"
+        ).photometric_system
+        == "lsst"
+    )
+    # An explicit choice wins, e.g. to test a band mismatch on purpose.
+    assert (
+        StreamobsSplineFilter(
+            {"age": 12.5, "z": 0.0002, "survey": "lsst"}, namespace="des_yr6"
+        ).photometric_system
+        == "lsst"
+    )
+    assert (
+        StreamobsSplineFilter({"age": 12.5, "z": 0.0002}).photometric_system == "lsst"
+    )

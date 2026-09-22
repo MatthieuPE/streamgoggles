@@ -9,8 +9,8 @@ background:
                   #   light      -> streamobs's fast synthetic generator (precomputed CMD-grid resource;
                   #                 see PLAN.md §6.1.2 — needs a one-time reference truth catalog to build)
                   #   injection  -> streamobs's full injection pipeline over an existing true catalog
-  survey: lsst    # passed to streamobs.surveys.Survey.load(survey=...)
-  release: yr1    # passed to Survey.load(release=...); "yr1" is the year-1 forecast, "dp2" the real skim
+  survey: des     # passed to streamobs.surveys.Survey.load(survey=...)
+  release: yr6    # passed to Survey.load(release=...); DES year 6 (the light background reuses the LSST CMD grids)
 
   light: {}       # source-specific kwargs for whichever `source` is selected above (empty = defaults);
                   # e.g. for source: data_file this would hold {path: ...} to override the parquet path
@@ -27,7 +27,7 @@ background:
 # whatever area it actually covers.
 study_region:
   center_ra: 0.0     # degrees; fixed manually (not computed from a footprint centroid — user decision,
-  center_dec: -30.0  # 2026-09-08, since the yr1 forecast footprint has no unambiguous centroid)
+  center_dec: -50.0  # 2026-09-08; moved to -50 on 2026-09-22 so the region lies inside DES)
   width_deg: 70.0     # study-region extent in RA
   height_deg: 20.0    # study-region extent in Dec; independent of and larger than the per-sample
                        # window (<=30x30 deg, decision 21) — this is where synthetic stars may be

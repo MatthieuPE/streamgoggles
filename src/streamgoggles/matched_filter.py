@@ -163,7 +163,11 @@ class StreamobsSplineFilter(MatchedFilter):
         iso_config: dict with age (Gyr) and z (metallicity, mass fraction)
             for the reference isochrone, plus optional survey/isochrone_model
             overrides and any other streamobs.match_filter.build_match_filter
-            keyword argument (color_spread, error_multiplier, etc.).
+            keyword argument (color_spread, error_multiplier, etc.). The
+            isochrone's photometric system (``survey``) defaults to the survey
+            the catalogs come from, read from ``namespace`` ("des_yr6" ->
+            "des"), so the polygon is drawn in the same bands as the stars it
+            selects; set it explicitly only to test a mismatch.
         namespace: survey/release column namespace (e.g. "lsst_yr1") used to
             look up `<namespace>_<band>_obs` columns via
             `streamobs.columns.obs_col`. None uses bare `<band>_obs`.
@@ -191,6 +195,20 @@ class StreamobsSplineFilter(MatchedFilter):
         self.namespace = namespace
         self._polygon_cache: dict[tuple, np.ndarray] = {}
 
+    @property
+    def photometric_system(self) -> str:
+        """Survey whose bands the isochrone polygon is drawn in.
+
+        The explicit ``iso_config["survey"]`` if given, else the survey part of
+        the column namespace ("des_yr6" -> "des"), else "lsst" for bare
+        ``<band>_obs`` columns.
+        """
+        if "survey" in self.iso_config:
+            return self.iso_config["survey"]
+        if self.namespace:
+            return self.namespace.split("_")[0]
+        return "lsst"
+
     def _polygon(self, bands: list[str], distance_modulus: float) -> np.ndarray:
         """Build (or retrieve from cache) the matched-filter polygon for this
         (bands, distance_modulus) pair. Building involves isochrone sampling
@@ -203,7 +221,7 @@ class StreamobsSplineFilter(MatchedFilter):
             kwargs = dict(self.iso_config)
             age = kwargs.pop("age")
             z = kwargs.pop("z")
-            survey = kwargs.pop("survey", "lsst")
+            survey = kwargs.pop("survey", self.photometric_system)
             isochrone_model = kwargs.pop("isochrone_model", "Marigo2017")
             self._polygon_cache[cache_key] = build_match_filter(
                 distance_modulus=distance_modulus,

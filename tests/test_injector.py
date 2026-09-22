@@ -990,3 +990,28 @@ def test_inject_stream_full_sky_returns_unthresholded_counts(
     stacked = np.concatenate([m for m in full["stream_raw_full"]])
     assert stacked.max() > 1.0, "raw counts should exceed a {0,1} range"
     assert not set(np.unique(stacked)) <= {0.0, 1.0}
+
+
+def test_injector_realizes_streams_in_its_own_survey(real_injector, stream_params):
+    """A stream's true magnitudes must be in the bands of the survey that then
+    observes it. Left unset, the stream source falls back to LSST, so a DES
+    injector would observe LSST-band stars (and streamobs refuses to).
+    """
+    seen = []
+
+    class Recording(StreamObsSource):
+        def realize(self, params, rng):
+            seen.append(dict(params))
+            return super().realize(params, rng)
+
+    real_injector.stream_source = Recording()
+    real_injector.inject_stream_full_sky(stream_params, np.random.default_rng(5))
+    assert seen[-1]["survey"] == real_injector.survey
+    assert seen[-1]["release"] == real_injector.release
+
+    # An explicit choice in the stream parameters is kept.
+    real_injector.inject_stream_full_sky(
+        {**stream_params, "survey": "lsst", "release": "yr1"},
+        np.random.default_rng(5),
+    )
+    assert (seen[-1]["survey"], seen[-1]["release"]) == ("lsst", "yr1")
