@@ -665,12 +665,15 @@ def score_streams_on_sky(
     like any other realization.
 
     Parameters:
-        model, injector, transform, channel, stride_fraction, radius_deg,
-            device: as `evaluate_footprint_realizations`.
+        model: trained torch model.
+        injector: the StreamInjector that built ``full_sky``.
+        transform: eval transform matching the model's normalization.
         full_sky: output of `inject_streams_full_sky`.
         thresholds: probability thresholds to count flagged pixels at.
         rng: draws the background bands' positions.
         n_null_bands: background bands per stream.
+        channel, stride_fraction, radius_deg, device: as
+            `evaluate_footprint_realizations`.
 
     Returns:
         One dict per stream, in the sky's order: ``stream`` (its index), the

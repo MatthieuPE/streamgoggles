@@ -169,11 +169,12 @@ it moves the results.
 | {doc}`loss_selection` | Which training loss, batch size and background fraction? | done: batch Dice, batch 8, background fraction 0.05 |
 | Threshold tuning | Which probability threshold for the final maps, and does it hold on streams and backgrounds not used to choose it? | planned |
 | {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length, network size, averaging and the decoy channel: one model trained on SB 32-34.5 with 19200 windows (4800 while exploring); learning rate and batch size not run yet |
+| {doc}`two_streams` | Does a model trained on one stream per window still find a stream with a neighbour nearby? | done: yes at 2 degrees or more and for crossing streams; a faint stream within about 1 degree of a brighter parallel one is suppressed |
 | Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |
 | Survey-wide contamination | False alarms over a fully tiled footprint, rather than around one injected stream. | planned |
-| DES survey model | Switch the simulations from LSST year 1 to the DES Y6 survey model (`survey="des"`, `release="yr6"` in streamobs), so that detection limits can be compared with the DES 2018 stream search, whose known streams reach surface brightness 34-34.3. Includes the magnitude cut: g < 23.5 as in DES Y3 (chosen against depth and galaxy-contamination fluctuations) versus 24 or 24.5, judged on real data since the simulated background has depth variations only at 27' scale and unclustered galaxies. Needs the DES light-background resources built in streamobs first. | planned |
+| DES survey model | Switch the simulations from LSST year 1 to the DES Y6 survey model (`survey="des"`, `release="yr6"` in streamobs), so that detection limits can be compared with the DES 2018 stream search, whose known streams reach surface brightness 34-34.3. Includes the magnitude cut: g < 23.5 as in DES Y3 (chosen against depth and galaxy-contamination fluctuations) versus 24 or 24.5, judged on real data since the simulated background has depth variations only at 27' scale and unclustered galaxies. | in place: the notebooks use DES Y6 at RA 0, Dec -50, with the light background built from the LSST CMD grids; the magnitude cut is still 24.5 |
 | Real data | Train with the known streams masked, then unmask and check that they are recovered. | planned |
 
 ```{toctree}
@@ -182,4 +183,5 @@ it moves the results.
 
 loss_selection
 hyperparameters
+two_streams
 ```
