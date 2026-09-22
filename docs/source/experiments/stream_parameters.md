@@ -4,8 +4,10 @@
 of the known DES streams — distance, width, length, surface brightness,
 distance gradient — by a model that is told which trial distance to look at?
 
-**Status.** In progress: the design below is fixed and tested; the generation
-is being made faster before the first trainings.
+**Status.** First results: two quick (4800-window) and two long
+(19200-window) models, each scored at the stream's known position on a grid of
+distance × width × surface brightness. The four other seeds the protocol asks
+for are not run yet.
 
 This page records every choice made for this experiment, with the reason for
 it. Where a choice was made by the project lead rather than derived from a
@@ -225,6 +227,97 @@ parallel within about 1 degree of a brighter one is suppressed. Training here
 keeps one stream per window. Wider streams (up to 1.5 degrees) will touch their
 neighbours sooner, which a later check should cover.
 
+## First results
+
+Two models of each length (seeds 42 and 43), each scored on 20 injected
+streams per grid point, on a background none of them saw: distance modulus
+15, 16, 17, 18 and 19 × width 0.2, 0.6 and 1.2 degrees × surface brightness 32,
+33 and 34, length 15 degrees, no gradient, each stream queried at its own
+distance. Every stream at SB 32 is detected, so the figure shows SB 33 and 34.
+
+```{image} figures/stream_parameters/detection.png
+:alt: Fraction of streams detected against distance modulus, for three widths, at surface brightness 33 and 34, for quick and long models
+:width: 100%
+```
+
+*Fraction of injected streams detected at their known position, pooled over
+the two trainings of each length (40 streams per point), with Wilson 68%
+bars. Solid: 4800 training windows; dashed: 19200. Each model is thresholded
+just above its own background level (see "The operating point" below).*
+
+### At fixed surface brightness, closer streams are harder
+
+**Statement.** Detection rises with distance: at SB 34 and a width of 0.2
+degrees, from 2% of streams at distance modulus 15 to 100% at 19. This is a
+property of the streams, not of the model.
+
+Surface brightness is light per unit solid angle. A stream of given surface
+brightness, angular width and angular length is physically larger the farther
+away it is, so it holds more stars (about ∝ distance²). Far fewer of them are
+bright enough to be detected, but the survivors still outnumber the closer
+stream's, while the background the matched filter picks up at the fainter
+magnitudes of a distant isochrone is slightly lower. Measured for SB 33, 0.2
+degrees wide, 15 degrees long:
+
+| distance modulus | stars | detected | selected by the filter | stream density in its 1σ band | background in the filter | contrast |
+|---|---|---|---|---|---|---|
+| 15 | 3,710 | 777 | 597 | 68 /deg² | 573 /deg² | 0.12 |
+| 16 | 9,453 | 1,312 | 1,011 | 115 /deg² | 673 /deg² | 0.17 |
+| 17 | 24,325 | 2,174 | 1,552 | 177 /deg² | 636 /deg² | 0.28 |
+| 18 | 64,066 | 3,561 | 2,262 | 257 /deg² | 511 /deg² | 0.50 |
+| 19 | 176,687 | 4,837 | 2,531 | 288 /deg² | 483 /deg² | 0.60 |
+
+The contrast rises five times from distance modulus 15 to 19. This agrees with
+the DES 2018 streams: the faintest found (Elqui and Chenab, SB 34.1-34.3) are
+the most distant, at 40-50 kpc. **The hard case for this model is a close,
+narrow, faint stream**: at distance modulus 15-16, 0.2 degrees wide and SB 34,
+2-5% are detected. Among the DES streams, Wambelong (distance modulus 15.9,
+0.40 degrees wide, SB 33.7) is the closest to that regime.
+
+**Wider streams are easier at the same surface brightness** for a similar
+reason: the density per pixel is the same, but a wider stream covers more
+pixels, so it holds more stars in total and gives the network more to add up.
+At SB 34 and distance modulus 16: 5% at 0.2 degrees, 30% at 0.6, 52% at 1.2.
+
+### Training longer brings nothing here
+
+**Statement.** The 19200-window models detect no more streams than the
+4800-window ones: over every SB 33 and 34 cell, 930 of 1200 streams against 945
+(Fisher p = 0.49), and at a fixed threshold of 0.5, 878 against 879. In the
+hardest cells the long models are, if anything, slightly lower. Their
+validation loss is clearly better (about 0.39 against 0.46), so they fit the
+label better without finding more streams.
+
+This differs from {doc}`hyperparameters`, where 19200 windows beat 4800 at a
+matched false-alarm rate. The setting has changed on three counts at once —
+per-window normalization, a much wider range of streams, and the
+query-distance input — so the two results are not in contradiction, but this
+one does not say which change removed the gain. For now it supports exploring
+with the quick model (two-tier policy), at a quarter of the training time.
+
+### The operating point
+
+On stream-free sky, both kinds of model output an almost constant value — a
+background floor, about 0.007 for the quick models and 0.001 for the long ones
+— and all of their discrimination happens near streams. Their false-alarm
+curve is therefore a step rather than a slope: below the floor every
+stream-free pixel is flagged, just above it almost none. "Thresholded to flag
+at most 1e-3 of the stream-free sky" therefore means, here, "just above the
+model's background floor", where the quick models flag 7e-4 of the stream-free
+sky at most and the long ones none at all in a quarter of the cells. Both sit
+at essentially zero false alarms, so the comparison above is fair, but the
+number 1e-3 describes the target, not the rate actually reached. At a fixed
+threshold of 0.5 the models flag 6e-5 (quick) and 2e-6 (long) of the
+stream-free sky.
+
+### Caveats
+
+- Two trainings per length, not the six of the protocol.
+- One length (15 degrees) and no distance gradient in the evaluation, although
+  training covers 4-30 degrees and gradients.
+- Detection at the stream's known position, queried at its own distance.
+- The background uses LSST colour-magnitude tables (see "The sky").
+
 ## Generation cost
 
 Generating one training window originally took **0.73 s** on one process. The
@@ -257,3 +350,16 @@ What remains is dominated by streamobs observing each stream (60%), which a
 window cannot avoid. Building only the three distances a query needs would
 save about 15-20% more; it is set aside for now, since each window then
 carries every distance and could instead be reused for several queries.
+
+## Reproducing
+
+From the repository root, in the `streamml` environment:
+
+```bash
+python scripts/experiments/stream_parameters/run.py --seeds 42 43 --windows 4800   # then --windows 19200
+python scripts/experiments/stream_parameters/figures.py --contrast                 # figure, tables, contrast
+```
+
+`run.py` resumes where it stopped (trained models are reloaded, scored grid
+points skipped). Models and results are written to
+`data/experiments/stream_parameters/`.
