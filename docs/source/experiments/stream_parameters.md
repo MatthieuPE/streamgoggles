@@ -4,10 +4,9 @@
 of the known DES streams — distance, width, length, surface brightness,
 distance gradient — by a model that is told which trial distance to look at?
 
-**Status.** First results: two quick (4800-window) and two long
-(19200-window) models, each scored at the stream's known position on a grid of
-distance × width × surface brightness. The four other seeds the protocol asks
-for are not run yet.
+**Status.** First results: six quick (4800-window) models, as the protocol
+asks, and two long (19200-window) ones, each scored at the stream's known
+position on a grid of distance × width × surface brightness.
 
 This page records every choice made for this experiment, with the reason for
 it. Where a choice was made by the project lead rather than derived from a
@@ -229,11 +228,12 @@ neighbours sooner, which a later check should cover.
 
 ## First results
 
-Two models of each length (seeds 42 and 43), each scored on 20 injected
-streams per grid point, on a background none of them saw: distance modulus
-15, 16, 17, 18 and 19 × width 0.2, 0.6 and 1.2 degrees × surface brightness 32,
-33 and 34, length 15 degrees, no gradient, each stream queried at its own
-distance. Every stream at SB 32 is detected, so the figure shows SB 33 and 34.
+Six quick models (seeds 42-47) and two long ones (42-43), each scored on 20
+injected streams per grid point, on a background none of them saw: distance
+modulus 15, 16, 17, 18 and 19 × width 0.2, 0.6 and 1.2 degrees × surface
+brightness 32, 33 and 34, length 15 degrees, no gradient, each stream queried
+at its own distance. Every stream at SB 32 is detected, so the figure shows
+SB 33 and 34.
 
 ```{image} figures/stream_parameters/detection.png
 :alt: Fraction of streams detected against distance modulus, for three widths, at surface brightness 33 and 34, for quick and long models
@@ -241,15 +241,16 @@ distance. Every stream at SB 32 is detected, so the figure shows SB 33 and 34.
 ```
 
 *Fraction of injected streams detected at their known position, pooled over
-the two trainings of each length (40 streams per point), with Wilson 68%
-bars. Solid: 4800 training windows; dashed: 19200. Each model is thresholded
+the trainings of each length (120 streams per point for the quick models, 40
+for the long ones), with Wilson 68% bars. Solid: 4800 training windows; dashed: 19200. Each model is thresholded
 just above its own background level (see "The operating point" below).*
 
 ### At fixed surface brightness, closer streams are harder
 
 **Statement.** Detection rises with distance: at SB 34 and a width of 0.2
-degrees, from 2% of streams at distance modulus 15 to 100% at 19. This is a
-property of the streams, not of the model.
+degrees, from 1% of streams at distance modulus 15 to 98% at 19 (six
+trainings, 120 streams per point). This is a property of the streams, not of
+the model.
 
 Surface brightness is light per unit solid angle. A stream of given surface
 brightness, angular width and angular length is physically larger the farther
@@ -271,20 +272,22 @@ The contrast rises five times from distance modulus 15 to 19. This agrees with
 the DES 2018 streams: the faintest found (Elqui and Chenab, SB 34.1-34.3) are
 the most distant, at 40-50 kpc. **The hard case for this model is a close,
 narrow, faint stream**: at distance modulus 15-16, 0.2 degrees wide and SB 34,
-2-5% are detected. Among the DES streams, Wambelong (distance modulus 15.9,
+1-3% are detected. Among the DES streams, Wambelong (distance modulus 15.9,
 0.40 degrees wide, SB 33.7) is the closest to that regime.
 
 **Wider streams are easier at the same surface brightness** for a similar
 reason: the density per pixel is the same, but a wider stream covers more
 pixels, so it holds more stars in total and gives the network more to add up.
-At SB 34 and distance modulus 16: 5% at 0.2 degrees, 30% at 0.6, 52% at 1.2.
+At SB 34 and distance modulus 16: 3% at 0.2 degrees, 30% at 0.6, 57% at 1.2.
 
 ### Training longer brings nothing here
 
 **Statement.** The 19200-window models detect no more streams than the
-4800-window ones: over every SB 33 and 34 cell, 930 of 1200 streams against 945
-(Fisher p = 0.49), and at a fixed threshold of 0.5, 878 against 879. In the
-hardest cells the long models are, if anything, slightly lower. Their
+4800-window ones: over every SB 33 and 34 cell, 930 of 1200 streams (2
+trainings) against 2814 of 3600 (6 trainings), that is 77.5% against 78.2%,
+Fisher p = 0.63; on the two seeds they share, 77.5% against 78.8%. At a fixed
+threshold of 0.5, 878 against 879 of 1200 on those seeds. In the hardest cells
+the long models are, if anything, slightly lower. Their
 validation loss is clearly better (about 0.39 against 0.46), so they fit the
 label better without finding more streams.
 
@@ -294,6 +297,35 @@ per-window normalization, a much wider range of streams, and the
 query-distance input — so the two results are not in contradiction, but this
 one does not say which change removed the gain. For now it supports exploring
 with the quick model (two-tier policy), at a quarter of the training time.
+
+### Between trainings, the transition cells swing wildly
+
+**Statement.** Where a cell is neither always nor never detected, the same
+configuration retrained gives very different answers: at SB 34, distance
+modulus 16 and a width of 1.2 degrees, the six trainings range from **5% to
+100%** (pooled 57%).
+
+```{image} figures/stream_parameters/training_spread.png
+:alt: One point per trained model at surface brightness 34, against distance modulus, for three widths
+:width: 100%
+```
+
+*One point per trained model (six 4800-window trainings), each scored on its
+own 20 streams; the bar is their mean. Points are offset horizontally by
+width.*
+
+| SB 34 | 0.2 deg | 0.6 deg | 1.2 deg |
+|---|---|---|---|
+| distance modulus 15 | 1% (0-5) | 15% (5-40) | 25% (5-50) |
+| 16 | 3% (0-10) | 30% (0-75) | 57% (5-100) |
+| 17 | 33% (5-60) | 93% (70-100) | 97% (85-100) |
+| 18 | 92% (55-100) | 100% | 100% |
+
+Pooled percentage, with the range over the six trainings in brackets. Away
+from the transition every training agrees; inside it, a single model tells you
+almost nothing, which is why the numbers on this page are pooled over six. The
+same effect dominated {doc}`hyperparameters`, and it is the reason that
+experiment recommends comparing configurations only with several seeds each.
 
 ### The operating point
 
@@ -312,7 +344,7 @@ stream-free sky.
 
 ### Caveats
 
-- Two trainings per length, not the six of the protocol.
+- Six trainings for the quick models, two for the long ones.
 - One length (15 degrees) and no distance gradient in the evaluation, although
   training covers 4-30 degrees and gradients.
 - Detection at the stream's known position, queried at its own distance.

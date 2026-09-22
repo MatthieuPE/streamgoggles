@@ -3,6 +3,9 @@
   detection.png   fraction of streams detected against distance modulus, one
                   panel per surface brightness, one colour per width, quick
                   (4800-window) and long (19200-window) models
+  training_spread.png  one point per trained model, at surface brightness 34:
+                  how much the same configuration varies from training to
+                  training
   contrast        with --contrast: the stream's selected-star density against
                   the background's in the matched filter, per distance, at
                   fixed surface brightness and angular size (builds the sky,
@@ -96,6 +99,41 @@ def figure_detection(pooled):
     plt.close(fig)
 
 
+def figure_training_spread(matched):
+    """One point per trained model, SB 34: the spread between trainings."""
+    quick = matched[(matched.windows == 4800) & (matched.richness == 34.0)]
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    for width, group in quick.groupby("width"):
+        offset = {0.2: -0.12, 0.6: 0.0, 1.2: 0.12}[width]
+        for dm, cell in group.groupby("distance_modulus"):
+            x = dm + offset
+            ax.plot(
+                np.full(len(cell), x),
+                cell["detection_fraction"],
+                "o",
+                color=WIDTH_COLOURS[width],
+                alpha=0.55,
+                ms=6,
+            )
+            ax.plot(
+                [x - 0.05, x + 0.05],
+                [cell["detection_fraction"].mean()] * 2,
+                color=WIDTH_COLOURS[width],
+                lw=2.5,
+            )
+        ax.plot([], [], "o", color=WIDTH_COLOURS[width], label=f"width {width:g} deg")
+    ax.set_xlabel("distance modulus")
+    ax.set_ylabel("fraction of streams detected")
+    ax.set_xticks([15, 16, 17, 18, 19])
+    ax.set_ylim(-0.03, 1.03)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=9)
+    ax.set_title("SB 34: one point per trained model (6 x 4800 windows)", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(FIGURES / "training_spread.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
 def contrast_table():
     """Selected-star density of a stream against the background's, per distance.
 
@@ -159,6 +197,7 @@ def main(contrast):
     results = pd.read_pickle(DATA / "results.pkl")
     pooled, matched = pooled_detection(results)
     figure_detection(pooled)
+    figure_training_spread(matched)
     pd.set_option("display.width", 200)
     table = pooled[pooled.richness >= 33].pivot_table(
         index=["richness", "distance_modulus"],
@@ -167,6 +206,19 @@ def main(contrast):
     )
     print("== fraction detected, at the first threshold above the background floor")
     print((100 * table).round(0).to_string())
+    spread = (
+        matched[matched.windows == 4800]
+        .groupby(["richness", "distance_modulus", "width"])["detection_fraction"]
+        .agg(["min", "max", "std"])
+    )
+    print("\n== spread between the 6 quick trainings (cells that are not 0 or 1)")
+    moving = spread[(spread["max"] > 0) & (spread["min"] < 1)]
+    print(
+        (100 * moving[["min", "max"]])
+        .round(0)
+        .join(moving[["std"]].round(2))
+        .to_string()
+    )
     print("\n== stream-free density actually reached (target 1e-3)")
     print(
         matched.groupby("windows")["background_density"]
