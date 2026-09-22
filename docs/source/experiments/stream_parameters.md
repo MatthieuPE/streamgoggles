@@ -72,8 +72,12 @@ seen through the matched filter at `dm`.
 - **Why three distances (decision).** The model answers for one distance but
   sees the stream's signal at the neighbouring ones, so it can use how a stream
   changes with distance — along a distance gradient, for instance.
-- **Why the decoy once.** The fixed box does not depend on the trial distance:
-  its map is the same at every `dm`.
+- **Why the decoy once.** The fixed box does not depend on the trial distance,
+  so its map is the same at every `dm`. The decoy map is, like every channel,
+  the box applied to **stream and background** stars together: the stream
+  stars that fall in the box are added to the background ones. Because the box
+  sits redder than any star of the isochrone, the stream contributes almost
+  nothing to it, which is what makes it a background reference.
 - **Why constant maps for the distances.** They are the simplest way to give a
   convolutional network a number: the same value everywhere, scaled so that
   distance modulus 17 reads 0 and 15 and 19 read ∓1. They are added after the
@@ -158,15 +162,32 @@ measured parameters).
 
 ## Normalization
 
-Each (filter, distance) map is normalized as `(x − mean) / std`, with one mean
-and one standard deviation per map, **fitted once** and applied to every
-window. It is not a per-window normalization: the absolute density level of the
-sky is kept, so a denser patch looks denser to the model.
+**Each map is standardized from its own window, channel by channel**
+(decision: on real data the background level is not known in advance, so the
+input must not depend on assuming one). For a window, a channel `c` and the
+window's valid pixels `V` (those whose HEALPix neighbours all lie inside the
+footprint):
 
-The statistics are currently estimated from the first 8 training windows. With
-query-first generation (below) they will be computed once from the full-sky
-background maps built at start-up, which covers the whole footprint and
-contains no stream stars.
+$$
+\mu_c = \frac{1}{|V|}\sum_{p\in V} x_c(p), \qquad
+\sigma_c = \sqrt{\frac{1}{|V|}\sum_{p\in V}\big(x_c(p)-\mu_c\big)^2},
+\qquad
+x'_c(p) = \frac{x_c(p)-\mu_c}{\sigma_c} \quad (p \in V).
+$$
+
+`x_c(p)` is the star count of channel `c` in window pixel `p`. Invalid pixels
+keep their fill value 0, and a channel constant over `V` is only centred.
+Nothing is fitted on other windows or on the background maps, so doubling
+every count of a window, or adding a constant sky level to it, leaves the
+model's input unchanged (tested). The absolute density of the sky is
+therefore not something the model can use: it sees each channel's contrast
+within the window. The three distance channels are appended after this step
+and are not normalized.
+
+This differs from every earlier experiment and from the notebooks, which fit
+one mean and one standard deviation per channel on a few training windows and
+apply them to every window (`RobustNormalizer`); see "Preprocessing" in
+{doc}`../narrative/datasets_and_models`.
 
 ## Two streams in one window
 
@@ -178,25 +199,33 @@ neighbours sooner, which a later check should cover.
 
 ## Generation cost
 
-Before any optimization, generating one training window takes 0.73 s on one
-process. Where it goes:
+Generating one training window originally took **0.73 s** on one process. The
+profile showed where:
 
-| stage | time | share |
+| stage | before | after |
 |---|---|---|
-| full-sky maps for 22 channels (11 distances × 2 filters) | 0.34 s | 46% |
-| survey observation of the stream (streamobs) | 0.22 s | 30% |
-| projecting and cropping 22 maps and 22 labels | 0.06 s | 8% |
-| matched-filter selection at 11 distances | 0.05 s | 7% |
-| stream realization, number of stars, placement | 0.08 s | 10% |
+| building the 22 channels (11 distances × 2 filters) | 0.34 s | 0.06 s |
+| survey observation of the stream (streamobs) | 0.22 s | 0.22 s |
+| matched-filter selection at 11 distances | 0.05 s | 0.05 s |
+| stream realization, number of stars, placement | 0.08 s | 0.08 s |
+| **total per window** | **0.73 s** | **0.37 s** |
 
-The model uses 4 of the 22 maps and 1 of the 22 labels. The planned changes, in
-this order:
+Two changes, both with **identical output** (a test compares every map, label
+and validity mask with the previous computation, pixel for pixel):
 
-1. **Crop first, one projection per window:** no full-sky arrays, the window's
-   geometry computed once and shared by every channel. Output identical.
-2. **Decoy once:** one decoy channel instead of 11. Output identical.
-3. **Query first:** draw the queried distance before generating the window and
-   build only its three matched-filter maps and the decoy; normalization from
-   the background maps.
+1. **Crop first.** A window used to be cut out of two full-sky maps per
+   channel (about 3 million pixels each at nside 512): one for the stream's
+   selected stars, one for stream plus background. Now the window's
+   projection — for each window pixel, the HEALPix pixels around it and their
+   interpolation weights — is computed once and shared by every channel, the
+   stream's stars are placed on HEALPix pixels once, and each channel's
+   selected stars are counted only on the pixels the window reads, then added
+   to the background map (built once at start-up) there.
+2. **Decoy once.** The fixed box's selection of the stream's stars is computed
+   once per window instead of at each of the 11 distances, and its background
+   map once at start-up instead of 11 times.
 
-The survey observation (0.22 s) remains as a floor.
+What remains is dominated by streamobs observing each stream (60%), which a
+window cannot avoid. Building only the three distances a query needs would
+save about 15-20% more; it is set aside for now, since each window then
+carries every distance and could instead be reused for several queries.

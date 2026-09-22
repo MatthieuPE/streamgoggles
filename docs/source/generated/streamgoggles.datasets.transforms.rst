@@ -11,4 +11,5 @@
       QueryDistanceTransform
       RobustNormalizer
       StreamMapTransform
+      WindowNormalizer
    

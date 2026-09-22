@@ -28,4 +28,5 @@
       PixelizationSpec
       ShiftedColorBoxFilter
       StreamobsSplineFilter
+      WindowProjection
    
