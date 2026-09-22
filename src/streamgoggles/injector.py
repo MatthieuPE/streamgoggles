@@ -72,6 +72,7 @@ from streamgoggles.data_preparation import Cut, apply_cuts, apply_magnitude_clip
 from streamgoggles.matched_filter import (
     MatchedFilter,
     PixelizationSpec,
+    WindowProjection,
     combine_full_maps,
     crop_window,
     finalize_full,
@@ -515,6 +516,75 @@ class StreamInjector:
                 channels_meta.append({"filter": filter_name, "distance_modulus": dm})
         return finalized_full, stream_raw_full, channels_meta
 
+    def _build_window_channels(self, detected, window):
+        """Every `(distance, filter)` channel of ONE window, without full-sky maps.
+
+        The same values as `_build_full_sky_channels` followed by `crop_window`
+        on each channel, computed only where the window reads the sky:
+
+        - the window's projection (for each window pixel, the HEALPix pixels
+          around it and their weights, and whether they are valid) is computed
+          once and shared by every channel, instead of once per channel and
+          per label;
+        - the stream's stars are placed on HEALPix pixels once, and each
+          channel's selected stars are counted only on the pixels the window
+          reads, then added to the cached background map there, instead of
+          building two full-sky maps (about 3 million pixels each at
+          nside 512) per channel;
+        - a filter whose selection does not depend on the trial distance (the
+          fixed decoy box) is evaluated once and reused at every distance.
+
+        A test checks the result against the full-sky path, pixel for pixel.
+
+        Returns:
+            Tuple ``(maps, raw_labels, valid, channels_meta)``: the window's
+            combined map per channel, its stream-only count map per channel
+            (unthresholded), the window's validity mask, and the channel
+            order, distance-major as `_build_full_sky_channels`.
+        """
+        projection = WindowProjection.for_window(
+            window, self.pix, self.background.valid_mask_full
+        )
+        valid_at = self.background.valid_mask_full[projection.pixnums]
+        if len(detected):
+            star_pixels = hp.ang2pix(
+                self.pix.nside,
+                detected["ra"].to_numpy(dtype=float),
+                detected["dec"].to_numpy(dtype=float),
+                nest=self.pix.nest,
+                lonlat=True,
+            )
+        else:
+            star_pixels = np.empty(0, dtype=np.int64)
+        distance_moduli = sorted(
+            self.background.raw_map_full_dict[self.filter_names[0]]
+        )
+        maps, raw_labels, channels_meta = [], [], []
+        distance_independent = {}
+        for dm in distance_moduli:
+            for filter_name in self.filter_names:
+                matched_filter = self.matched_filters[filter_name]
+                reuse = getattr(matched_filter, "distance_independent", False)
+                if reuse and filter_name in distance_independent:
+                    counts = distance_independent[filter_name]
+                else:
+                    selected = np.asarray(
+                        matched_filter.select(detected, list(self.bands), dm),
+                        dtype=bool,
+                    )
+                    counts = projection.counts(star_pixels[selected])
+                    if reuse:
+                        distance_independent[filter_name] = counts
+                background = self.background.raw_map_full_dict[filter_name][dm][
+                    projection.pixnums
+                ]
+                maps.append(
+                    projection.image(np.where(valid_at, background + counts, 0.0))
+                )
+                raw_labels.append(projection.image(counts))
+                channels_meta.append({"filter": filter_name, "distance_modulus": dm})
+        return maps, raw_labels, projection.valid, channels_meta
+
     def inject_stream_full_sky(self, params: dict, rng: np.random.Generator) -> dict:
         """Inject a stream and return FULL-SKY channel maps, uncropped.
 
@@ -699,37 +769,45 @@ class StreamInjector:
                 f"placements of the stream; last failure: {failures[-1]}"
             )
 
-        finalized_full, stream_raw_full, channels_meta = self._build_full_sky_channels(
-            detected
-        )
-        distance_moduli = sorted({c["distance_modulus"] for c in channels_meta})
         use_channelwise_label = self.label_policy in (
             "stream_count",
             "stream_detection",
         )
-
-        map_channels = []
-        label_channels = []
-        valid_mask = None
-        for channel_index in range(len(channels_meta)):
-            windowed_map, windowed_valid = crop_window(
-                finalized_full[channel_index],
-                self.background.valid_mask_full,
-                window,
-                self.pix,
+        finalize = bool(self.finalize_cfg and self.finalize_cfg.get("enabled"))
+        if finalize:
+            # Finalization works on the full sky (and is not implemented yet:
+            # finalize_full raises), so it keeps the full-sky path.
+            finalized_full, stream_raw_full, channels_meta = (
+                self._build_full_sky_channels(detected)
             )
-            map_channels.append(windowed_map)
-            if valid_mask is None:
-                valid_mask = windowed_valid
-
-            if use_channelwise_label:
-                windowed_label, _ = crop_window(
-                    stream_raw_full[channel_index],
+            map_channels, raw_labels, valid_mask = [], [], None
+            for index in range(len(channels_meta)):
+                windowed_map, windowed_valid = crop_window(
+                    finalized_full[index],
                     self.background.valid_mask_full,
                     window,
                     self.pix,
                 )
-                # Threshold AFTER cropping, never before: crop_window
+                map_channels.append(windowed_map)
+                valid_mask = windowed_valid if valid_mask is None else valid_mask
+                raw_labels.append(
+                    crop_window(
+                        stream_raw_full[index],
+                        self.background.valid_mask_full,
+                        window,
+                        self.pix,
+                    )[0]
+                )
+        else:
+            map_channels, raw_labels, valid_mask, channels_meta = (
+                self._build_window_channels(detected, window)
+            )
+        distance_moduli = sorted({c["distance_modulus"] for c in channels_meta})
+
+        label_channels = []
+        if use_channelwise_label:
+            for windowed_label in raw_labels:
+                # Threshold AFTER cropping, never before: cropping
                 # interpolates, so thresholding first would produce a binary
                 # map that interpolation then turned back into fractional
                 # values -- a label that is no longer {0, 1} at all.

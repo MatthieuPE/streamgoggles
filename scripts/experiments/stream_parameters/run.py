@@ -8,7 +8,10 @@ The model answers for one queried trial distance ``dm``. Its input, per window:
   3. fixed decoy box map (colour 1.2-1.5, g 18-24.5; the same at every distance)
   4-6. constant maps holding the distances of maps 0-2, scaled (dm - 17) / 2
 
-Its output is one map: the stream stars the matched filter at dm selects,
+Each map is standardized from its own window: (x - mean) / std over the
+window's valid pixels, channel by channel, with nothing fitted on other
+windows or on the background. Its output is one map: the stream stars the
+matched filter at dm selects,
 thresholded at one star per pixel (`datasets.transforms.QueryDistanceTransform`).
 At inference the query slides over 15, 15.5, ... 19.
 
@@ -163,8 +166,8 @@ def train(seed, windows, background, injector):
     )
     from streamgoggles.datasets.transforms import (
         QueryDistanceTransform,
-        RobustNormalizer,
         StreamMapTransform,
+        WindowNormalizer,
     )
     from streamgoggles.models.losses import get_loss
     from streamgoggles.models.unet import UNet
@@ -190,13 +193,9 @@ def train(seed, windows, background, injector):
         )
 
     train_dataset = dataset(seed, windows // TRAINING["epochs"])
-    # Normalization: every (distance, filter) map with its own statistics.
-    fit = [train_dataset[i] for i in range(8)]
-    normalizer = RobustNormalizer()
-    normalizer.fit(
-        np.concatenate([s["map_stack"] for s in fit], axis=1),
-        np.concatenate([s["valid_mask"] for s in fit], axis=0),
-    )
+    # Each window's maps are standardized from that window alone (see the
+    # docs page): nothing is fitted, so the same holds on real data.
+    normalizer = WindowNormalizer()
 
     def query_view(augment, rng_seed):
         return QueryDistanceTransform(
@@ -216,6 +215,7 @@ def train(seed, windows, background, injector):
     validation = [validation_view(validation_source[i]) for i in range(N_VALIDATION)]
 
     # Head bias at the class prior of the queried label.
+    fit = [train_dataset[i] for i in range(8)]
     fit_view = query_view(False, seed + 3000)
     positive = np.mean(
         [fit_view(s)["label_stack"][0][s["valid_mask"]].mean() for s in fit]
@@ -266,15 +266,14 @@ def main(seeds, windows):
 
     matplotlib.use("Agg")
     warnings.filterwarnings("ignore", "invalid value encountered in log10")
-    import numpy as np
     import pandas as pd
     import torch
 
     from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
     from streamgoggles.datasets.transforms import (
         QueryDistanceTransform,
-        RobustNormalizer,
         StreamMapTransform,
+        WindowNormalizer,
     )
     from streamgoggles.evaluation.footprint import (
         THRESHOLD_GRID,
@@ -312,12 +311,10 @@ def main(seeds, windows):
                 in_channels=QueryDistanceTransform.n_channels, out_channels=1, **MODEL
             )
             model.load_state_dict(torch.load(weights))
-            normalizer = RobustNormalizer()
-            normalizer.mean = np.array(saved["normalizer_mean"], dtype=np.float32)
-            normalizer.std = np.array(saved["normalizer_std"], dtype=np.float32)
+            print(f"{stem}: loaded ({saved['train_s']:.0f}s of training)", flush=True)
         else:
             start = time.time()
-            model, normalizer, result = train(seed, windows, background, injector)
+            model, _, result = train(seed, windows, background, injector)
             torch.save(model.state_dict(), weights)
             meta.write_text(
                 json.dumps(
@@ -327,8 +324,7 @@ def main(seeds, windows):
                         "training_parameters": {
                             k: str(v) for k, v in training_parameters().items()
                         },
-                        "normalizer_mean": [float(v) for v in normalizer.mean],
-                        "normalizer_std": [float(v) for v in normalizer.std],
+                        "normalization": "per window and channel (WindowNormalizer)",
                         "train_losses": result["train_losses"],
                         "val_losses": result["val_losses"],
                         "train_s": time.time() - start,
@@ -346,7 +342,9 @@ def main(seeds, windows):
                     if (seed, windows, eval_set) in done:
                         continue
                     transform = QueryDistanceTransform(
-                        StreamMapTransform(normalizer=normalizer, augment=False),
+                        StreamMapTransform(
+                            normalizer=WindowNormalizer(), augment=False
+                        ),
                         query_grid=QUERY_GRID,
                         step=STEP,
                         query=distance,

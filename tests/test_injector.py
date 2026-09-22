@@ -1260,3 +1260,66 @@ def test_injector_minimum_stream_length_reaches_the_window_sampler(
     )
     injector.inject_single_stream(stream_params, np.random.default_rng(0))
     assert seen and all(value == 3.0 for value in seen)
+
+
+def test_window_channels_equal_the_full_sky_path(real_background, stream_params):
+    """The fast window builder must give exactly what building every channel on
+    the full sky and cropping it gives: same maps, same stream-only counts,
+    same validity, pixel for pixel."""
+    from streamgoggles.matched_filter import ColorBoxFilter, crop_window
+    from streamgoggles.windows import Window
+
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+    )
+    detected, _, placement = injector._realize_and_inject(
+        stream_params, np.random.default_rng(4)
+    )
+    size = pix.image_size_pix[0] * pix.pixel_scale_deg
+    window = Window(
+        center_ra=placement["center_ra"],
+        center_dec=placement["center_dec"],
+        rotation_deg=30.0,
+        width_deg=size,
+        height_deg=size,
+    )
+
+    maps, raw_labels, valid, meta = injector._build_window_channels(detected, window)
+    full_maps, full_raw, full_meta = injector._build_full_sky_channels(detected)
+    assert meta == full_meta
+    assert any(label.sum() > 0 for label in raw_labels)
+    for index in range(len(meta)):
+        expected_map, expected_valid = crop_window(
+            full_maps[index], bg.valid_mask_full, window, pix
+        )
+        expected_label, _ = crop_window(
+            full_raw[index], bg.valid_mask_full, window, pix
+        )
+        np.testing.assert_array_equal(maps[index], expected_map)
+        np.testing.assert_array_equal(raw_labels[index], expected_label)
+        np.testing.assert_array_equal(valid, expected_valid)
+
+    # A distance-independent decoy is computed once and reused at every
+    # distance, and still matches the full-sky path.
+    fixed = {
+        **filters,
+        "decoy": ColorBoxFilter(
+            color_range=(1.2, 1.5), mag_range=(18.0, 24.5), namespace="lsst_yr1"
+        ),
+    }
+    injector.matched_filters = fixed
+    maps, raw_labels, valid, meta = injector._build_window_channels(detected, window)
+    full_maps, full_raw, _ = injector._build_full_sky_channels(detected)
+    for index in range(len(meta)):
+        np.testing.assert_array_equal(
+            raw_labels[index],
+            crop_window(full_raw[index], bg.valid_mask_full, window, pix)[0],
+        )

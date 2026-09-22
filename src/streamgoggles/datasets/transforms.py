@@ -140,6 +140,51 @@ class RobustNormalizer:
         return out
 
 
+class WindowNormalizer:
+    r"""Standardize each channel of a window from that window alone.
+
+    For one window and one channel ``c``, with ``V`` the window's valid pixels
+    (those whose HEALPix neighbours all lie inside the footprint):
+
+    .. math::
+
+        \mu_c = \frac{1}{|V|} \sum_{p \in V} x_c(p), \qquad
+        \sigma_c = \sqrt{\frac{1}{|V|} \sum_{p \in V} \big(x_c(p) - \mu_c\big)^2},
+        \qquad
+        x'_c(p) = \frac{x_c(p) - \mu_c}{\sigma_c} \quad (p \in V).
+
+    Invalid pixels keep their fill value (0), and a channel that is constant
+    over ``V`` (``sigma_c = 0``) is only centred. Nothing is fitted or stored:
+    unlike `RobustNormalizer`, whose mean and standard deviation per channel
+    are estimated once on training windows and then applied to every window,
+    this uses no statistic from any other window or from the background. On
+    real data the background level is not known in advance, so the input must
+    not depend on assuming one. It follows that the absolute density of the
+    sky is removed: a window and the same window with every count doubled give
+    the same input.
+
+    Called like `RobustNormalizer` (``normalizer(map_stack, valid_mask)``), so
+    it plugs into `StreamMapTransform` unchanged.
+    """
+
+    def __call__(self, map_stack: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+        """Normalized copy of ``map_stack`` (n_channels, ny, nx)."""
+        if valid_mask.shape != map_stack.shape[1:]:
+            raise ValueError(
+                f"valid_mask shape {valid_mask.shape} doesn't match map_stack "
+                f"spatial dims {map_stack.shape[1:]}"
+            )
+        out = map_stack.astype(np.float32, copy=True)
+        if not valid_mask.any():
+            return out
+        for c in range(map_stack.shape[0]):
+            values = map_stack[c][valid_mask].astype(np.float64)
+            mean = values.mean()
+            std = values.std()
+            out[c][valid_mask] = (values - mean) / (std if std > 0 else 1.0)
+        return out
+
+
 class StreamMapTransform:
     """Torch-compatible transform: normalization + augmentation.
 

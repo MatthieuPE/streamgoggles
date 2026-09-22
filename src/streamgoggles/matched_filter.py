@@ -377,6 +377,11 @@ class ColorBoxFilter(MatchedFilter):
             columns to read, e.g. "lsst_yr1".
     """
 
+    # Its selection is the same at every trial distance, so a caller building
+    # channels at several distances may compute it once (see
+    # StreamInjector._build_window_channels and Background).
+    distance_independent = True
+
     def __init__(
         self,
         color_range: tuple[float, float],
@@ -865,6 +870,93 @@ def crop_window(
         rotation_deg=window.rotation_deg,
     )
     return project(finalized_full, valid_mask_full, window_pix)
+
+
+@dataclasses.dataclass
+class WindowProjection:
+    """Where one window's pixels fall on the HEALPix sky, computed once.
+
+    `crop_window` projects a full-sky map onto a window: for every window
+    pixel, the four HEALPix pixels around it and their interpolation weights
+    (or the one pixel it falls in, without interpolation), and whether all of
+    them are valid. That geometry is the same for every channel of a window,
+    so it is computed once here and reused. And since a window only ever reads
+    those HEALPix pixels, a channel's values are only needed there: a stream's
+    counts can be tallied on them directly instead of on a full-sky map. Both
+    reproduce `crop_window` exactly.
+
+    Attributes:
+        pixnums: HEALPix pixels read by the window, shape (4, n) with
+            interpolation, (n,) without, n = number of window pixels.
+        weights: interpolation weights, same shape as ``pixnums``, or None.
+        valid: (ny, nx) bool, the window pixels whose every neighbour is valid.
+        shape: (ny, nx).
+    """
+
+    pixnums: np.ndarray
+    weights: np.ndarray | None
+    valid: np.ndarray
+    shape: tuple[int, int]
+
+    @classmethod
+    def for_window(
+        cls, window: "Window", pix: PixelizationSpec, valid_mask_full: np.ndarray
+    ) -> "WindowProjection":
+        """The projection `crop_window` would use for this window."""
+        window_pix = dataclasses.replace(
+            pix,
+            center_ra=window.center_ra,
+            center_dec=window.center_dec,
+            rotation_deg=window.rotation_deg,
+        )
+        ra_grid, dec_grid = _tangent_plane_radec(window_pix)
+        if window_pix.interpolate:
+            pixnums, weights = hp.get_interp_weights(
+                window_pix.nside,
+                ra_grid.ravel(),
+                dec_grid.ravel(),
+                nest=window_pix.nest,
+                lonlat=True,
+            )
+            valid = np.all(valid_mask_full[pixnums], axis=0)
+        else:
+            pixnums = hp.ang2pix(
+                window_pix.nside,
+                ra_grid.ravel(),
+                dec_grid.ravel(),
+                nest=window_pix.nest,
+                lonlat=True,
+            )
+            weights = None
+            valid = valid_mask_full[pixnums]
+        shape = tuple(window_pix.image_size_pix)
+        return cls(pixnums, weights, valid.reshape(shape), shape)
+
+    def image(self, values: np.ndarray) -> np.ndarray:
+        """Window image from a map's values at ``pixnums`` (same shape).
+
+        The same arithmetic as `project`: weighted sum over the four
+        neighbours, then 0.0 wherever a neighbour is invalid.
+        """
+        if self.weights is not None:
+            values = np.sum(self.weights * values, axis=0)
+        image = values.reshape(self.shape).astype(float)
+        image[~self.valid] = 0.0
+        return image
+
+    def counts(self, star_pixels: np.ndarray) -> np.ndarray:
+        """Number of stars in each of ``pixnums`` (same shape, float).
+
+        Equivalent to ``np.bincount(star_pixels, minlength=npix)[pixnums]``
+        without the full-sky array.
+        """
+        if len(star_pixels) == 0:
+            return np.zeros(self.pixnums.shape, dtype=float)
+        unique, per_pixel = np.unique(star_pixels, return_counts=True)
+        index = np.minimum(np.searchsorted(unique, self.pixnums), len(unique) - 1)
+        return np.where(unique[index] == self.pixnums, per_pixel[index], 0).astype(
+            float
+        )
 
 
 def window_to_healpix_indices(

@@ -1218,3 +1218,29 @@ def test_query_distance_transform_needs_the_neighbouring_maps():
     )
     with pytest.raises(KeyError, match="20"):
         transform(_all_distance_sample())
+
+
+def test_window_normalizer_uses_only_the_window_itself():
+    from streamgoggles.datasets.transforms import WindowNormalizer
+
+    rng = np.random.default_rng(0)
+    stack = rng.poisson(20.0, size=(3, 8, 8)).astype(float)
+    stack[2] = 5.0  # a constant channel
+    valid = np.ones((8, 8), dtype=bool)
+    valid[0, :] = False
+    stack[:, 0, :] = 0.0  # invalid pixels hold the fill value
+    out = WindowNormalizer()(stack, valid)
+
+    for c in (0, 1):
+        assert out[c][valid].mean() == pytest.approx(0.0, abs=1e-6)
+        assert out[c][valid].std() == pytest.approx(1.0, abs=1e-6)
+    # A constant channel is only centred, never divided by zero.
+    np.testing.assert_allclose(out[2][valid], 0.0)
+    # Invalid pixels keep their fill value.
+    np.testing.assert_array_equal(out[:, 0, :], 0.0)
+    # No absolute level survives: doubling every count, or adding a constant
+    # sky level, gives the same input.
+    np.testing.assert_allclose(WindowNormalizer()(2.0 * stack, valid), out, atol=1e-5)
+    shifted = stack + 7.0
+    shifted[:, 0, :] = 0.0
+    np.testing.assert_allclose(WindowNormalizer()(shifted, valid), out, atol=1e-5)
