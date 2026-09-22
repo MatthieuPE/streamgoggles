@@ -370,6 +370,7 @@ class StreamInjector:
         label_config: dict | None = None,
         finalize_cfg: dict | None = None,
         count_threshold: float = 1.0,
+        min_stream_length_deg: float = 5.0,
     ):
         """Initialize injector.
 
@@ -412,6 +413,10 @@ class StreamInjector:
         self.label_config = label_config or {}
         self.finalize_cfg = finalize_cfg
         self.count_threshold = count_threshold
+        # How much of the stream a training window must hold (decision 21's
+        # 5 degrees by default); lower it when streams can be shorter than
+        # that -- Tucana III is 4.8 degrees long.
+        self.min_stream_length_deg = min_stream_length_deg
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
 
@@ -616,7 +621,7 @@ class StreamInjector:
         self,
         params: dict,
         rng: np.random.Generator,
-        min_stream_length_deg: float = 5.0,
+        min_stream_length_deg: float | None = None,
         max_attempts: int = 100,
         max_placements: int = 10,
     ) -> Sample:
@@ -639,8 +644,9 @@ class StreamInjector:
                 the placement *position* itself is always random regardless
                 ("position: uniform_in_footprint" is a sentinel, never tunable).
             rng: Random number generator.
-            min_stream_length_deg: Forwarded to windows.sample_stream_window
-                (decision 21 default: 5 deg).
+            min_stream_length_deg: Forwarded to windows.sample_stream_window;
+                None uses the injector's own ``min_stream_length_deg``
+                (5 deg unless configured).
             max_attempts: Forwarded to windows.sample_stream_window.
             max_placements: How many times to realize and place the stream
                 again when a placement admits no valid window (the stream
@@ -663,6 +669,8 @@ class StreamInjector:
             NotImplementedError if self.label_policy is "soft_distance"
                 (rasterize.py, decision 6 -- still a stub).
         """
+        if min_stream_length_deg is None:
+            min_stream_length_deg = self.min_stream_length_deg
         size_deg = self.pix.image_size_pix[0] * self.pix.pixel_scale_deg
         failures = []
         for _ in range(max_placements):

@@ -1229,3 +1229,34 @@ def test_label_follows_the_half_of_the_stream_at_the_filters_distance(
     assert stars(16.0, far_half) <= 0.1 * stars(16.0, near_half)
     # ... while the farther filter still sees the closer half.
     assert stars(18.0, near_half) > 0.1 * stars(18.0, far_half)
+
+
+def test_injector_minimum_stream_length_reaches_the_window_sampler(
+    real_background, stream_params, monkeypatch
+):
+    """Streams can be shorter than the default 5 degrees (Tucana III: 4.8), so
+    the minimum length a window must hold is an injector setting."""
+    import streamgoggles.injector as injector_module
+
+    seen = []
+    original = injector_module.sample_stream_window
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("min_stream_length_deg"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(injector_module, "sample_stream_window", spy)
+    bg, filters, pix = real_background
+    injector = StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        min_stream_length_deg=3.0,
+    )
+    injector.inject_single_stream(stream_params, np.random.default_rng(0))
+    assert seen and all(value == 3.0 for value in seen)

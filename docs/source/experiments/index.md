@@ -170,7 +170,7 @@ it moves the results.
 | Threshold tuning | Which probability threshold for the final maps, and does it hold on streams and backgrounds not used to choose it? | planned |
 | {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length, network size, averaging and the decoy channel: one model trained on SB 32-34.5 with 19200 windows (4800 while exploring); learning rate and batch size not run yet |
 | {doc}`two_streams` | Does a model trained on one stream per window still find a stream with a neighbour nearby? | done: yes at 2 degrees or more and for crossing streams; a faint stream within about 1 degree of a brighter parallel one is suppressed |
-| Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
+| {doc}`stream_parameters` | Detection across the range of the known DES streams (distance, width, length, surface brightness, distance gradient), with a model queried at one trial distance and shown its two neighbours. | in progress: design fixed and tested, generation being optimized |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |
 | Survey-wide contamination | False alarms over a fully tiled footprint, rather than around one injected stream. | planned |
@@ -184,4 +184,5 @@ it moves the results.
 loss_selection
 hyperparameters
 two_streams
+stream_parameters
 ```
