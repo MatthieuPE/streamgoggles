@@ -242,13 +242,14 @@ class QueryDistanceTransform:
     The model does not see them all. For a queried distance modulus ``dm`` it
     gets, in this order:
 
-    0. the matched filter's map at ``dm - step``;
-    1. the matched filter's map at ``dm``;
-    2. the matched filter's map at ``dm + step``;
-    3. the decoy's map (the fixed colour-magnitude box does not depend on the
-       trial distance, so the one at ``dm`` stands for all);
-    4-6. three constant maps holding the distance moduli of maps 0-2, scaled
-       as ``(dm - center) / scale`` so the same distance always reads the same.
+    - channel 0: the matched filter's map at ``dm - step``;
+    - channel 1: the matched filter's map at ``dm``;
+    - channel 2: the matched filter's map at ``dm + step``;
+    - channel 3: the decoy's map (the fixed colour-magnitude box does not
+      depend on the trial distance, so the one at ``dm`` stands for all);
+    - channels 4-6: constant maps holding the distance moduli of channels 0-2,
+      scaled as ``(dm - center) / scale`` so the same distance always reads
+      the same.
 
     It learns the matched filter's label at ``dm`` alone: ``label_stack``
     becomes that one channel. The neighbouring maps let it use the stream's
