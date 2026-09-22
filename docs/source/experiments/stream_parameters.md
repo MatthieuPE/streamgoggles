@@ -160,34 +160,62 @@ measured parameters).
 - **Surface brightness** sets the number of stars from each stream's own width,
   length and central distance.
 
-## Normalization
+## Normalization: what changed
 
-**Each map is standardized from its own window, channel by channel**
-(decision: on real data the background level is not known in advance, so the
-input must not depend on assuming one). For a window, a channel `c` and the
-window's valid pixels `V` (those whose HEALPix neighbours all lie inside the
-footprint):
+Both the old and the new normalization standardize each channel `c` of a
+window, pixel by pixel, over the window's **valid** pixels `V` (those whose
+HEALPix neighbours all lie inside the footprint); invalid pixels keep their
+fill value 0, and a channel with `σ = 0` is only centred. `x_c(p)` is the star
+count of channel `c` in window pixel `p`. What changed is **where the mean and
+the standard deviation come from**.
+
+**Before (every earlier experiment and the notebooks, `RobustNormalizer`).**
+One mean and one standard deviation per channel were fitted **once**, on the
+valid pixels of a fixed set `F` of training windows pooled together (the
+first 8 training windows), and then applied unchanged to every window —
+training, validation and evaluation alike:
 
 $$
-\mu_c = \frac{1}{|V|}\sum_{p\in V} x_c(p), \qquad
-\sigma_c = \sqrt{\frac{1}{|V|}\sum_{p\in V}\big(x_c(p)-\mu_c\big)^2},
+\bar\mu_c = \frac{1}{N_F}\sum_{w\in F}\sum_{p\in V_w} x_{c,w}(p), \qquad
+\bar\sigma_c = \sqrt{\frac{1}{N_F}\sum_{w\in F}\sum_{p\in V_w}\big(x_{c,w}(p)-\bar\mu_c\big)^2}, \qquad
+N_F = \sum_{w\in F} |V_w|,
+$$
+
+$$
+x'_{c,w}(p) = \frac{x_{c,w}(p)-\bar\mu_c}{\bar\sigma_c} \quad \text{for every window } w.
+$$
+
+A denser patch of sky therefore stayed denser after normalization: the model
+could see the absolute density level, as it was on the training background.
+
+**Now (this experiment, `WindowNormalizer`).** The mean and standard deviation
+are computed **for each window from that window alone**:
+
+$$
+\mu_{c,w} = \frac{1}{|V_w|}\sum_{p\in V_w} x_{c,w}(p), \qquad
+\sigma_{c,w} = \sqrt{\frac{1}{|V_w|}\sum_{p\in V_w}\big(x_{c,w}(p)-\mu_{c,w}\big)^2},
 \qquad
-x'_c(p) = \frac{x_c(p)-\mu_c}{\sigma_c} \quad (p \in V).
+x'_{c,w}(p) = \frac{x_{c,w}(p)-\mu_{c,w}}{\sigma_{c,w}}.
 $$
 
-`x_c(p)` is the star count of channel `c` in window pixel `p`. Invalid pixels
-keep their fill value 0, and a channel constant over `V` is only centred.
-Nothing is fitted on other windows or on the background maps, so doubling
-every count of a window, or adding a constant sky level to it, leaves the
-model's input unchanged (tested). The absolute density of the sky is
-therefore not something the model can use: it sees each channel's contrast
-within the window. The three distance channels are appended after this step
-and are not normalized.
+Every channel of every window then has mean 0 and standard deviation 1 over
+its valid pixels. Nothing is fitted or stored, and nothing comes from other
+windows or from the background maps.
 
-This differs from every earlier experiment and from the notebooks, which fit
-one mean and one standard deviation per channel on a few training windows and
-apply them to every window (`RobustNormalizer`); see "Preprocessing" in
-{doc}`../narrative/datasets_and_models`.
+**Why the change (decision).** On real data the background level is not known
+in advance, and the model must not rely on having seen it in training: with
+the fitted statistics, the input depends on how the real sky's density
+compares with the simulated training background. The per-window version
+removes that dependence — doubling every count of a window, or adding a
+constant sky level to it, gives exactly the same input (tested).
+
+**What it costs.** The absolute density of the sky is no longer visible to the
+model, only each channel's contrast within the window. A stream still changes
+the statistics of the window it is in (it adds to both `μ` and `σ`), more so
+for bright or wide streams filling a larger part of the window.
+
+The three distance channels are appended after this step and are never
+normalized; the label is never normalized.
 
 ## Two streams in one window
 
