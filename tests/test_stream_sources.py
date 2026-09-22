@@ -107,6 +107,20 @@ def test_realize_distance_gradient_follows_the_track(uniform_params):
     assert df["dist"].std() > 0
 
 
+def test_realize_caps_the_total_distance_change(uniform_params):
+    # 0.2 mag/deg over a 20-degree stream would be 4 mag end to end; the cap
+    # of 1.5 mag clips the gradient to 1.5 / 20 = 0.075 mag/deg.
+    params = dict(
+        uniform_params, length=20.0, distance_gradient=0.2, max_distance_change=1.5
+    )
+    df = StreamObsSource().realize(params, np.random.default_rng(0))
+    np.testing.assert_allclose(
+        df["dist"].to_numpy(),
+        uniform_params["distance_modulus"] + 0.075 * df["phi1"].to_numpy(),
+    )
+    assert df["dist"].max() - df["dist"].min() <= 1.5 + 1e-9
+
+
 def test_realize_reproducible_with_same_seed(uniform_params):
     df1 = StreamObsSource().realize(uniform_params, np.random.default_rng(123))
     df2 = StreamObsSource().realize(uniform_params, np.random.default_rng(123))

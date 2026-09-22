@@ -1070,3 +1070,162 @@ def test_inject_streams_full_sky_keeps_the_first_stream_identical(
     assert sum(m.sum() for m in paired["stream_raw_full"]) > sum(
         m.sum() for m in alone["stream_raw_full"]
     )
+
+
+# ---------------------------------------------------------------------------
+# The label follows the matched filter's trial distance
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def distance_background(tmp_path_factory):
+    """The isochrone filter alone, at four trial distances: 15, 16, 18, 19."""
+    region = StudyRegion(
+        center_ra=0.0, center_dec=-30.0, width_deg=25.0, height_deg=18.0
+    )
+    pix = PixelizationSpec(nside=64, pixel_scale_deg=1.0, image_size_pix=(20, 20))
+    good = StreamobsSplineFilter(
+        iso_config={"age": 12.5, "z": 0.0002}, namespace="lsst_yr1"
+    )
+    bg = Background.load_or_cache(
+        source=StreamObsLightBackgroundSource(),
+        source_cfg={"seed": 3},
+        study_region=region,
+        cuts=[],
+        clipping=None,
+        matched_filters={"good": good},
+        bands=["g", "r"],
+        distance_moduli=[15.0, 16.0, 18.0, 19.0],
+        finalize_cfg=None,
+        store=BackgroundMapStore(tmp_path_factory.mktemp("distance_bgmaps")),
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        filter_configs={"good": {"age": 12.5, "z": 0.0002}},
+    )
+    return bg, {"good": good}, pix
+
+
+def _distance_injector(distance_background, stream_source):
+    bg, filters, pix = distance_background
+    return StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=stream_source,
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        bands=("g", "r"),
+        richness_kind="nstars",
+        label_policy="stream_detection",
+        count_threshold=1.0,
+    )
+
+
+def _label_pixels(full, distance, count_threshold=1.0):
+    """HEALPix pixels labelled as stream by the filter at `distance`."""
+    index = [ch["distance_modulus"] for ch in full["channels"]].index(distance)
+    return np.flatnonzero(full["stream_raw_full"][index] > count_threshold)
+
+
+def test_label_is_almost_empty_when_the_filter_is_at_the_wrong_distance(
+    distance_background,
+):
+    """Full data generation for a stream at distance modulus 15: the label
+    built with the matched filter at 19 must be almost empty, since the filter
+    selects stars 4 magnitudes fainter than the stream's."""
+    injector = _distance_injector(distance_background, StreamObsSource())
+    params = {
+        "morphology": "uniform",
+        "nstars": 3000,
+        "width": 0.2,
+        "length": 8.0,
+        "distance_modulus": 15.0,
+        "age": 12.5,
+        "z": 0.0002,
+    }
+    sample = injector.inject_single_stream(params, np.random.default_rng(3))
+    distances = [ch["distance_modulus"] for ch in sample.metadata["channels"]]
+    right = sample.label_stack[distances.index(15.0)].sum()
+    wrong = sample.label_stack[distances.index(19.0)].sum()
+    assert right >= 5
+    assert wrong <= 0.05 * right
+
+    # The same on the full sky, before any window is cut.
+    full = injector.inject_stream_full_sky(params, np.random.default_rng(3))
+    assert len(_label_pixels(full, 15.0)) >= 5
+    assert len(_label_pixels(full, 19.0)) <= 0.05 * len(_label_pixels(full, 15.0))
+
+
+class _TwoDistanceStream(StreamObsSource):
+    """One stream, its phi1 < 0 half at `near` and its phi1 > 0 half at `far`."""
+
+    def __init__(self, near, far):
+        self.near, self.far = near, far
+
+    def realize(self, params, rng):
+        import pandas as pd
+
+        near = super().realize({**params, "distance_modulus": self.near}, rng)
+        far = super().realize({**params, "distance_modulus": self.far}, rng)
+        return pd.concat(
+            [near[near["phi1"] < 0], far[far["phi1"] > 0]], ignore_index=True
+        )
+
+
+def test_label_follows_the_half_of_the_stream_at_the_filters_distance(
+    distance_background,
+):
+    """A stream whose first half is at distance modulus 16 and second half at
+    18, seen through the matched filter at each of the two distances.
+
+    The label is the stream stars the filter selects (user decision,
+    2026-09-22), and the filter is not blind to other distances in the same
+    way both ways:
+
+    - the filter at 16 (the closer one) keeps the half at 16 and almost
+      nothing of the half at 18 (measured 518 stars against 15);
+    - the filter at 18 keeps the half at 18, but also sees the half at 16 at
+      reduced strength (measured 146 against 69). A closer stream has about
+      three times more stars bright enough to be detected, and roughly 10% of
+      them fall inside the farther isochrone's polygon.
+
+    So a model trained on this label learns "stars compatible with this
+    distance": a stream shows up, weaker, at larger queried distances. What
+    must always hold is that each filter's own half dominates.
+    """
+    import healpy as hp
+
+    from streamgoggles.evaluation.footprint import stream_frame_coordinates
+
+    injector = _distance_injector(distance_background, _TwoDistanceStream(16.0, 18.0))
+    params = {
+        "morphology": "uniform",
+        "nstars": 8000,
+        "width": 0.2,
+        "length": 16.0,
+        "distance_modulus": 17.0,
+        "age": 12.5,
+        "z": 0.0002,
+    }
+    full = injector.inject_stream_full_sky(params, np.random.default_rng(11))
+    distances = [ch["distance_modulus"] for ch in full["channels"]]
+    pixels = np.flatnonzero(np.sum(full["stream_raw_full"], axis=0) > 0)
+    vectors = np.array(hp.pix2vec(injector.pix.nside, pixels)).T
+    phi1, _ = stream_frame_coordinates(vectors, **full["placement"])
+    # Pixels about 1 degree wide straddle phi1 = 0; leave that seam out.
+    near_half, far_half = phi1 < -1.0, phi1 > 1.0
+
+    def stars(distance, half):
+        counts = full["stream_raw_full"][distances.index(distance)][pixels]
+        return counts[half].sum()
+
+    # Each filter's own half dominates.
+    assert stars(16.0, near_half) > 2 * stars(16.0, far_half)
+    assert stars(18.0, far_half) > stars(18.0, near_half)
+    # The closer filter is nearly blind to the farther half ...
+    assert stars(16.0, far_half) <= 0.1 * stars(16.0, near_half)
+    # ... while the farther filter still sees the closer half.
+    assert stars(18.0, near_half) > 0.1 * stars(18.0, far_half)
