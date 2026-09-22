@@ -8,7 +8,7 @@ batch 8, background fraction 0.05) and magnitude cut, overriding only what a
 configuration sets: training windows per epoch, training surface
 brightnesses, network depth and width, learning rate, batch size.
 
-Each model is scored with `evaluate_footprint_realizations` on the same skies
+Each model is scored with `evaluate_footprint_realizations` on the same streams
 for every model: surface brightness EVAL_SB, N_REALIZATIONS each, on an
 independently seeded background, with the no-stream control, per-threshold
 counts and track-band statistics, so `stream_detection` (per-stream SNR along

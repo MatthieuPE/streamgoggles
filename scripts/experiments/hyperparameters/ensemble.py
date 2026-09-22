@@ -6,7 +6,7 @@ seed. A survey search deploys one model, so this scores an *ensemble*: the
 per-pixel probabilities of several trained models, averaged, thresholded once.
 
 Every model of a configuration is loaded from data/experiments/hyperparameters/
-models/ (no retraining) and scored on the same skies as every other result
+models/ (no retraining) and scored on the same streams as every other result
 (same EVAL_SEED, surface brightnesses and realizations as run.py).
 
 Each model was trained with its own input normalization, fitted on its own
@@ -47,9 +47,9 @@ MEMBER_SETS = {
     # 4 is the equal-cost comparison against one training on 4 x 4800 windows.
     "nested": [tuple(SEEDS[:n]) for n in (1, 2, 3, 4, 6)],
     "halves": [tuple(SEEDS[:3]), tuple(SEEDS[3:]), tuple(SEEDS)],
-    # Each training on its own, on as many skies as the averages: a model meant
+    # Each training on its own, on as many streams as the averages: a model meant
     # for deployment is a single prediction, so its absolute rate needs a few
-    # hundred streams per point, not the 20 shared skies of run.py.
+    # hundred streams per point, not the 20 shared streams of run.py.
     "singles": [(seed,) for seed in SEEDS],
 }
 EVAL_SB = [32.0, 33.0, 33.5, 34.0, 34.5, 35.0]

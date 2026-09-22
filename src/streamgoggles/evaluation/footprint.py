@@ -761,7 +761,7 @@ def plot_detection_rates(
     _errorbar(ax_found, "tpr", marker="o", label="true stream pixels found")
 
     # Where only some realizations kept a true pixel, the rates average over
-    # those alone: say how many, so a "0.0 found" over 11 of 30 skies is not
+    # those alone: say how many, so a "0.0 found" over 11 of 30 realizations is not
     # read as a verdict on all 30.
     if "tpr_n" in data and "n_true_pixels_n" in data:
         with_pixels = data["tpr_n"].to_numpy()

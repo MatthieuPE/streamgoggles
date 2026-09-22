@@ -29,7 +29,7 @@ never saw, flagging about 9e-4 of stream-free sky; at a matched false-alarm
 rate of 1e-3, 95%, 49% and 16% (six trainings, 300 streams per surface
 brightness each; one training ranges from 36% to 56% at SB 33.5). The quick
 (4800-window) model, at a third of the training time, has been compared with it
-only on shared skies, where it finds about 8 points fewer SB 33.5 streams; use
+only on shared streams, where it finds about 8 points fewer SB 33.5 streams; use
 it to explore, assuming it ranks configurations as the long one would (tested
 only across 1200 and 4800 windows so far), and re-measure final numbers with
 the long one.
@@ -52,13 +52,13 @@ page states what its error bars are (the range between seeds on
 {doc}`loss_selection`, the sampling uncertainty on {doc}`hyperparameters`,
 which shows the seed spread in a figure of its own).
 
-**The same evaluation skies for every model.** Models are scored with
+**The same evaluation streams for every model.** Models are scored with
 {py:func}`~streamgoggles.evaluation.footprint.evaluate_footprint_realizations`
 on full-sky injections with a fixed evaluation seed: for each surface
 brightness, the same stream realizations (population, placement, orientation,
 survey noise). Each sky is tiled, predicted, stitched back to HEALPix and
 scored per pixel. Differences between models therefore come from the models,
-not from the skies they were shown.
+not from the streams they were shown.
 
 **Realizations are counted per grid point, and they are an evaluation
 quantity.** `n_realizations` is the number of independent injections used to
@@ -167,7 +167,7 @@ it moves the results.
 | Experiment | Question | Status |
 |---|---|---|
 | {doc}`loss_selection` | Which training loss, batch size and background fraction? | done: batch Dice, batch 8, background fraction 0.05 |
-| Threshold tuning | Which probability threshold for the final maps, and does it hold on skies not used to choose it? | planned |
+| Threshold tuning | Which probability threshold for the final maps, and does it hold on streams and backgrounds not used to choose it? | planned |
 | {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length, network size, averaging and the decoy channel: one model trained on SB 32-34.5 with 19200 windows (4800 while exploring); learning rate and batch size not run yet |
 | Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |

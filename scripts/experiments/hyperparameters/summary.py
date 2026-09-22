@@ -17,8 +17,8 @@ One figure per statement the page makes:
                          surface brightness -- evaluation precision, not a
                          difference between models
   8_decoy.png            the fixed decoy box against the shifted one
-  9_long_models.png      the selected model on 300 skies per point, alone and
-                         averaged, against the 20 skies every run.py model shares
+  9_long_models.png      the selected model on 300 streams per point, alone and
+                         averaged, against the 20 streams every run.py model shares
 
 Two different uncertainties appear here, drawn differently:
 
@@ -399,7 +399,7 @@ def figure_sampling(results):
 
     The scorings are nested -- the realization seed is [seed, surface-brightness
     index, realization], so the first 20 of the 100 and the first 100 of the 500
-    are the same skies -- which makes this a pure sample-size comparison of the
+    are the same streams -- which makes this a pure sample-size comparison of the
     same trained models.
     """
     paths = {
@@ -643,7 +643,7 @@ def figure_decoy(results):
 
 
 def figure_long_models(results):
-    """9: the deployed model measured on 300 skies, against the shared 20."""
+    """9: the deployed model measured on 300 streams, against the shared 20."""
     name = "w19200_sb32-34.5_d2_b12_lr0.002_bs8_boxdecoy"
     path = DATA / f"ensemble_results_{name}_300streams.pkl"
     if not path.exists():
@@ -662,7 +662,7 @@ def figure_long_models(results):
             color="#08306b",
             lw=0.9,
             alpha=0.4,
-            label="single models, 300 skies" if j == 0 else None,
+            label="single models, 300 streams" if j == 0 else None,
         )
     mean = singles.groupby("richness")["detection_fraction"].mean()
     ax.plot(
@@ -671,7 +671,7 @@ def figure_long_models(results):
         color="#08306b",
         marker="s",
         lw=2.2,
-        label="their mean, 300 skies",
+        label="their mean, 300 streams",
     )
     six = matched[matched.members == ",".join(str(s) for s in range(42, 48))]
     six = six.sort_values("richness")
@@ -684,7 +684,7 @@ def figure_long_models(results):
         marker="o",
         capsize=2.5,
         lw=1.8,
-        label="6 models averaged, 300 skies",
+        label="6 models averaged, 300 streams",
     )
     shared = detection_at_false_alarm_rate(
         results[results.configuration == name],
@@ -700,7 +700,7 @@ def figure_long_models(results):
         ls="--",
         marker="D",
         lw=1.6,
-        label="single models, shared 20 skies",
+        label="single models, shared 20 streams",
     )
     decorate(ax)
     legend(ax)
