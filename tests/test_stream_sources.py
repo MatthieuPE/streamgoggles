@@ -96,6 +96,17 @@ def test_realize_distance_modulus_recovered_exactly(uniform_params):
     )
 
 
+def test_realize_distance_gradient_follows_the_track(uniform_params):
+    params = dict(uniform_params, distance_gradient=0.1)
+    df = StreamObsSource().realize(params, np.random.default_rng(0))
+    # Each star's distance modulus is the centre value plus gradient x phi1.
+    np.testing.assert_allclose(
+        df["dist"].to_numpy(),
+        uniform_params["distance_modulus"] + 0.1 * df["phi1"].to_numpy(),
+    )
+    assert df["dist"].std() > 0
+
+
 def test_realize_reproducible_with_same_seed(uniform_params):
     df1 = StreamObsSource().realize(uniform_params, np.random.default_rng(123))
     df2 = StreamObsSource().realize(uniform_params, np.random.default_rng(123))

@@ -131,6 +131,7 @@ def predict_footprint(
     channel: int,
     count_threshold: float,
     device: str = "cpu",
+    label_channel: int | None = None,
 ) -> dict:
     """Run the model over tiles of one full-sky realization; stitch to HEALPix.
 
@@ -154,11 +155,19 @@ def predict_footprint(
         count_threshold: stream-only count above which a pixel is labelled
             a detection (the injector's own).
         device: torch device.
+        label_channel: which channel of the sky's stack the input and label
+            come from, when it differs from the model's output channel -- a
+            model that answers for one queried distance outputs one map
+            (``channel=0``) for the matched filter's channel at that distance
+            (`datasets.transforms.QueryDistanceTransform`). Defaults to
+            ``channel``.
 
     Returns:
         dict with HEALPix arrays ``input``, ``label``, ``prediction`` (NaN
         where no data) and bool ``covered``.
     """
+    if label_channel is None:
+        label_channel = channel
     import torch
 
     n_channels = len(full_sky["channels"])
@@ -200,8 +209,8 @@ def predict_footprint(
         # The network has no valid_mask awareness at inference time: what it
         # emits outside the footprint is meaningless, so it never reaches
         # the stitched map.
-        tile_inputs.append(np.where(tile_valid, map_stack[channel], np.nan))
-        tile_labels.append(np.where(tile_valid, label_stack[channel], np.nan))
+        tile_inputs.append(np.where(tile_valid, map_stack[label_channel], np.nan))
+        tile_labels.append(np.where(tile_valid, label_stack[label_channel], np.nan))
         tile_preds.append(np.where(tile_valid, prediction, np.nan))
 
     nside = pix.nside
@@ -479,6 +488,7 @@ def evaluate_footprint_realizations(
     no_stream_control: bool = True,
     thresholds: np.ndarray | None = None,
     n_null_bands: int = 200,
+    label_channel: int | None = None,
 ) -> pd.DataFrame:
     """Score the model on many independent realizations of each parameter set.
 
@@ -524,6 +534,9 @@ def evaluate_footprint_realizations(
             ``n_null_bands`` stream-shaped bands on the no-stream sky
             (used by `stream_detection`).
         n_null_bands: number of background bands per realization.
+        label_channel: the sky channel the label comes from when the model's
+            output ``channel`` is not a channel of the sky (see
+            `predict_footprint`); also the channel tiles are placed around.
 
     Returns:
         DataFrame, one row per realization: every key of the parameter set,
@@ -540,7 +553,11 @@ def evaluate_footprint_realizations(
             rng = np.random.default_rng([seed, set_index, realization])
             full_sky = injector.inject_stream_full_sky(params, rng)
             tiles = tiles_around_stream(
-                full_sky, channel, injector.pix, radius_deg, stride_fraction
+                full_sky,
+                channel if label_channel is None else label_channel,
+                injector.pix,
+                radius_deg,
+                stride_fraction,
             )
             row = dict(params)
             row.update(
@@ -582,6 +599,7 @@ def evaluate_footprint_realizations(
                 channel,
                 injector.count_threshold,
                 device,
+                label_channel,
             )
             row.update(
                 score_footprint(
@@ -602,6 +620,7 @@ def evaluate_footprint_realizations(
                     channel,
                     injector.count_threshold,
                     device,
+                    label_channel,
                 )
                 scores = score_footprint(
                     control["prediction"],

@@ -1129,3 +1129,92 @@ def test_configure_torch_threads_respects_an_override(monkeypatch):
         assert configure_torch_threads(max_threads=1) == 1
     finally:
         torch.set_num_threads(original)
+
+
+# ---------------------------------------------------------------------------
+# QueryDistanceTransform: the model's input at one queried distance
+# ---------------------------------------------------------------------------
+
+GRID = [14.5 + 0.5 * i for i in range(11)]  # 14.5 ... 19.5
+
+
+def _all_distance_sample(params=None):
+    """A window with one channel per (distance, filter), each channel holding
+    its own index, so the test can see exactly which map ends up where."""
+    channels = [
+        {"filter": name, "distance_modulus": dm}
+        for dm in GRID
+        for name in ("good", "decoy")
+    ]
+    n = len(channels)
+    stack = np.stack([np.full((4, 4), float(i)) for i in range(n)])
+    return {
+        "map_stack": stack,
+        "label_stack": stack + 100.0,
+        "valid_mask": np.ones((4, 4), dtype=bool),
+        "params": params or {},
+        "metadata": {"channels": channels},
+    }
+
+
+def _index(filter_name, dm):
+    return 2 * GRID.index(dm) + (filter_name == "decoy")
+
+
+def test_query_distance_transform_builds_the_seven_input_maps():
+    from streamgoggles.datasets.transforms import QueryDistanceTransform
+
+    transform = QueryDistanceTransform(
+        StreamMapTransform(), query_grid=GRID[1:-1], query=17.0
+    )
+    out = transform(_all_distance_sample({"distance_modulus": 17.3}))
+
+    assert out["map_stack"].shape == (7, 4, 4)
+    first = out["map_stack"][:, 0, 0]
+    # Matched filter at 16.5, 17, 17.5, then the decoy at 17 ...
+    assert first[:4].tolist() == [
+        _index("good", 16.5),
+        _index("good", 17.0),
+        _index("good", 17.5),
+        _index("decoy", 17.0),
+    ]
+    # ... then the three distances, scaled (dm - 17) / 2.
+    assert first[4:].tolist() == pytest.approx([-0.25, 0.0, 0.25])
+    # The label is the matched filter's at the queried distance only.
+    assert out["label_stack"].shape == (1, 4, 4)
+    assert out["label_stack"][0, 0, 0] == _index("good", 17.0) + 100.0
+    assert out["params"]["query_distance_modulus"] == 17.0
+
+
+def test_query_distance_transform_draws_training_queries_near_the_truth():
+    from streamgoggles.datasets.transforms import QueryDistanceTransform
+
+    query_grid = [15.0 + 0.5 * i for i in range(9)]  # 15 ... 19
+    transform = QueryDistanceTransform(
+        StreamMapTransform(), query_grid=query_grid, rng=np.random.default_rng(0)
+    )
+    # True distance 15.2: nearest grid point 15, shifts of up to 2 steps that
+    # stay on the grid -> 15, 15.5, 16 (14 and 14.5 are outside the grid).
+    drawn = {
+        transform(_all_distance_sample({"distance_modulus": 15.2}))["params"][
+            "query_distance_modulus"
+        ]
+        for _ in range(200)
+    }
+    assert drawn == {15.0, 15.5, 16.0}
+    # A stream-free window has no true distance: anywhere on the grid.
+    free = {
+        transform(_all_distance_sample())["params"]["query_distance_modulus"]
+        for _ in range(400)
+    }
+    assert free == set(query_grid)
+
+
+def test_query_distance_transform_needs_the_neighbouring_maps():
+    from streamgoggles.datasets.transforms import QueryDistanceTransform
+
+    transform = QueryDistanceTransform(
+        StreamMapTransform(), query_grid=GRID, query=19.5
+    )
+    with pytest.raises(KeyError, match="20"):
+        transform(_all_distance_sample())

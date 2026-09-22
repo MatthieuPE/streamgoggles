@@ -36,6 +36,7 @@ from streamgoggles.evaluation.footprint import (
 )
 from streamgoggles.injector import StreamInjector
 from streamgoggles.matched_filter import (
+    ColorBoxFilter,
     PixelizationSpec,
     ShiftedColorBoxFilter,
     StreamobsSplineFilter,
@@ -286,6 +287,51 @@ def injector(tmp_path_factory):
     )
 
 
+@pytest.fixture(scope="module")
+def query_injector(tmp_path_factory):
+    """Three trial distances 0.5 apart: what a query-distance model needs."""
+    region = StudyRegion(
+        center_ra=0.0, center_dec=-30.0, width_deg=25.0, height_deg=18.0
+    )
+    pix = PixelizationSpec(nside=64, pixel_scale_deg=1.0, image_size_pix=(15, 15))
+    filters = {
+        "good": StreamobsSplineFilter(
+            iso_config={"age": 12.5, "z": 0.0002}, namespace="lsst_yr1"
+        ),
+        "decoy": ColorBoxFilter(
+            color_range=(1.2, 1.5), mag_range=(18.0, 24.5), namespace="lsst_yr1"
+        ),
+    }
+    background = Background.load_or_cache(
+        source=StreamObsLightBackgroundSource(),
+        source_cfg={"seed": 1},
+        study_region=region,
+        cuts=[],
+        clipping=None,
+        matched_filters=filters,
+        bands=["g", "r"],
+        distance_moduli=[16.3, 16.8, 17.3],
+        finalize_cfg=None,
+        store=BackgroundMapStore(tmp_path_factory.mktemp("query_bgmaps")),
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        filter_configs={"good": {}, "decoy": {}},
+    )
+    return StreamInjector(
+        background=background,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_detection",
+        count_threshold=1.0,
+    )
+
+
 def _identity_transform(item):
     return item
 
@@ -408,6 +454,67 @@ def test_score_streams_on_sky_judges_each_stream_on_its_own_track(injector):
     table = pd.DataFrame([{**row, "richness": params["richness"]} for row in rows])
     detected = stream_detection(table, THRESHOLD_GRID, at=(0.5,))
     assert detected["n_realizations"].iloc[0] == 2
+
+
+def test_a_query_distance_model_is_scored_against_its_distances_label(
+    query_injector,
+):
+    """A model answering for one queried distance outputs one map; it must be
+    scored against the matched filter's label at that distance, exactly the
+    label a full-stack model reading that channel would be scored against."""
+    import torch
+
+    from streamgoggles.datasets.transforms import (
+        QueryDistanceTransform,
+        StreamMapTransform,
+    )
+
+    channels = [
+        (ch["filter"], ch["distance_modulus"])
+        for ch in query_injector.inject_stream_full_sky(
+            _param_sets()[1], np.random.default_rng(0)
+        )["channels"]
+    ]
+    good_at_query = channels.index(("good", 16.8))
+    params = [{**_param_sets()[1], "distance_modulus": 16.8}]
+
+    torch.manual_seed(0)
+    query_model = UNet(
+        in_channels=QueryDistanceTransform.n_channels,
+        out_channels=1,
+        base_width=4,
+        depth=1,
+        head="sigmoid",
+    )
+    queried = evaluate_footprint_realizations(
+        query_model,
+        query_injector,
+        QueryDistanceTransform(StreamMapTransform(), query_grid=[16.8], query=16.8),
+        params,
+        n_realizations=2,
+        channel=0,
+        label_channel=good_at_query,
+        no_stream_control=False,
+    )
+    full_stack_model = UNet(
+        in_channels=len(channels),
+        out_channels=len(channels),
+        base_width=4,
+        depth=1,
+        head="sigmoid",
+    )
+    full = evaluate_footprint_realizations(
+        full_stack_model,
+        query_injector,
+        _identity_transform,
+        params,
+        n_realizations=2,
+        channel=good_at_query,
+        no_stream_control=False,
+    )
+    assert (queried["n_tiles"] > 0).all()
+    assert list(queried["n_true_pixels"]) == list(full["n_true_pixels"])
+    assert (queried["n_true_pixels"] > 0).all()
 
 
 def test_evaluate_footprint_realizations_is_reproducible_and_independent(injector):
