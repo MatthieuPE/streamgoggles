@@ -19,17 +19,20 @@ has not been varied yet and is a default rather than a result.
 | training length | 4800 windows while exploring (~3 min); 19200 for final results (~10 min) | {doc}`hyperparameters` |
 | decoy channel | fixed colour-magnitude box, colour 1.2-1.5, g 18-24.5 | {doc}`hyperparameters` (section 8) |
 | network | U-Net, depth 2, base width 12, sigmoid head | {doc}`hyperparameters` |
-| deployment | one model (averaging short trainings is an equivalent but costlier fallback) | {doc}`hyperparameters` |
+| deployment | one model (averaging several trainings costs more than one long training and does no better) | {doc}`hyperparameters` |
 | threshold | chosen from a false-alarm budget, not fixed at 0.5 | {doc}`hyperparameters` |
 | learning rate | 2e-3 (not varied yet) | — |
 
-The final (19200-window, fixed-box) model detects 93% of injected streams at
-SB 33, 58% at SB 33.5 and 21% at SB 34 at threshold 0.5, on a background it
-never saw, flagging about 1e-3 of stream-free sky; at a matched false-alarm
-rate of 1e-3, 94%, 60% and 21%. The quick (4800-window) model finds 87%, 52%
-and 13% at the same rate, at a third of the training time; use it to explore,
-assuming it ranks configurations as the long one would (tested only across
-1200 and 4800 windows so far), and re-measure final numbers with the long one.
+The final (19200-window, fixed-box) model detects 95% of injected streams at
+SB 33, 48% at SB 33.5 and 17% at SB 34 at threshold 0.5, on a background it
+never saw, flagging about 9e-4 of stream-free sky; at a matched false-alarm
+rate of 1e-3, 95%, 49% and 16% (six trainings, 300 streams per surface
+brightness each; one training ranges from 36% to 56% at SB 33.5). The quick
+(4800-window) model, at a third of the training time, has been compared with it
+only on shared streams, where it finds about 8 points fewer SB 33.5 streams; use
+it to explore, assuming it ranks configurations as the long one would (tested
+only across 1200 and 4800 windows so far), and re-measure final numbers with
+the long one.
 
 These are **known-location** detection rates: each stream is judged along its
 own track. That is the measure for recovering already-known streams, the first
@@ -49,13 +52,13 @@ page states what its error bars are (the range between seeds on
 {doc}`loss_selection`, the sampling uncertainty on {doc}`hyperparameters`,
 which shows the seed spread in a figure of its own).
 
-**The same evaluation skies for every model.** Models are scored with
+**The same evaluation streams for every model.** Models are scored with
 {py:func}`~streamgoggles.evaluation.footprint.evaluate_footprint_realizations`
 on full-sky injections with a fixed evaluation seed: for each surface
 brightness, the same stream realizations (population, placement, orientation,
 survey noise). Each sky is tiled, predicted, stitched back to HEALPix and
 scored per pixel. Differences between models therefore come from the models,
-not from the skies they were shown.
+not from the streams they were shown.
 
 **Realizations are counted per grid point, and they are an evaluation
 quantity.** `n_realizations` is the number of independent injections used to
@@ -164,7 +167,7 @@ it moves the results.
 | Experiment | Question | Status |
 |---|---|---|
 | {doc}`loss_selection` | Which training loss, batch size and background fraction? | done: batch Dice, batch 8, background fraction 0.05 |
-| Threshold tuning | Which probability threshold for the final maps, and does it hold on skies not used to choose it? | planned |
+| Threshold tuning | Which probability threshold for the final maps, and does it hold on streams and backgrounds not used to choose it? | planned |
 | {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length, network size, averaging and the decoy channel: one model trained on SB 32-34.5 with 19200 windows (4800 while exploring); learning rate and batch size not run yet |
 | Wider stream parameter space | Detection as a function of surface brightness and distance modulus (2-D), then width, length, age and metallicity. | planned |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |

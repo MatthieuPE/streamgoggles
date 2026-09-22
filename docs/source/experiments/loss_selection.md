@@ -189,7 +189,7 @@ background (mean over 4 seeds):
 **The threshold is still open.** At 0.5, this model finds only 14% of a
 SB 33 stream. Lowering the threshold to 0.1 raises that to 26%, with the
 contrast at SB 32 going from 405 to 149. Where to set it depends on what the
-maps are used for; choosing it, and checking it on skies not used for the
+maps are used for; choosing it, and checking it on streams and backgrounds not used for the
 choice, is the next experiment (see {doc}`index`).
 
 ## Conclusion: what this experiment fixes

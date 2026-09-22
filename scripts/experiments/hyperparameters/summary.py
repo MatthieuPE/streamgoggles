@@ -17,6 +17,8 @@ One figure per statement the page makes:
                          surface brightness -- evaluation precision, not a
                          difference between models
   8_decoy.png            the fixed decoy box against the shifted one
+  9_long_models.png      the selected model on 300 streams per point, alone and
+                         averaged, against the 20 streams every run.py model shares
 
 Two different uncertainties appear here, drawn differently:
 
@@ -397,7 +399,7 @@ def figure_sampling(results):
 
     The scorings are nested -- the realization seed is [seed, surface-brightness
     index, realization], so the first 20 of the 100 and the first 100 of the 500
-    are the same skies -- which makes this a pure sample-size comparison of the
+    are the same streams -- which makes this a pure sample-size comparison of the
     same trained models.
     """
     paths = {
@@ -640,6 +642,74 @@ def figure_decoy(results):
     plt.close(fig)
 
 
+def figure_long_models(results):
+    """9: the deployed model measured on 300 streams, against the shared 20."""
+    name = "w19200_sb32-34.5_d2_b12_lr0.002_bs8_boxdecoy"
+    path = DATA / f"ensemble_results_{name}_300streams.pkl"
+    if not path.exists():
+        return
+    scored = pd.read_pickle(path)
+    matched = detection_at_false_alarm_rate(
+        scored, THRESHOLD_GRID, targets=(1e-3,), group_by=["members", "richness"]
+    )
+    fig, ax = plt.subplots(figsize=(8, 5.2))
+    singles = matched[~matched.members.str.contains(",")]
+    for j, (_, one) in enumerate(singles.groupby("members")):
+        one = one.sort_values("richness")
+        ax.plot(
+            one["richness"],
+            one["detection_fraction"],
+            color="#08306b",
+            lw=0.9,
+            alpha=0.4,
+            label="single models, 300 streams" if j == 0 else None,
+        )
+    mean = singles.groupby("richness")["detection_fraction"].mean()
+    ax.plot(
+        mean.index,
+        mean.to_numpy(),
+        color="#08306b",
+        marker="s",
+        lw=2.2,
+        label="their mean, 300 streams",
+    )
+    six = matched[matched.members == ",".join(str(s) for s in range(42, 48))]
+    six = six.sort_values("richness")
+    y = six["detection_fraction"].to_numpy()
+    ax.errorbar(
+        six["richness"] + 0.03,
+        y,
+        yerr=bars(six, y),
+        color="#e6550d",
+        marker="o",
+        capsize=2.5,
+        lw=1.8,
+        label="6 models averaged, 300 streams",
+    )
+    shared = detection_at_false_alarm_rate(
+        results[results.configuration == name],
+        THRESHOLD_GRID,
+        targets=(1e-3,),
+        group_by=["seed", "richness"],
+    )
+    shared = shared.groupby("richness")["detection_fraction"].mean()
+    ax.plot(
+        shared.index,
+        shared.to_numpy(),
+        color="#969696",
+        ls="--",
+        marker="D",
+        lw=1.6,
+        label="single models, shared 20 streams",
+    )
+    decorate(ax)
+    legend(ax)
+    ax.set_title("19200 w, fixed box, at 1e-3 of stream-free sky flagged", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(FIGURES / "9_long_models.png", dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     results = load()
     table = detection(results)
@@ -652,6 +722,7 @@ def main():
     figure_matched_background(results)
     figure_sampling(results)
     figure_decoy(results)
+    figure_long_models(results)
     pd.set_option("display.width", 220)
     print("== streams detected at threshold 0.5 (all seeds of each configuration)")
     print(

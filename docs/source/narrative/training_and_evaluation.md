@@ -269,7 +269,7 @@ SB 31-34; 30 single-stream realizations per point; nside 512; threshold 0.5):
 
 Half of the true stream pixels are found down to **SB ≈ 32.4**. With the
 stream removed, not one background pixel is flagged in any of the 210
-realizations, so the background flagged on the stream skies is provoked by
+realizations, so the background flagged on the maps with a stream is provoked by
 the stream itself (pixels beside its track). At SB 34 the label still exists
 (56 pixels on average) but the model does not respond.
 
