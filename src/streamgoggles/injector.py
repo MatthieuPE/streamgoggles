@@ -175,6 +175,7 @@ def place_stream_in_footprint(
     nside: int,
     rng: np.random.Generator,
     rotation_deg: float | None = None,
+    center: tuple[float, float] | None = None,
 ) -> pd.DataFrame:
     """Place a realized stream (phi1/phi2 frame) at a random position and
     orientation somewhere inside `footprint`, adding 'ra'/'dec' columns.
@@ -196,6 +197,11 @@ def place_stream_in_footprint(
             *position* (which footprint pixel) is always random regardless
             (decision: "position: uniform_in_footprint" is never a tunable
             parameter, only a sentinel meaning "yes, place it").
+        center: ``(ra, dec)`` of the stream frame's origin, degrees. For
+            evaluation setups that need streams at chosen positions relative
+            to each other (`StreamInjector.inject_streams_full_sky`); training
+            always leaves it None, so the position stays random. Giving it
+            skips the random draw of the position.
 
     Returns:
         Copy of `stream_df` with 'ra'/'dec' columns added (degrees, ICRS).
@@ -226,8 +232,11 @@ def place_stream_in_footprint(
     if valid_pixels.size == 0:
         raise ValueError("footprint has no valid pixels to place a stream in")
 
-    pixel = rng.choice(valid_pixels)
-    center_ra, center_dec = hp.pix2ang(nside, int(pixel), lonlat=True)
+    if center is None:
+        pixel = rng.choice(valid_pixels)
+        center_ra, center_dec = hp.pix2ang(nside, int(pixel), lonlat=True)
+    else:
+        center_ra, center_dec = float(center[0]), float(center[1])
     if rotation_deg is None:
         rotation_deg = float(rng.uniform(0.0, 360.0))
     else:
@@ -406,7 +415,12 @@ class StreamInjector:
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
 
-    def _realize_and_inject(self, params: dict, rng: np.random.Generator):
+    def _realize_and_inject(
+        self,
+        params: dict,
+        rng: np.random.Generator,
+        center: tuple[float, float] | None = None,
+    ):
         """Realize a stream, place it, run it through the survey model, and
         apply this injector's cuts/clipping.
 
@@ -424,6 +438,11 @@ class StreamInjector:
         resolved_params = dict(params)
         resolved_params.setdefault("band_1", self.bands[0])
         resolved_params.setdefault("band_2", self.bands[1])
+        # The stream's true magnitudes must be in the photometric system of the
+        # survey that then observes it: left unset, the stream source falls
+        # back to LSST, and a DES injector would observe LSST-band stars.
+        resolved_params.setdefault("survey", self.survey)
+        resolved_params.setdefault("release", self.release)
         resolved_params = resolve_richness_to_nstars(
             resolved_params, self.richness_kind
         )
@@ -435,6 +454,7 @@ class StreamInjector:
             self.pix.nside,
             rng,
             rotation_deg=resolved_params.get("orientation"),
+            center=center,
         )
         placement = dict(placed_df.attrs["placement"])
 
@@ -535,6 +555,61 @@ class StreamInjector:
             "channels": channels_meta,
             "params": resolved_params,
             "placement": placement,
+        }
+
+    def inject_streams_full_sky(
+        self,
+        params_list: list[dict],
+        rng: np.random.Generator,
+        centers: list[tuple[float, float] | None] | None = None,
+    ) -> dict:
+        """Inject several streams on one sky, return full-sky channel maps.
+
+        For evaluation, not training: training injects one stream per window.
+        It answers questions like "does a second stream nearby confuse the
+        model?", which need streams at chosen positions relative to each other
+        -- hence ``centers`` (and each stream's ``orientation`` parameter).
+        The streams are realized and observed one after the other from
+        ``rng``, then their detected stars are pooled before the maps are
+        built, so the stream-only maps and the label cover all of them.
+
+        Streams are processed in list order, each drawing from ``rng`` in the
+        same way `inject_stream_full_sky` does. So with a fixed seed and a
+        fixed center, the first stream is identical whether or not others
+        follow it: a paired "alone" vs "with a neighbour" comparison.
+
+        Parameters:
+            params_list: one stream parameter dict per stream, as
+                `inject_single_stream`.
+            rng: np.random.Generator.
+            centers: ``(ra, dec)`` per stream, or None (random position) for
+                any of them; None for all random.
+
+        Returns:
+            dict with ``map_full``, ``stream_raw_full``, ``valid_mask_full``
+            and ``channels`` as `inject_stream_full_sky`, and ``params`` /
+            ``placement`` as lists, one entry per stream.
+        """
+        if centers is None:
+            centers = [None] * len(params_list)
+        detected, resolved, placements = [], [], []
+        for params, center in zip(params_list, centers, strict=True):
+            stars, resolved_params, placement = self._realize_and_inject(
+                params, rng, center=center
+            )
+            detected.append(stars)
+            resolved.append(resolved_params)
+            placements.append(placement)
+        finalized_full, stream_raw_full, channels_meta = self._build_full_sky_channels(
+            pd.concat(detected, ignore_index=True)
+        )
+        return {
+            "map_full": finalized_full,
+            "stream_raw_full": stream_raw_full,
+            "valid_mask_full": self.background.valid_mask_full,
+            "channels": channels_meta,
+            "params": resolved,
+            "placement": placements,
         }
 
     def inject_single_stream(

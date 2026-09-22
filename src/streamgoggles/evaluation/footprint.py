@@ -640,6 +640,103 @@ def evaluate_footprint_realizations(
     return pd.DataFrame(rows)
 
 
+def score_streams_on_sky(
+    model,
+    injector: "StreamInjector",
+    transform,
+    full_sky: dict,
+    channel: int,
+    thresholds: np.ndarray,
+    rng: np.random.Generator,
+    n_null_bands: int = 200,
+    stride_fraction: float = 0.5,
+    radius_deg: float | None = None,
+    device: str = "cpu",
+) -> list[dict]:
+    """Track-band statistics for each stream of a multi-stream sky.
+
+    The multi-stream counterpart of one realization of
+    `evaluate_footprint_realizations`, for skies built by
+    `StreamInjector.inject_streams_full_sky`: the area around all the streams
+    is tiled, predicted and stitched once, the same tiles are predicted once
+    more on the sky with every stream removed, and each stream is then judged
+    along its own track against stream-shaped bands on that stream-free sky.
+    The result feeds `stream_detection` and `detection_at_false_alarm_rate`
+    like any other realization.
+
+    Parameters:
+        model: trained torch model.
+        injector: the StreamInjector that built ``full_sky``.
+        transform: eval transform matching the model's normalization.
+        full_sky: output of `inject_streams_full_sky`.
+        thresholds: probability thresholds to count flagged pixels at.
+        rng: draws the background bands' positions.
+        n_null_bands: background bands per stream.
+        channel, stride_fraction, radius_deg, device: as
+            `evaluate_footprint_realizations`.
+
+    Returns:
+        One dict per stream, in the sky's order: ``stream`` (its index), the
+        stream's ``nstars``, the stream-free control's ``n_above_no_stream``,
+        ``fp_no_stream`` and ``tn_no_stream``, and `track_band_statistics`
+        for its track. Empty if no stream left a pixel to tile around.
+    """
+    tiles = tiles_around_stream(
+        full_sky, channel, injector.pix, radius_deg, stride_fraction
+    )
+    if not tiles:
+        return []
+    maps = predict_footprint(
+        model,
+        full_sky,
+        tiles,
+        injector.pix,
+        transform,
+        channel,
+        injector.count_threshold,
+        device,
+    )
+    control = predict_footprint(
+        model,
+        background_only_sky(injector, full_sky),
+        tiles,
+        injector.pix,
+        transform,
+        channel,
+        injector.count_threshold,
+        device,
+    )
+    scores = score_footprint(
+        control["prediction"], control["label"], control["covered"], 0.5, thresholds
+    )
+    rows = []
+    for index, (params, placement) in enumerate(
+        zip(full_sky["params"], full_sky["placement"], strict=True)
+    ):
+        row = {
+            "stream": index,
+            "nstars": params.get("nstars"),
+            "n_above_no_stream": scores["n_above_background"],
+            "fp_no_stream": scores["fp"],
+            "tn_no_stream": scores["tn"],
+        }
+        row.update(
+            track_band_statistics(
+                maps["prediction"],
+                control["prediction"],
+                maps["covered"],
+                placement,
+                float(params["width"]),
+                float(params["length"]),
+                thresholds,
+                rng,
+                n_null_bands,
+            )
+        )
+        rows.append(row)
+    return rows
+
+
 def plot_confusion_matrix(rates: dict, ax=None, title: str | None = None):
     """Plot the row-normalized 2x2 confusion matrix.
 

@@ -148,6 +148,7 @@ def main(configuration, sets="nested", n_streams=N_REALIZATIONS):
     spec = spec_from_file_location("run", Path(__file__).parent / "run.py")
     run = module_from_spec(spec)
     spec.loader.exec_module(run)
+    run.pin_experiment_sky(g)
     # Rebuild the decoy channel these models were trained with, from their own
     # saved configuration: feeding a model a decoy it never saw would score
     # noise. Models saved before the decoy became a setting used the shifted

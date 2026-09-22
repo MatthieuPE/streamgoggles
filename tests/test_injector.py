@@ -990,3 +990,83 @@ def test_inject_stream_full_sky_returns_unthresholded_counts(
     stacked = np.concatenate([m for m in full["stream_raw_full"]])
     assert stacked.max() > 1.0, "raw counts should exceed a {0,1} range"
     assert not set(np.unique(stacked)) <= {0.0, 1.0}
+
+
+def test_injector_realizes_streams_in_its_own_survey(real_injector, stream_params):
+    """A stream's true magnitudes must be in the bands of the survey that then
+    observes it. Left unset, the stream source falls back to LSST, so a DES
+    injector would observe LSST-band stars (and streamobs refuses to).
+    """
+    seen = []
+
+    class Recording(StreamObsSource):
+        def realize(self, params, rng):
+            seen.append(dict(params))
+            return super().realize(params, rng)
+
+    real_injector.stream_source = Recording()
+    real_injector.inject_stream_full_sky(stream_params, np.random.default_rng(5))
+    assert seen[-1]["survey"] == real_injector.survey
+    assert seen[-1]["release"] == real_injector.release
+
+    # An explicit choice in the stream parameters is kept.
+    real_injector.inject_stream_full_sky(
+        {**stream_params, "survey": "lsst", "release": "yr1"},
+        np.random.default_rng(5),
+    )
+    assert (seen[-1]["survey"], seen[-1]["release"]) == ("lsst", "yr1")
+
+
+def test_place_stream_at_a_given_center():
+    import healpy as hp
+    import pandas as pd
+
+    nside = 64
+    footprint = np.zeros(hp.nside2npix(nside), dtype=bool)
+    footprint[hp.ang2pix(nside, 10.0, -40.0, lonlat=True)] = True
+    stream = pd.DataFrame({"phi1": [0.0, 1.0], "phi2": [0.0, 0.0]})
+
+    rng = np.random.default_rng(0)
+    before = rng.bit_generator.state
+    placed = place_stream_in_footprint(
+        stream, footprint, nside, rng, rotation_deg=30.0, center=(12.0, -35.0)
+    )
+    # The given center is the frame origin, and no random position is drawn.
+    assert placed.attrs["placement"]["center_ra"] == 12.0
+    assert placed.attrs["placement"]["center_dec"] == -35.0
+    assert placed.loc[0, "ra"] == pytest.approx(12.0)
+    assert placed.loc[0, "dec"] == pytest.approx(-35.0)
+    assert rng.bit_generator.state == before
+
+
+def test_inject_streams_full_sky_keeps_the_first_stream_identical(
+    real_injector, stream_params
+):
+    """The paired design: stream A alone and stream A with a neighbour B must
+    share A exactly, so any change in A's detection is caused by B."""
+    import healpy as hp
+
+    footprint = np.flatnonzero(real_injector.background.footprint)
+    ra, dec = hp.pix2ang(
+        real_injector.pix.nside, int(footprint[len(footprint) // 2]), lonlat=True
+    )
+    a = {**stream_params, "orientation": 20.0}
+    b = {**stream_params, "orientation": 20.0}
+    alone = real_injector.inject_streams_full_sky(
+        [a], np.random.default_rng(7), centers=[(ra, dec)]
+    )
+    paired = real_injector.inject_streams_full_sky(
+        [a, b], np.random.default_rng(7), centers=[(ra, dec), (ra, dec + 2.0)]
+    )
+
+    assert paired["placement"][0] == alone["placement"][0]
+    assert paired["params"][0] == alone["params"][0]
+    assert len(paired["placement"]) == 2
+    # B only adds stars: the pooled stream-only map is A's plus B's.
+    for with_b, a_only in zip(
+        paired["stream_raw_full"], alone["stream_raw_full"], strict=True
+    ):
+        assert np.all(with_b >= a_only - 1e-9)
+    assert sum(m.sum() for m in paired["stream_raw_full"]) > sum(
+        m.sum() for m in alone["stream_raw_full"]
+    )

@@ -54,6 +54,26 @@ DEFAULT = {
     "decoy": "shifted",
 }
 
+# The survey and study region every model of this experiment was trained and
+# scored on. The notebooks have since moved to DES year 6 at Dec -50 (PLAN.md
+# 6.38); pinning these keeps re-scoring and resuming consistent with the saved
+# models. A new experiment on DES should be a new script, not an edit of this.
+EXPERIMENT_SURVEY = {"survey": "lsst", "release": "yr1"}
+EXPERIMENT_REGION = {"center_ra": 0.0, "center_dec": -30.0}
+
+
+def pin_experiment_sky(namespace):
+    """Point the notebook's configuration back at this experiment's survey and region."""
+    namespace["background_cfg"] = {**namespace["background_cfg"], **EXPERIMENT_SURVEY}
+    namespace["namespace"] = (
+        f"{EXPERIMENT_SURVEY['survey']}_{EXPERIMENT_SURVEY['release']}"
+    )
+    namespace["study_region_cfg"] = {
+        **namespace["study_region_cfg"],
+        **EXPERIMENT_REGION,
+    }
+
+
 # The decoy input channel, written out here rather than read from the notebook
 # so that editing the notebook can never silently change what an experiment
 # trained on. "shifted" is what every model before the fixed_decoy phase used
@@ -205,6 +225,7 @@ def main(phase):
     g = {"__name__": "notebook"}
     for cell_id in SETUP_CELLS:
         run_cell(cell_id, g)
+    pin_experiment_sky(g)
     # The decoy channel is part of the configuration (see DECOYS). The
     # background and injectors are built once per run, so a phase trains one
     # decoy only.

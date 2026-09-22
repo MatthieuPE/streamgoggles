@@ -28,6 +28,7 @@ from streamgoggles.evaluation.footprint import (
     plot_detection_rates,
     plot_stream_detection,
     score_footprint,
+    score_streams_on_sky,
     stream_detection,
     stream_frame_coordinates,
     tiles_around_stream,
@@ -370,6 +371,43 @@ def test_evaluate_footprint_realizations_threshold_sweep(injector):
         # Counts never exceed the pixels scored, and fall as the threshold rises.
         assert row["n_above_no_stream"][0] <= row["fp_no_stream"] + row["tn_no_stream"]
         assert np.all(np.diff(row["n_above_no_stream"]) <= 0)
+
+
+def test_score_streams_on_sky_judges_each_stream_on_its_own_track(injector):
+    """Two streams on one sky: one row each, each along its own track, and the
+    rows feed stream_detection like single-stream realizations."""
+    import healpy as hp
+    import pandas as pd
+    import torch
+
+    torch.manual_seed(0)
+    model = UNet(in_channels=2, out_channels=2, base_width=4, depth=1, head="sigmoid")
+    footprint = np.flatnonzero(injector.background.footprint)
+    ra, dec = hp.pix2ang(
+        injector.pix.nside, int(footprint[len(footprint) // 2]), lonlat=True
+    )
+    params = {**_param_sets()[1], "orientation": 30.0}
+    full_sky = injector.inject_streams_full_sky(
+        [params, params], np.random.default_rng(3), centers=[(ra, dec), (ra, dec + 2)]
+    )
+    rows = score_streams_on_sky(
+        model,
+        injector,
+        _identity_transform,
+        full_sky,
+        channel=0,
+        thresholds=THRESHOLD_GRID,
+        rng=np.random.default_rng(4),
+        n_null_bands=20,
+    )
+
+    assert [row["stream"] for row in rows] == [0, 1]
+    for row in rows:
+        assert len(row["n_above_band"]) == len(THRESHOLD_GRID)
+        assert row["band_pixels"] > 0
+    table = pd.DataFrame([{**row, "richness": params["richness"]} for row in rows])
+    detected = stream_detection(table, THRESHOLD_GRID, at=(0.5,))
+    assert detected["n_realizations"].iloc[0] == 2
 
 
 def test_evaluate_footprint_realizations_is_reproducible_and_independent(injector):

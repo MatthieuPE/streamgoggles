@@ -25,6 +25,7 @@
       plot_stream_detection
       predict_footprint
       score_footprint
+      score_streams_on_sky
       stream_detection
       stream_frame_coordinates
       tiles_around_stream
