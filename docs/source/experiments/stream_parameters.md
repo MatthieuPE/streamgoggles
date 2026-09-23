@@ -448,6 +448,85 @@ overdensities of the DES footprint.
 - Detection at the stream's known position, queried at its own distance.
 - The background uses LSST colour-magnitude tables (see "The sky").
 
+## Three questions the DES result leaves open
+
+The recovery above was measured with a model trained on ranges chosen to
+bracket the DES streams, on streams whose stellar population is exactly the
+one the matched filter assumes, and by scoring each training on its own. Each
+of those three is a choice that flatters the result, and each has its own
+section below.
+
+### Six trainings, scored as one predictor
+
+Every number so far scores each training separately and then pools: the bar
+on the DES figure is the mean of six rates, and the line around it is how much
+those six disagree. That is the right answer to "I train one model and deploy
+it", which is why it is reported that way.
+
+It is not the only way to use six trainings. A search could instead run all
+six on the same window and read their **averaged output map**, thresholded
+once — one predictor, not six. Averaging cancels the part of each model's
+error that is particular to its own training, so it should help most exactly
+where the six disagree most.
+
+Here that average is a plain mean of the six output maps, with nothing to
+reconcile first: every model of this experiment standardizes its input from
+the window itself, so all six read the same numbers (unlike the
+[hyperparameter experiment's ensemble](hyperparameters.md), where each model
+carried its own fitted normalization and the input had to be converted into
+it). The ensemble is then scored exactly like a single model, threshold
+included: its own threshold is chosen on the stream-free sky at the same
+false-alarm rate.
+
+### A population the filter does not describe
+
+Every stream so far — training, evaluation and the DES analogues — is drawn
+from a single stellar population, 12.5 Gyr and Z = 0.0002, which is also the
+isochrone the matched filter uses and therefore what defines the label. Real
+streams are not all that population, and a survey cannot know each stream's
+age and metallicity before searching for it.
+
+The scan injects streams at other ages and metallicities while leaving the
+filter, the model and the label untouched:
+
+- age 9, 10.5, 12.5, 13.5 Gyr at the filter's Z = 0.0002
+- Z = 0.0001, 0.0002, 0.0005, 0.001 at the filter's 12.5 Gyr
+- two corners with both wrong: (10 Gyr, Z = 0.001), (13.5 Gyr, Z = 0.0001)
+
+Geometry is held at the middle of the grid (width 0.6 degrees, length 15,
+m−M 17) and the surface brightness is scanned at 33 and 34, since that sets
+how much margin there is to lose.
+
+**Surface brightness is held fixed as the population changes**, which is what
+makes this a test of the filter rather than of brightness: the stream emits
+the same integrated light either way, and what changes is where its stars sit
+in the colour-magnitude diagram, hence how many of them the filter's isochrone
+selects. A population the filter does not describe loses stars from the
+matched-filter map without becoming any fainter on the sky.
+
+### Training ranges that do not aim at these streams
+
+`--training-set` replaces the ranges training draws from, everything else
+unchanged:
+
+| parameter | `des` (used above) | `wide` | `population` |
+|---|---|---|---|
+| surface brightness | 32 to 34.5 | **31 to 36** | 32 to 34.5 |
+| width | 0.1 to 1.5 deg (log) | **0.05 to 3 deg** (log) | 0.1 to 1.5 deg (log) |
+| length | 4 to 30 deg | **3 to 30 deg** | 4 to 30 deg |
+| distance gradient | ±0.2 mag/deg | **±0.4 mag/deg** | ±0.2 mag/deg |
+| age | 12.5 Gyr | 12.5 Gyr | **9 to 13.5 Gyr** |
+| metallicity | Z = 0.0002 | Z = 0.0002 | **Z = 0.0001 to 0.001** (log) |
+
+`wide` asks what it cost to point the training at this population: it spends
+much of its capacity on streams brighter and fainter, thinner and thicker than
+any DES stream, so if the DES recovery survives it, the earlier result was not
+an artefact of aiming. `population` asks the complementary question, whether
+showing the model streams the filter's single isochrone does not describe
+makes it more robust to the mismatch scanned above. The distance range stays
+15 to 19 in both: it is the axis the model is explicitly queried on, and
+widening it would change the input channels rather than the training set.
+
 ## Generation cost
 
 Generating one training window originally took **0.73 s** on one process. The
@@ -486,9 +565,18 @@ carries every distance and could instead be reused for several queries.
 From the repository root, in the `streamml` environment:
 
 ```bash
-python scripts/experiments/stream_parameters/run.py --seeds 42 43 --windows 4800   # then --windows 19200
-python scripts/experiments/stream_parameters/figures.py --contrast                 # figure, tables, contrast
+S="42 43 44 45 46 47"
+python scripts/experiments/stream_parameters/run.py --seeds $S --windows 4800   # then --windows 19200
+python scripts/experiments/stream_parameters/run.py --seeds $S --mode des       # the DES streams
+python scripts/experiments/stream_parameters/run.py --seeds $S --mode isochrone # population mismatch
+python scripts/experiments/stream_parameters/run.py --seeds $S --mode des --ensemble --realizations 60
+python scripts/experiments/stream_parameters/run.py --seeds $S --training-set wide --mode des
+python scripts/experiments/stream_parameters/run.py --seeds $S --training-set population --mode isochrone
+python scripts/experiments/stream_parameters/figures.py --contrast              # figures, tables, contrast
 ```
+
+Each combination writes its own models and results file, so runs never
+overwrite one another.
 
 `run.py` resumes where it stopped (trained models are reloaded, scored grid
 points skipped). Models and results are written to
