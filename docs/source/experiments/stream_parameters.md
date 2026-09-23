@@ -242,7 +242,11 @@ SB 33 and 34.
 
 *Fraction of injected streams detected at their known position, pooled over
 the trainings of each length (120 streams per point for the quick models, 40
-for the long ones), with Wilson 68% bars. Solid: 4800 training windows; dashed: 19200. Each model is thresholded
+for the long ones). **The bars are the Wilson 68% interval of that pooled
+fraction: sampling only** — how precisely 120 injections measure a rate (about
+±4.5 points at 50%). They say nothing about how much the answer changes from
+one training to another, which in the transition cells is far larger and is
+the subject of the next section. Solid: 4800 training windows; dashed: 19200. Each model is thresholded
 just above its own background level (see "The operating point" below).*
 
 ### At fixed surface brightness, closer streams are harder
@@ -311,8 +315,11 @@ modulus 16 and a width of 1.2 degrees, the six trainings range from **5% to
 ```
 
 *One point per trained model (six 4800-window trainings), each scored on its
-own 20 streams; the bar is their mean. Points are offset horizontally by
-width.*
+own 20 injections; the horizontal bar is the mean of the six. **No error bars
+here on purpose**: the quantity of interest is the scatter of the points
+themselves, the training-to-training spread, which is much larger than the
+±11 points of sampling uncertainty on each single point. Points are offset
+horizontally by width.*
 
 | SB 34 | 0.2 deg | 0.6 deg | 1.2 deg |
 |---|---|---|---|
@@ -389,9 +396,13 @@ above, so the model is not tuned to the streams it is asked to recover.
 :width: 100%
 ```
 
-*Bars: fraction recovered, pooled over the six trainings (120 injections per
-stream). Lines: the range across the six. Each stream is queried at the grid
-distance nearest its own.*
+*Bars: the fraction recovered, pooled over the six trainings (120 injections
+per stream). **The horizontal lines are not error bars: they span the lowest
+and the highest of the six trainings' own rates** (20 injections each). So
+Wambelong's line from 15% to 85% means one training found 3 of its 20
+injections and another 17, not that the pooled 49% is uncertain by that much —
+sampling alone would give about ±4.5 points on 120 injections. Each stream is
+queried at the grid distance nearest its own.*
 
 | stream | m−M | width | SB | recovered (range over trainings) |
 |---|---|---|---|---|
