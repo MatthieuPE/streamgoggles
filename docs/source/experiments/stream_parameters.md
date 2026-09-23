@@ -379,7 +379,19 @@ stream-free sky.
 7. **Simulated with their own parameters, 12 of the 14 DES 2018 streams are
    recovered in at least 97% of injections** at their known positions, and the
    two exceptions (Wambelong 49%, Aliqa Uma 80%) are the ones the grid points
-   to. See the next section for what that does and does not mean.
+   to. See the next section for what that does and does not mean. The models
+   scoring this never saw those parameter values: a 4800-window training is
+   expected to contain 0.03 to 0.12 streams even loosely resembling a given
+   one of them.
+8. **A stream whose population is not the filter's isochrone is not thereby
+   harder to find** — the filter's own values are not the best point (Z =
+   0.0005 is recovered at 43% against 33%), and the isochrone family does not
+   matter at all (32% against 33%). What predicts detection is how many stars
+   the population puts through the filter at fixed surface brightness
+   (correlation 0.70). **The exception is young populations**: 9 Gyr against
+   the filter's 12 falls to 15% from 33%, fewer and brighter stars for the
+   same light. All of this is invisible where there is margin: at width 0.6
+   every population lands between 89% and 98%.
 
 ## The DES 2018 streams, simulated
 
@@ -388,8 +400,36 @@ several at once. So each of the 14 DES streams with measured parameters
 (Shipp et al. 2018) is simulated **with its own width, length, distance and
 surface brightness**, injected at random positions in the study region, and
 scored at its known track by the six quick models — 20 injections per model,
-120 per stream. Training never sees these values: it draws from the ranges
-above, so the model is not tuned to the streams it is asked to recover.
+120 per stream.
+
+### What the models scoring this figure were trained on
+
+Worth being exact, since the whole figure rests on it. The six models are the
+ordinary quick tier from earlier on this page. Nothing about them is specific
+to the DES streams:
+
+- Each training stream's parameters are **drawn independently from the
+  continuous ranges** in "Stream parameters in training" — surface brightness
+  uniform 32 to 34.5, width log-uniform 0.1 to 1.5 degrees, length uniform 4
+  to 30, m−M uniform 15 to 19, gradient uniform ±0.2 mag/deg. The ranges are
+  chosen to *bracket* the DES streams; the streams' own values are never
+  drawn from a list, and no DES parameter set is ever placed in training.
+- Each model sees 4800 such windows, 5% of them background-only, and is
+  trained for 40 epochs on the configuration the hyperparameter experiment
+  selected. The six differ only by seed, which changes both the drawn
+  parameters and the network's initialization.
+- The evaluation uses an **independent background realization** (a different
+  seed) from the one training windows are cut from, and each stream is
+  injected at random positions the model never saw.
+
+How close does a training draw ever get to a DES stream? Counting a draw as
+"close" if its width and length are within 5% and its m−M and surface
+brightness within 0.1 — far looser than a match — a 4800-window training is
+expected to contain **0.03 to 0.12** of them, depending on the stream (widest
+for ATLAS, narrowest for Tucana III). A typical model therefore saw *no*
+stream resembling any given DES stream on all four parameters at once. What
+the figure measures is generalization within the ranges, not recall of
+training examples.
 
 ```{image} figures/stream_parameters/des_streams.png
 :alt: Fraction of injections recovered for each of the 14 DES 2018 streams, with the range over the six trainings
@@ -535,6 +575,63 @@ the same integrated light either way, and what changes is where its stars sit
 in the colour-magnitude diagram, hence how many of them the filter's isochrone
 selects. A population the filter does not describe loses stars from the
 matched-filter map without becoming any fainter on the sky.
+
+#### What the mismatch costs
+
+```{image} figures/stream_parameters/isochrone.png
+:alt: Detection against the injected population's age and metallicity, at two widths
+:width: 100%
+```
+
+*Each point pools 120 injections (6 trainings × 20), with Wilson 68% bars.
+The dashed line marks the filter's own value, the dotted line the rate there,
+and the × is the other isochrone family at those same values.*
+
+| population | width 0.2 (33% at the filter's own) | width 0.6 (93%) |
+|---|---|---|
+| 9 Gyr, Z = 0.0002 | **15%** | 89% |
+| 10.5 Gyr, Z = 0.0002 | 22% | 89% |
+| **12 Gyr, Z = 0.0002** (the filter's) | 33% | 93% |
+| 13.5 Gyr, Z = 0.0002 | 29% | 98% |
+| 12 Gyr, Z = 0.0001 | 24% | 96% |
+| 12 Gyr, Z = 0.0005 | **43%** | 97% |
+| 12 Gyr, Z = 0.001 | 31% | 98% |
+| 9 Gyr, Z = 0.001 | 29% | 89% |
+| 13.5 Gyr, Z = 0.0001 | 38% | 97% |
+| 12 Gyr, Z = 0.0002, Bressan2012 | 32% | 94% |
+
+Three things come out of it, and the second is not what the test was set up to
+find.
+
+**1. The isochrone family does not matter.** Bressan2012 at the filter's own
+age and metallicity gives 32% against Marigo2017's 33%, and 94% against 93%.
+Whatever the mismatch costs, it is not sensitive to which library the stream
+was drawn from.
+
+**2. Mismatch alone does not predict the loss — the filter's own population is
+not the best one.** Z = 0.0005 is detected at 43% against the matched 33%, and
+(13.5 Gyr, Z = 0.0001) at 38%. A pure mismatch penalty would peak at the
+filter's own values and fall away on both sides; this does not.
+
+What does predict it is **how many stars the population puts through the
+filter**. Across the ten populations, detection correlates with the
+filter-selected star count at 0.70 (width 0.2). Surface brightness is held
+fixed, so a population with fainter stars per unit light simply has *more* of
+them, and more survive to be selected: 499 selected stars at 9 Gyr against 624
+at (12 Gyr, Z = 0.0005), the best-detected point. The mismatch penalty and the
+star-count gain pull in opposite directions, and over this range the star
+count usually wins.
+
+**3. Young populations are the real risk.** The clear loss is at 9 Gyr: 15%
+against 33%, less than half, and the bars do not overlap. At fixed surface
+brightness a young population's light sits in fewer, brighter stars, so
+fewer of them clear the detection limit at all. Metal-rich mismatch, over the
+metal-poor range streams actually occupy, costs nothing.
+
+None of this is visible at width 0.6, where every population lands between
+89% and 98%: with enough margin the choice of population barely registers.
+That is the argument for scanning at an operating point with something to
+lose.
 
 ### Training ranges that do not aim at these streams
 

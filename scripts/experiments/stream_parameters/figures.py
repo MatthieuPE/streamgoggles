@@ -234,11 +234,12 @@ def figure_isochrone():
             }
         )
     table = pd.DataFrame(rows)
-    scanned = table[table.model == "Bressan2012"]
-    reference = {
-        width: group["fraction"].iloc[0]
-        for width, group in table[table.model == "Marigo2017"].groupby("width")
-    }
+    # The scan runs in the filter's own family; the other family appears once,
+    # at the filter's own values, to measure that systematic on its own.
+    scanned = table[table.model == "Marigo2017"]
+    own = scanned[(scanned.age == 12.0) & (scanned.z == 0.0002)]
+    reference = dict(zip(own["width"], own["fraction"], strict=True))
+    other = table[table.model != "Marigo2017"]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), sharey=True)
     held = {"age": 0.0002, "z": 12.0}
@@ -268,6 +269,18 @@ def figure_isochrone():
             if width in reference:
                 ax.axhline(reference[width], color=colour, ls=":", lw=1.2)
         ax.axvline(12.0 if varied == "age" else 0.0002, color="0.5", ls="--", lw=1.0)
+        for _, row in other.iterrows():
+            ax.plot(
+                row["age"] if varied == "age" else row["z"],
+                row["fraction"],
+                "x",
+                color=WIDTH_COLOURS[row["width"]],
+                ms=8,
+                mew=2,
+                label="Bressan2012, same values"
+                if (varied == "age" and row["width"] == 0.2)
+                else None,
+            )
         if varied == "z":
             ax.set_xscale("log")
         ax.set_xlabel(labels[varied])
@@ -282,8 +295,7 @@ def figure_isochrone():
     axes[0].legend(fontsize=9, loc="lower right")
     fig.suptitle(
         "Stream population against the filter's isochrone, SB 34, m-M 17\n"
-        "dashed: the filter's own values — dotted: its own population, "
-        "same width",
+        "dashed: the filter's own values — dotted: the rate there, per width",
         fontsize=10.5,
     )
     fig.tight_layout()
