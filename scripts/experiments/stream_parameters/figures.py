@@ -6,6 +6,8 @@
   training_spread.png  one point per trained model, at surface brightness 34:
                   how much the same configuration varies from training to
                   training
+  des_streams.png fraction of injections recovered for each DES 2018 stream,
+                  with the range over the trainings
   contrast        with --contrast: the stream's selected-star density against
                   the background's in the matched filter, per distance, at
                   fixed surface brightness and angular size (builds the sky,
@@ -134,6 +136,69 @@ def figure_training_spread(matched):
     plt.close(fig)
 
 
+def figure_des_streams():
+    """Recovery of each DES 2018 stream, with the range over the trainings."""
+    path = DATA / "des_results.pkl"
+    if not path.exists():
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "sp_run", Path(__file__).parent / "run.py"
+    )
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+    results = pd.read_pickle(path)
+    matched = detection_at_false_alarm_rate(
+        results, THRESHOLD_GRID, targets=(TARGET,), group_by=["eval_set", "seed"]
+    )
+    pooled = matched.groupby("eval_set")[["n_detected", "n_realizations"]].sum()
+    spread = matched.groupby("eval_set")["detection_fraction"].agg(["min", "max"])
+    table = pd.DataFrame(
+        [
+            {
+                "stream": name,
+                "width": width,
+                "length": length,
+                "distance_modulus": dm,
+                "surface_brightness": sb,
+                "fraction": pooled.loc[name, "n_detected"]
+                / pooled.loc[name, "n_realizations"],
+                "min": spread.loc[name, "min"],
+                "max": spread.loc[name, "max"],
+            }
+            for name, (width, length, dm, sb) in run.DES_STREAMS.items()
+        ]
+    ).sort_values("fraction")
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    y = np.arange(len(table))
+    ax.barh(y, table["fraction"], color="#6baed6", height=0.6)
+    ax.hlines(y, table["min"], table["max"], color="#08306b", lw=2)
+    ax.plot(table["min"], y, "|", color="#08306b", ms=9)
+    ax.plot(table["max"], y, "|", color="#08306b", ms=9)
+    ax.set_yticks(y)
+    ax.set_yticklabels(
+        [
+            f"{row.stream}  (m-M {row.distance_modulus:g}, "
+            f"{row.width:g} deg, SB {row.surface_brightness:g})"
+            for row in table.itertuples()
+        ],
+        fontsize=8.5,
+    )
+    ax.set_xlim(0, 1.02)
+    ax.set_xlabel("fraction of injections recovered at the stream's known position")
+    ax.grid(alpha=0.3, axis="x")
+    ax.set_title(
+        "DES 2018 streams, simulated with their own parameters\n"
+        "(6 trainings x 20 injections each; bars: pooled, lines: range over trainings)",
+        fontsize=10.5,
+    )
+    fig.tight_layout()
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    fig.savefig(FIGURES / "des_streams.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return table
+
+
 def contrast_table():
     """Selected-star density of a stream against the background's, per distance.
 
@@ -226,6 +291,29 @@ def main(contrast):
         .map(lambda v: f"{v:.1e}")
         .to_string()
     )
+    des = figure_des_streams()
+    if des is not None:
+        print("\n== DES 2018 streams recovered (pooled over 6 trainings, range)")
+        des = des.assign(
+            recovered=[
+                f"{100 * row.fraction:.0f}% ({100 * row.min:.0f}-{100 * row.max:.0f})"
+                for row in des.itertuples()
+            ]
+        )
+        print(
+            des[
+                [
+                    "stream",
+                    "width",
+                    "length",
+                    "distance_modulus",
+                    "surface_brightness",
+                    "recovered",
+                ]
+            ]
+            .sort_values("recovered")
+            .to_string(index=False)
+        )
     if contrast:
         print("\n== contrast in the matched filter (SB 33, width 0.2, length 15)")
         print(contrast_table().round(2).to_string(index=False))

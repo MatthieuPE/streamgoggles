@@ -369,13 +369,65 @@ stream-free sky.
    that floor, at essentially no false alarms. Threshold tuning will have to
    work with that, not with a smooth trade-off curve.
 
-What this says about the DES streams is measured in the next section rather
-than extrapolated from this grid, since they differ in several parameters at
-once.
+7. **Simulated with their own parameters, 12 of the 14 DES 2018 streams are
+   recovered in at least 97% of injections** at their known positions, and the
+   two exceptions (Wambelong 49%, Aliqa Uma 80%) are the ones the grid points
+   to. See the next section for what that does and does not mean.
+
+## The DES 2018 streams, simulated
+
+The grid above varies one parameter at a time; the known streams differ in
+several at once. So each of the 14 DES streams with measured parameters
+(Shipp et al. 2018) is simulated **with its own width, length, distance and
+surface brightness**, injected at random positions in the study region, and
+scored at its known track by the six quick models — 20 injections per model,
+120 per stream. Training never sees these values: it draws from the ranges
+above, so the model is not tuned to the streams it is asked to recover.
+
+```{image} figures/stream_parameters/des_streams.png
+:alt: Fraction of injections recovered for each of the 14 DES 2018 streams, with the range over the six trainings
+:width: 100%
+```
+
+*Bars: fraction recovered, pooled over the six trainings (120 injections per
+stream). Lines: the range across the six. Each stream is queried at the grid
+distance nearest its own.*
+
+| stream | m−M | width | SB | recovered (range over trainings) |
+|---|---|---|---|---|
+| Tucana III, Molonglo, Indus, Ravi, Chenab, Turbio, Willka Yaku | 16.1-18.0 | 0.18-0.83 | 31.9-34.1 | **100%** |
+| Elqui | 18.5 | 0.54 | 34.3 | 99% (95-100) |
+| ATLAS | 16.8 | 0.24 | 33.0 | 98% (95-100) |
+| Phoenix | 16.4 | 0.16 | 32.6 | 98% (95-100) |
+| Jhelum | 15.6 | 1.16 | 33.3 | 97% (85-100) |
+| Turranburra | 17.2 | 0.60 | 34.0 | 97% (85-100) |
+| Aliqa Uma | 17.3 | 0.26 | 33.8 | 80% (35-95) |
+| **Wambelong** | **15.9** | **0.40** | **33.7** | **49% (15-85)** |
+
+**Statement.** Simulated with their own parameters, **12 of the 14 streams are
+recovered in at least 97% of injections**, including the two faintest ones
+(Chenab at SB 34.1 and Elqui at SB 34.3), which are also the most distant. The
+two that fall short are the ones the grid predicts: **Wambelong** (49%), close
+at distance modulus 15.9, narrow at 0.40 degrees and faint at SB 33.7, sits in
+the hard corner; **Aliqa Uma** (80%) is next to it. Both also vary most
+between trainings (15-85% and 35-95%), so a single trained model is not enough
+for them.
+
+**What this does and does not say.** It says that, in these simulations and at
+known positions, a model trained on ranges rather than on the streams
+themselves recovers almost all of them. It does not yet say they will be
+recovered in DES data: the background here is simulated (from LSST
+colour-magnitude tables, see "The sky"), every stream is given this
+experiment's isochrone rather than its own population, the five streams longer
+than the study region are evaluated on a 15-degree segment, and nothing here
+accounts for the extinction, depth variations, crowding or the real
+overdensities of the DES footprint.
 
 ### Caveats
 
 - Six trainings for the quick models, two for the long ones.
+- The DES streams are simulated with this experiment's isochrone, not their
+  own populations, and the longest five on a 15-degree segment.
 - One length (15 degrees) and no distance gradient in the evaluation, although
   training covers 4-30 degrees and gradients.
 - Detection at the stream's known position, queried at its own distance.
