@@ -551,6 +551,30 @@ real 12.5 Gyr isochrone, which no trained model has ever seen. (The notebooks
 still request 12.5, which is self-consistent there — filter and streams move
 together — but is no longer the same population as this experiment's.)
 
+#### The filter's own isochrone: 13 Gyr, Z = 0.0002, Marigo2017
+
+**The matched filter is a Marigo2017 isochrone and always has been** — that is
+the default in `StreamobsSplineFilter`, never overridden. Bressan2012 appears
+on this page only as the *injected stream's* population, in the one scan row
+that measures the family systematic.
+
+Its age and metallicity are now **13 Gyr and Z = 0.0002, following Shipp et
+al. (2018)**, so the filter this search uses is the one the DES 2018 streams
+were characterized with. Everything reported above it was measured with
+12 Gyr, and is kept: the filters differ by at most 0.043 mag in the
+colour-magnitude plane, and the scan's conclusions are about how populations
+compare to the reference, not about which reference was picked.
+
+Two practical consequences:
+
+- **A model cannot be moved between the two.** It learns maps made by one
+  filter, so a change of filter means retraining. The 13 Gyr series therefore
+  retrains all six models; its models and results files carry an `a13_`
+  prefix, and the 12 Gyr series keeps the untagged names.
+- **This switch only became meaningful once the full isochrone grid was
+  installed.** Before that, asking for 13 Gyr would have resolved to the
+  12.0 Gyr file and changed nothing at all, silently.
+
 #### The scan
 
 The scan injects streams at other ages and metallicities while leaving the

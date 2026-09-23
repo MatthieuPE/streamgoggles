@@ -72,9 +72,26 @@ CLIPPING = {"g": {"min": 16.0, "max": 24.5}, "r": {"min": 16.0, "max": 24.5}}
 # which leaves those four files untouched and the filter identical vertex for
 # vertex; keeping 12.0 here is what makes that true, since asking for 12.5 now
 # would resolve to a file no trained model ever saw.
-POPULATION = {"age": 12.0, "z": 0.0002}
+# 13 Gyr and Z = 0.0002 follow Shipp et al. (2018), so the filter this search
+# uses is the one that paper's streams were characterized with. Earlier
+# results on this page used 12 Gyr (see the page's isochrone aside) and their
+# models are kept under their own names, since a model trained on one
+# filter's maps cannot be scored with another's.
+POPULATION = {"age": 13.0, "z": 0.0002}
+# Marigo2017 is the default family and always has been; it is written out
+# because the stream's family is now a parameter and the two must be read
+# together.
+ISOCHRONE_FAMILY = "Marigo2017"
+
+# Models and results are named after the filter they were built with, since a
+# model trained on one filter's maps cannot be scored with another's. The
+# 12 Gyr series came first and owns the untagged names.
+TAG = "" if POPULATION["age"] == 12.0 else f"a{POPULATION['age']:g}_"
 FILTERS = {
-    "good": {"type": "isochrone", "reference_isochrone": dict(POPULATION)},
+    "good": {
+        "type": "isochrone",
+        "reference_isochrone": dict(POPULATION, isochrone_model=ISOCHRONE_FAMILY),
+    },
     "decoy": {"type": "box", "color_range": (1.2, 1.5), "mag_range": (18.0, 24.5)},
 }
 STEP = 0.5
@@ -135,9 +152,9 @@ MAX_EVAL_LENGTH = 15.0
 # things that differ. Bressan2012 at the filter's own values is scanned as
 # well: that point differs only by the isochrone family, which measures that
 # systematic separately instead of leaving it mixed in.
-ISOCHRONE_MODEL = "Marigo2017"
+ISOCHRONE_MODEL = ISOCHRONE_FAMILY
 ISOCHRONE_OTHER_FAMILY = "Bressan2012"
-ISOCHRONE_AGES = [9.0, 10.5, 12.0, 13.5]
+ISOCHRONE_AGES = [9.0, 10.5, 12.0, 13.0, 13.5]
 ISOCHRONE_Z = [0.0001, 0.0002, 0.0005, 0.001]
 ISOCHRONE_CORNERS = [(9.0, 0.001), (13.5, 0.0001)]
 # Two operating points: one with margin to lose (width 0.6 at SB 34, which the
@@ -223,7 +240,7 @@ def training_parameters(training_set="des"):
             "max_distance_change": fixed("max_distance_change", 1.5),
             "age": fixed("age", POPULATION["age"]),
             "z": fixed("z", POPULATION["z"]),
-            "isochrone_model": fixed("isochrone_model", "Marigo2017"),
+            "isochrone_model": fixed("isochrone_model", ISOCHRONE_FAMILY),
         }.items()
     }
 
@@ -431,7 +448,7 @@ def evaluation_points(mode):
             "distance_modulus": distance_modulus,
             "age": POPULATION["age"],
             "z": POPULATION["z"],
-            "isochrone_model": "Marigo2017",
+            "isochrone_model": ISOCHRONE_FAMILY,
             **population,
         }
 
@@ -511,7 +528,7 @@ def main(
         "_ensemble" if ensemble else ""
     )
     results_file = results_file.with_name(
-        results_file.stem + suffix + results_file.suffix
+        TAG + results_file.stem + suffix + results_file.suffix
     )
     frames = [pd.read_pickle(results_file)] if results_file.exists() else []
     done = (
@@ -528,7 +545,7 @@ def main(
     def model_stem(seed):
         name = "ensemble" if seed == -1 else f"seed{seed}"
         prefix = "" if training_set == "des" else f"{training_set}_"
-        return f"{prefix}w{windows}_{name}"
+        return f"{TAG}{prefix}w{windows}_{name}"
 
     def load_or_train(seed):
         stem = model_stem(seed)
