@@ -144,7 +144,7 @@ it will be asked to recover).
 | length | uniform 4-30 deg | 4.8-29.2 (Palca 57) |
 | surface brightness | uniform 32-34.5 mag arcsec⁻² | 31.9-34.3 |
 | distance gradient | uniform ±0.2 mag/deg, at most 1.5 mag end to end | 0.16 mag/deg for Tucana III |
-| age, metallicity | fixed, 12.5 Gyr and Z = 0.0002 | old, metal-poor |
+| age, metallicity | fixed, 12 Gyr and Z = 0.0002 | old, metal-poor |
 
 DES 2018 values from Shipp et al. (2018), Tables 1 and 2 (14 streams with
 measured parameters).
@@ -481,21 +481,53 @@ false-alarm rate.
 ### A population the filter does not describe
 
 Every stream so far — training, evaluation and the DES analogues — is drawn
-from a single stellar population, 12.5 Gyr and Z = 0.0002, which is also the
+from a single stellar population, 12 Gyr and Z = 0.0002, which is also the
 isochrone the matched filter uses and therefore what defines the label. Real
 streams are not all that population, and a survey cannot know each stream's
 age and metallicity before searching for it.
 
+#### An aside: the isochrone we asked for is not always the one we got
+
+Setting this scan up turned up a trap worth stating plainly, because it is
+silent. **ugali resolves a requested (age, Z) to the nearest isochrone file
+it has on disk**, with no warning when the nearest one is far away. The DES
+Marigo2017 directory held exactly four files — 10 and 12 Gyr × Z = 0.0001
+and 0.0002 — so the first version of this scan asked for nine populations and
+got four, with star counts identical between age 9 and 10.5, and between
+Z = 0.0002, 0.0005 and 0.001.
+
+The same applies backwards: **everything this page used to call 12.5 Gyr was
+the 12.0 Gyr file**. The matched filter built at either age is identical,
+vertex for vertex, so no result on this page changes — only its label, now
+12 Gyr throughout. The earlier experiments were unaffected in fact as well as
+in name, since they run on LSST, whose grid was already complete.
+
+The full DES grid (126 ages from 1 to 13.5 Gyr × 91 metallicities from 0.0001
+to 0.001) has since been installed. Its four pre-existing files are byte
+identical to what was there, and the filter at (12 Gyr, Z = 0.0002) was
+checked to be unchanged after installing it, at three distances. The
+experiment keeps asking for **12.0**, not 12.5: 12.5 would now resolve to a
+real 12.5 Gyr isochrone, which no trained model has ever seen. (The notebooks
+still request 12.5, which is self-consistent there — filter and streams move
+together — but is no longer the same population as this experiment's.)
+
+#### The scan
+
 The scan injects streams at other ages and metallicities while leaving the
 filter, the model and the label untouched:
 
-- age 9, 10.5, 12.5, 13.5 Gyr at the filter's Z = 0.0002
-- Z = 0.0001, 0.0002, 0.0005, 0.001 at the filter's 12.5 Gyr
-- two corners with both wrong: (10 Gyr, Z = 0.001), (13.5 Gyr, Z = 0.0001)
+- age 9, 10.5, 12, 13.5 Gyr at the filter's Z = 0.0002
+- Z = 0.0001, 0.0002, 0.0005, 0.001 at the filter's 12 Gyr
+- two corners with both wrong: (9 Gyr, Z = 0.001), (13.5 Gyr, Z = 0.0001)
+- the filter's own values in a **different isochrone family** (Bressan2012
+  rather than Marigo2017), which measures that systematic on its own instead
+  of leaving it mixed into the others
 
-Geometry is held at the middle of the grid (width 0.6 degrees, length 15,
-m−M 17) and the surface brightness is scanned at 33 and 34, since that sets
-how much margin there is to lose.
+Geometry is held at length 15 degrees and m−M 17, at two operating points of
+the same surface brightness 34: width 0.6, which the six models recover 93%
+of, and width 0.2, which they recover 33% of. A point they recover 100% of
+would only be able to show that nothing broke — the first version of this scan
+was run at one, and did exactly that.
 
 **Surface brightness is held fixed as the population changes**, which is what
 makes this a test of the filter rather than of brightness: the stream emits
@@ -515,7 +547,7 @@ unchanged:
 | width | 0.1 to 1.5 deg (log) | **0.05 to 3 deg** (log) | 0.1 to 1.5 deg (log) |
 | length | 4 to 30 deg | **3 to 30 deg** | 4 to 30 deg |
 | distance gradient | ±0.2 mag/deg | **±0.4 mag/deg** | ±0.2 mag/deg |
-| age | 12.5 Gyr | 12.5 Gyr | **9 to 13.5 Gyr** |
+| age | 12 Gyr | 12 Gyr | **9 to 13.5 Gyr** |
 | metallicity | Z = 0.0002 | Z = 0.0002 | **Z = 0.0001 to 0.001** (log) |
 
 `wide` asks what it cost to point the training at this population: it spends
