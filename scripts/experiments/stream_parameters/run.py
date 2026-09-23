@@ -78,6 +78,34 @@ N_REALIZATIONS = 20
 N_NULL_BANDS = 200
 EVAL_SEED = 2026
 
+# The DES streams of Shipp et al. (2018), Tables 1 and 2: width (deg), length
+# (deg), distance modulus, surface brightness (mag/arcsec^2). Palca has no
+# published width or surface brightness and is left out. An evaluation set
+# only -- training never sees these values (it draws from the ranges above),
+# so the model is not tuned to them. Their stellar populations are not
+# modelled: every injected stream keeps this experiment's isochrone
+# (12.5 Gyr, Z = 0.0002).
+DES_STREAMS = {
+    "Tucana III": (0.18, 4.8, 17.0, 32.0),
+    "ATLAS": (0.24, 22.6, 16.8, 33.0),
+    "Molonglo": (0.32, 7.4, 16.8, 33.0),
+    "Phoenix": (0.16, 13.6, 16.4, 32.6),
+    "Indus": (0.83, 20.3, 16.1, 31.9),
+    "Jhelum": (1.16, 29.2, 15.6, 33.3),
+    "Ravi": (0.72, 16.6, 16.8, 33.4),
+    "Chenab": (0.71, 18.5, 18.0, 34.1),
+    "Elqui": (0.54, 9.4, 18.5, 34.3),
+    "Aliqa Uma": (0.26, 10.0, 17.3, 33.8),
+    "Turbio": (0.25, 15.0, 16.1, 32.6),
+    "Willka Yaku": (0.21, 6.4, 17.7, 32.9),
+    "Turranburra": (0.60, 16.9, 17.2, 34.0),
+    "Wambelong": (0.40, 14.2, 15.9, 33.7),
+}
+# A stream longer than the study region leaves too few placements for the
+# background bands the detection test needs, so a longer one is evaluated on a
+# segment of this length. Conservative: more track can only help.
+MAX_EVAL_LENGTH = 15.0
+
 
 def training_parameters():
     from streamgoggles.config import DistributionType, ParameterSpec
@@ -261,7 +289,26 @@ def train(seed, windows, background, injector):
     return model, normalizer, result
 
 
-def main(seeds, windows):
+def evaluation_points(des):
+    """(name, (width, length, distance, surface brightness)) to evaluate.
+
+    Either the grid over distance x width x surface brightness, or the DES
+    streams with their own parameters.
+    """
+    if des:
+        return [
+            (name, (width, min(length, MAX_EVAL_LENGTH), distance, sb))
+            for name, (width, length, distance, sb) in DES_STREAMS.items()
+        ]
+    return [
+        (f"dm{distance:g}_w{width:g}_sb{sb:g}", (width, EVAL_LENGTH, distance, sb))
+        for distance in EVAL_DISTANCES
+        for width in EVAL_WIDTHS
+        for sb in EVAL_SB
+    ]
+
+
+def main(seeds, windows, des=False):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -290,7 +337,8 @@ def main(seeds, windows):
         for name in FILTERS
     ]
 
-    frames = [pd.read_pickle(RESULTS)] if RESULTS.exists() else []
+    results_file = OUT / ("des_results.pkl" if des else "results.pkl")
+    frames = [pd.read_pickle(results_file)] if results_file.exists() else []
     done = (
         set(
             map(
@@ -335,54 +383,57 @@ def main(seeds, windows):
         model.eval()
         configure_torch_threads(num_workers=0)
 
-        for distance in EVAL_DISTANCES:
-            for width in EVAL_WIDTHS:
-                for sb in EVAL_SB:
-                    eval_set = f"dm{distance:g}_w{width:g}_sb{sb:g}"
-                    if (seed, windows, eval_set) in done:
-                        continue
-                    transform = QueryDistanceTransform(
-                        StreamMapTransform(
-                            normalizer=WindowNormalizer(), augment=False
-                        ),
-                        query_grid=QUERY_GRID,
-                        step=STEP,
-                        query=distance,
-                    )
-                    label_channel = QueryDistanceTransform.channel_index(
-                        channels, "good", distance
-                    )
-                    params = {
-                        "morphology": "uniform",
-                        "richness": sb,
-                        "width": width,
-                        "length": EVAL_LENGTH,
-                        "distance_modulus": distance,
-                        "age": 12.5,
-                        "z": 0.0002,
-                    }
-                    start = time.time()
-                    with torch.no_grad():
-                        scored = evaluate_footprint_realizations(
-                            model,
-                            evaluation_injector,
-                            transform,
-                            [params],
-                            n_realizations=N_REALIZATIONS,
-                            channel=0,
-                            label_channel=label_channel,
-                            seed=EVAL_SEED,
-                            thresholds=THRESHOLD_GRID,
-                            n_null_bands=N_NULL_BANDS,
-                        )
-                    frames.append(
-                        scored.assign(seed=seed, windows=windows, eval_set=eval_set)
-                    )
-                    pd.concat(frames, ignore_index=True).to_pickle(RESULTS)
-                    print(
-                        f"{stem} {eval_set}: scored in {time.time() - start:.0f}s",
-                        flush=True,
-                    )
+        for eval_set, (width, length, distance, sb) in evaluation_points(des):
+            if (seed, windows, eval_set) in done:
+                continue
+            # A stream is queried at the grid point nearest its own
+            # distance, which is what a search would do.
+            query = min(QUERY_GRID, key=lambda q: abs(q - distance))
+            transform = QueryDistanceTransform(
+                StreamMapTransform(normalizer=WindowNormalizer(), augment=False),
+                query_grid=QUERY_GRID,
+                step=STEP,
+                query=query,
+            )
+            label_channel = QueryDistanceTransform.channel_index(
+                channels, "good", query
+            )
+            params = {
+                "morphology": "uniform",
+                "richness": sb,
+                "width": width,
+                "length": length,
+                "distance_modulus": distance,
+                "age": 12.5,
+                "z": 0.0002,
+            }
+            start = time.time()
+            with torch.no_grad():
+                scored = evaluate_footprint_realizations(
+                    model,
+                    evaluation_injector,
+                    transform,
+                    [params],
+                    n_realizations=N_REALIZATIONS,
+                    channel=0,
+                    label_channel=label_channel,
+                    seed=EVAL_SEED,
+                    thresholds=THRESHOLD_GRID,
+                    n_null_bands=N_NULL_BANDS,
+                )
+            frames.append(
+                scored.assign(
+                    seed=seed,
+                    windows=windows,
+                    eval_set=eval_set,
+                    queried_distance=query,
+                )
+            )
+            pd.concat(frames, ignore_index=True).to_pickle(results_file)
+            print(
+                f"{stem} {eval_set}: scored in {time.time() - start:.0f}s",
+                flush=True,
+            )
     print("done", flush=True)
 
 
@@ -390,5 +441,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seeds", type=int, nargs="+", default=[42])
     parser.add_argument("--windows", type=int, default=4800)
+    parser.add_argument(
+        "--des-streams",
+        action="store_true",
+        help="evaluate the DES 2018 streams' own parameters instead of the grid",
+    )
     arguments = parser.parse_args()
-    main(arguments.seeds, arguments.windows)
+    main(arguments.seeds, arguments.windows, arguments.des_streams)
