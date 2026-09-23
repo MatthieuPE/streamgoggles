@@ -396,13 +396,17 @@ above, so the model is not tuned to the streams it is asked to recover.
 :width: 100%
 ```
 
-*Bars: the fraction recovered, pooled over the six trainings (120 injections
-per stream). **The horizontal lines are not error bars: they span the lowest
-and the highest of the six trainings' own rates** (20 injections each). So
-Wambelong's line from 15% to 85% means one training found 3 of its 20
-injections and another 17, not that the pooled 49% is uncertain by that much —
-sampling alone would give about ±4.5 points on 120 injections. Each stream is
-queried at the grid distance nearest its own.*
+*Read the two marks separately.* **The bar** is the fraction recovered over
+all 120 injections of that stream: each of the six trained models is scored on
+20 of them, and since every model contributes the same 20, the bar is also
+exactly the average of the six models' own rates. **The lines are not error
+bars**: they run from the lowest to the highest of those six rates, so they
+measure the spread between trainings and carry no confidence level. Wambelong's
+15% to 85% means the worst of the six models recovered 3 of its 20 injections
+and the best recovered 17 — not that the 49% is uncertain by that much, since
+sampling alone would give about ±4.5 points on 120 injections. Where the lines
+are short, all six models agree. Each stream is queried at the grid distance
+nearest its own.*
 
 | stream | m−M | width | SB | recovered (range over trainings) |
 |---|---|---|---|---|

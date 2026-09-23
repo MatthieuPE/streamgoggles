@@ -31,8 +31,21 @@ Dice, batch 8, background fraction 0.05, U-Net depth 2 width 12), on DES year 6
 at RA 0, Dec -50. Models are the quick tier (4800 windows) unless --windows
 says otherwise.
 
+--training-set replaces those ranges, to ask what aiming at this population
+bought: "wide" widens the geometry well past the DES streams, "population"
+draws age and metallicity instead of fixing them.
+
+--mode chooses what the trained models are scored on: the parameter "grid",
+the "des" streams with their own parameters, or an "isochrone" scan where the
+injected population differs from the one the matched filter assumes.
+
+--ensemble scores the seeds' averaged output maps as one predictor instead of
+scoring each training on its own.
+
 Run from the repository root:
-  python scripts/experiments/stream_parameters/run.py [--seeds 42 43] [--windows 4800]
+  python scripts/experiments/stream_parameters/run.py [--seeds 42 43]
+      [--windows 4800] [--mode grid|des|isochrone] [--ensemble]
+      [--training-set des|wide|population] [--realizations 20]
 """
 
 import argparse
@@ -40,6 +53,7 @@ import json
 import tempfile
 import time
 import warnings
+from functools import partial
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -106,8 +120,53 @@ DES_STREAMS = {
 # segment of this length. Conservative: more track can only help.
 MAX_EVAL_LENGTH = 15.0
 
+# Isochrone mismatch: the stream's population differs from the one the matched
+# filter assumes (12.5 Gyr, Z = 0.0002), which is also the only population the
+# model was trained on. Age is scanned at the filter's metallicity, metallicity
+# at the filter's age, plus two corners where both are wrong. Geometry is held
+# at the middle of the grid; surface brightness is scanned because that is what
+# sets how much margin there is to lose.
+ISOCHRONE_AGES = [9.0, 10.5, 12.5, 13.5]
+ISOCHRONE_Z = [0.0001, 0.0002, 0.0005, 0.001]
+ISOCHRONE_CORNERS = [(10.0, 0.001), (13.5, 0.0001)]
+ISOCHRONE_GEOMETRY = {"width": 0.6, "length": 15.0, "distance_modulus": 17.0}
+ISOCHRONE_SB = [33.0, 34.0]
 
-def training_parameters():
+
+def isochrone_populations():
+    """(age, Z) pairs of the mismatch scan, the filter's own pair included."""
+    pairs = [(age, 0.0002) for age in ISOCHRONE_AGES]
+    pairs += [(12.5, z) for z in ISOCHRONE_Z if (12.5, z) not in pairs]
+    pairs += [pair for pair in ISOCHRONE_CORNERS if pair not in pairs]
+    return pairs
+
+
+# Three training sets, each a set of ranges the stream parameters are drawn
+# from. "des" brackets the DES 2018 streams, and is what every result before
+# this section used. The other two ask what it costs to stop aiming at that
+# population:
+#   "wide"       the same fixed isochrone, but geometry ranges well past the
+#                DES streams on every side (a model that is not told where to
+#                look in parameter space)
+#   "population" the DES ranges, with age and metallicity drawn instead of
+#                fixed, so the model sees streams the matched filter's single
+#                isochrone does not describe
+TRAINING_SETS = {
+    "des": {},
+    "wide": {
+        "richness": (31.0, 36.0),
+        "width": (0.05, 3.0, "log"),
+        "length": (3.0, 30.0),
+        "distance_gradient": (-0.4, 0.4),
+    },
+    "population": {
+        "age": (9.0, 13.5),
+        "z": (0.0001, 0.001, "log"),
+    },
+}
+
+
+def training_parameters(training_set="des"):
     from streamgoggles.config import DistributionType, ParameterSpec
 
     def fixed(name, value):
@@ -116,16 +175,28 @@ def training_parameters():
     def uniform(name, low, high, kind=DistributionType.UNIFORM):
         return ParameterSpec(name=name, dist_type=kind, min_val=low, max_val=high)
 
+    def override(spec):
+        """The training set's own range for this parameter, if it has one."""
+        changed = TRAINING_SETS[training_set].get(spec.name)
+        if changed is None:
+            return spec
+        low, high, *log = changed
+        kind = DistributionType.LOG_UNIFORM if log else DistributionType.UNIFORM
+        return uniform(spec.name, low, high, kind)
+
     return {
-        "morphology": fixed("morphology", "uniform"),
-        "richness": uniform("richness", 32.0, 34.5),
-        "width": uniform("width", 0.1, 1.5, DistributionType.LOG_UNIFORM),
-        "length": uniform("length", 4.0, 30.0),
-        "distance_modulus": uniform("distance_modulus", 15.0, 19.0),
-        "distance_gradient": uniform("distance_gradient", -0.2, 0.2),
-        "max_distance_change": fixed("max_distance_change", 1.5),
-        "age": fixed("age", 12.5),
-        "z": fixed("z", 0.0002),
+        name: override(spec)
+        for name, spec in {
+            "morphology": fixed("morphology", "uniform"),
+            "richness": uniform("richness", 32.0, 34.5),
+            "width": uniform("width", 0.1, 1.5, DistributionType.LOG_UNIFORM),
+            "length": uniform("length", 4.0, 30.0),
+            "distance_modulus": uniform("distance_modulus", 15.0, 19.0),
+            "distance_gradient": uniform("distance_gradient", -0.2, 0.2),
+            "max_distance_change": fixed("max_distance_change", 1.5),
+            "age": fixed("age", 12.5),
+            "z": fixed("z", 0.0002),
+        }.items()
     }
 
 
@@ -179,7 +250,7 @@ def build_sky(background_seed):
     return background, injector
 
 
-def train(seed, windows, background, injector):
+def train(seed, windows, background, injector, training_set="des"):
     import numpy as np
     import torch
     from torch.utils.data import DataLoader
@@ -203,7 +274,7 @@ def train(seed, windows, background, injector):
     from streamgoggles.training.plain_runner import PlainTrainer
 
     config = StreamConfig(
-        params=training_parameters(),
+        params=training_parameters(training_set),
         background_fraction=TRAINING["background_fraction"],
         persist=False,
         richness_kind="surface_brightness",
@@ -289,26 +360,84 @@ def train(seed, windows, background, injector):
     return model, normalizer, result
 
 
-def evaluation_points(des):
-    """(name, (width, length, distance, surface brightness)) to evaluate.
+class Ensemble:
+    """Several trainings scored as one predictor: their output maps averaged.
 
-    Either the grid over distance x width x surface brightness, or the DES
-    streams with their own parameters.
+    Every model of this experiment standardizes its input from the window
+    itself (`WindowNormalizer`), so they all take exactly the same input and
+    the average is over their output probabilities alone. A survey search
+    deploying six models would read this one map, not six.
     """
-    if des:
+
+    def __init__(self, models):
+        import torch
+
+        self.models = models
+        self.torch = torch
+
+    def eval(self):
+        for model in self.models:
+            model.eval()
+        return self
+
+    def __call__(self, x):
+        return self.torch.stack([model(x) for model in self.models]).mean(dim=0)
+
+
+def evaluation_points(mode):
+    """(name, stream parameters) to evaluate, for one of the three modes.
+
+    "grid"      distance x width x surface brightness, at the experiment's own
+                isochrone
+    "des"       the DES 2018 streams with their own parameters
+    "isochrone" fixed geometry, population (age, Z) scanned away from the one
+                the matched filter assumes
+    """
+
+    def point(name, width, length, distance_modulus, sb, age=12.5, z=0.0002):
+        return name, {
+            "morphology": "uniform",
+            "richness": sb,
+            "width": width,
+            "length": length,
+            "distance_modulus": distance_modulus,
+            "age": age,
+            "z": z,
+        }
+
+    if mode == "des":
         return [
-            (name, (width, min(length, MAX_EVAL_LENGTH), distance, sb))
+            point(name, width, min(length, MAX_EVAL_LENGTH), distance, sb)
             for name, (width, length, distance, sb) in DES_STREAMS.items()
         ]
+    if mode == "isochrone":
+        return [
+            point(
+                f"age{age:g}_z{z:g}_sb{sb:g}",
+                sb=sb,
+                age=age,
+                z=z,
+                **ISOCHRONE_GEOMETRY,
+            )
+            for age, z in isochrone_populations()
+            for sb in ISOCHRONE_SB
+        ]
     return [
-        (f"dm{distance:g}_w{width:g}_sb{sb:g}", (width, EVAL_LENGTH, distance, sb))
+        point(f"dm{distance:g}_w{width:g}_sb{sb:g}", width, EVAL_LENGTH, distance, sb)
         for distance in EVAL_DISTANCES
         for width in EVAL_WIDTHS
         for sb in EVAL_SB
     ]
 
 
-def main(seeds, windows, des=False):
+def main(
+    seeds,
+    windows,
+    mode="grid",
+    ensemble=False,
+    realizations=N_REALIZATIONS,
+    training_set="des",
+):
     import matplotlib
 
     matplotlib.use("Agg")
@@ -337,7 +466,20 @@ def main(seeds, windows, des=False):
         for name in FILTERS
     ]
 
-    results_file = OUT / ("des_results.pkl" if des else "results.pkl")
+    results_file = (
+        OUT
+        / {
+            "grid": "results.pkl",
+            "des": "des_results.pkl",
+            "isochrone": "isochrone_results.pkl",
+        }[mode]
+    )
+    suffix = ("" if training_set == "des" else f"_{training_set}") + (
+        "_ensemble" if ensemble else ""
+    )
+    results_file = results_file.with_name(
+        results_file.stem + suffix + results_file.suffix
+    )
     frames = [pd.read_pickle(results_file)] if results_file.exists() else []
     done = (
         set(
@@ -350,8 +492,13 @@ def main(seeds, windows, des=False):
         else set()
     )
 
-    for seed in seeds:
-        stem = f"w{windows}_seed{seed}"
+    def model_stem(seed):
+        name = "ensemble" if seed == -1 else f"seed{seed}"
+        prefix = "" if training_set == "des" else f"{training_set}_"
+        return f"{prefix}w{windows}_{name}"
+
+    def load_or_train(seed):
+        stem = model_stem(seed)
         weights, meta = MODELS / f"{stem}.pt", MODELS / f"{stem}.json"
         if weights.exists():
             saved = json.loads(meta.read_text())
@@ -362,15 +509,17 @@ def main(seeds, windows, des=False):
             print(f"{stem}: loaded ({saved['train_s']:.0f}s of training)", flush=True)
         else:
             start = time.time()
-            model, _, result = train(seed, windows, background, injector)
+            model, _, result = train(seed, windows, background, injector, training_set)
             torch.save(model.state_dict(), weights)
             meta.write_text(
                 json.dumps(
                     {
                         "seed": seed,
                         "windows": windows,
+                        "training_set": training_set,
                         "training_parameters": {
-                            k: str(v) for k, v in training_parameters().items()
+                            k: str(v)
+                            for k, v in training_parameters(training_set).items()
                         },
                         "normalization": "per window and channel (WindowNormalizer)",
                         "train_losses": result["train_losses"],
@@ -380,15 +529,32 @@ def main(seeds, windows, des=False):
                 )
             )
             print(f"{stem}: trained in {time.time() - start:.0f}s", flush=True)
+        return model
+
+    # One entry per training, or a single entry averaging all of them. The
+    # ensemble is labelled seed -1 so the two never mix in a results file.
+    if ensemble:
+        to_score = [(-1, lambda: Ensemble([load_or_train(s) for s in seeds]))]
+    else:
+        to_score = [(seed, partial(load_or_train, seed)) for seed in seeds]
+
+    for seed, build in to_score:
+        stem = model_stem(seed)
+        if all(
+            (seed, windows, eval_set) in done for eval_set, _ in evaluation_points(mode)
+        ):
+            print(f"{stem}: already scored", flush=True)
+            continue
+        model = build()
         model.eval()
         configure_torch_threads(num_workers=0)
 
-        for eval_set, (width, length, distance, sb) in evaluation_points(des):
+        for eval_set, params in evaluation_points(mode):
             if (seed, windows, eval_set) in done:
                 continue
             # A stream is queried at the grid point nearest its own
             # distance, which is what a search would do.
-            query = min(QUERY_GRID, key=lambda q: abs(q - distance))
+            query = min(QUERY_GRID, key=lambda q: abs(q - params["distance_modulus"]))
             transform = QueryDistanceTransform(
                 StreamMapTransform(normalizer=WindowNormalizer(), augment=False),
                 query_grid=QUERY_GRID,
@@ -398,15 +564,6 @@ def main(seeds, windows, des=False):
             label_channel = QueryDistanceTransform.channel_index(
                 channels, "good", query
             )
-            params = {
-                "morphology": "uniform",
-                "richness": sb,
-                "width": width,
-                "length": length,
-                "distance_modulus": distance,
-                "age": 12.5,
-                "z": 0.0002,
-            }
             start = time.time()
             with torch.no_grad():
                 scored = evaluate_footprint_realizations(
@@ -414,7 +571,7 @@ def main(seeds, windows, des=False):
                     evaluation_injector,
                     transform,
                     [params],
-                    n_realizations=N_REALIZATIONS,
+                    n_realizations=realizations,
                     channel=0,
                     label_channel=label_channel,
                     seed=EVAL_SEED,
@@ -442,9 +599,29 @@ if __name__ == "__main__":
     parser.add_argument("--seeds", type=int, nargs="+", default=[42])
     parser.add_argument("--windows", type=int, default=4800)
     parser.add_argument(
-        "--des-streams",
+        "--mode",
+        choices=["grid", "des", "isochrone"],
+        default="grid",
+        help="which evaluation points to score the trained models on",
+    )
+    parser.add_argument(
+        "--ensemble",
         action="store_true",
-        help="evaluate the DES 2018 streams' own parameters instead of the grid",
+        help="average the seeds' output maps and score that one predictor",
+    )
+    parser.add_argument("--realizations", type=int, default=N_REALIZATIONS)
+    parser.add_argument(
+        "--training-set",
+        choices=list(TRAINING_SETS),
+        default="des",
+        help="which ranges the training streams are drawn from",
     )
     arguments = parser.parse_args()
-    main(arguments.seeds, arguments.windows, arguments.des_streams)
+    main(
+        arguments.seeds,
+        arguments.windows,
+        arguments.mode,
+        arguments.ensemble,
+        arguments.realizations,
+        arguments.training_set,
+    )

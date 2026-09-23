@@ -8,6 +8,8 @@
                   training
   des_streams.png fraction of injections recovered for each DES 2018 stream,
                   with the range over the trainings
+  isochrone.png   detection when the injected stream's age or metallicity is
+                  not the one the matched filter assumes
   contrast        with --contrast: the stream's selected-star density against
                   the background's in the matched filter, per distance, at
                   fixed surface brightness and angular size (builds the sky,
@@ -189,12 +191,88 @@ def figure_des_streams():
     ax.grid(alpha=0.3, axis="x")
     ax.set_title(
         "DES 2018 streams, simulated with their own parameters\n"
-        "(6 trainings x 20 injections each; bars: pooled, lines: range over trainings)",
+        "bars: mean of 6 trainings (20 injections each) — "
+        "lines: lowest to highest training, not a confidence interval",
         fontsize=10.5,
     )
     fig.tight_layout()
     FIGURES.mkdir(parents=True, exist_ok=True)
     fig.savefig(FIGURES / "des_streams.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return table
+
+
+def figure_isochrone():
+    """Detection when the stream's population is not the filter's isochrone.
+
+    The matched filter, the model's training and the label all assume
+    12.5 Gyr, Z = 0.0002. Here the injected stream has another age or
+    metallicity at the same surface brightness, so what changes is which of
+    its stars the filter selects, not how bright the stream is.
+    """
+    path = DATA / "isochrone_results.pkl"
+    if not path.exists():
+        return None
+    results = pd.read_pickle(path)
+    matched = detection_at_false_alarm_rate(
+        results, THRESHOLD_GRID, targets=(TARGET,), group_by=["eval_set", "seed"]
+    )
+    pooled = matched.groupby("eval_set")[["n_detected", "n_realizations"]].sum()
+    table = pd.DataFrame(
+        [
+            {
+                "age": float(name.split("_")[0][3:]),
+                "z": float(name.split("_")[1][1:]),
+                "richness": float(name.split("_")[2][2:]),
+                "n_detected": row.n_detected,
+                "n_realizations": row.n_realizations,
+                "fraction": row.n_detected / row.n_realizations,
+            }
+            for name, row in pooled.iterrows()
+        ]
+    )
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), sharey=True)
+    scans = [
+        ("age", 0.0002, "age (Gyr)", "Z = 0.0002 (the filter's)"),
+        ("z", 12.5, "metallicity Z", "12.5 Gyr (the filter's)"),
+    ]
+    for ax, (varied, held, xlabel, title) in zip(axes, scans, strict=True):
+        fixed = "z" if varied == "age" else "age"
+        scan = table[table[fixed] == held]
+        for sb, group in scan.groupby("richness"):
+            group = group.sort_values(varied)
+            k = group["n_detected"].to_numpy()
+            n = group["n_realizations"].to_numpy()
+            low, high = np.array(
+                [_wilson_interval(int(a), int(b)) for a, b in zip(k, n, strict=True)]
+            ).T
+            y = k / n
+            ax.errorbar(
+                group[varied],
+                y,
+                yerr=[np.clip(y - low, 0, None), np.clip(high - y, 0, None)],
+                marker="o",
+                capsize=2.5,
+                lw=1.6,
+                label=f"SB {sb:g}",
+            )
+        ax.axvline(held if varied == "z" else 12.5, color="0.5", ls=":", lw=1.2)
+        if varied == "z":
+            ax.axvline(0.0002, color="0.5", ls=":", lw=1.2)
+            ax.set_xscale("log")
+        ax.set_xlabel(xlabel)
+        ax.set_title(f"varying {varied}, at {title}", fontsize=10.5)
+        ax.set_ylim(-0.03, 1.03)
+        ax.grid(alpha=0.3)
+    axes[0].set_ylabel("fraction of streams detected")
+    axes[0].legend(fontsize=9)
+    fig.suptitle(
+        "Stream population against the filter's isochrone (dotted: the filter's own)",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    fig.savefig(FIGURES / "isochrone.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
     return table
 
@@ -314,6 +392,35 @@ def main(contrast):
             .sort_values("recovered")
             .to_string(index=False)
         )
+    isochrone = figure_isochrone()
+    if isochrone is not None:
+        print("\n== detected when the stream's population is not the filter's")
+        print(
+            isochrone.assign(percent=(100 * isochrone.fraction).round(0))
+            .sort_values(["richness", "age", "z"])[
+                ["richness", "age", "z", "percent", "n_realizations"]
+            ]
+            .to_string(index=False)
+        )
+    for name, label in (
+        ("des_results_ensemble.pkl", "DES streams"),
+        ("results_ensemble.pkl", "grid"),
+    ):
+        if (DATA / name).exists():
+            ens = detection_at_false_alarm_rate(
+                pd.read_pickle(DATA / name),
+                THRESHOLD_GRID,
+                targets=(TARGET,),
+                group_by=["eval_set", "seed"],
+            )
+            print(f"\n== ensemble of the six trainings, {label}")
+            print(
+                ens.assign(percent=(100 * ens.detection_fraction).round(0))[
+                    ["eval_set", "percent", "n_realizations"]
+                ]
+                .sort_values("percent")
+                .to_string(index=False)
+            )
     if contrast:
         print("\n== contrast in the matched filter (SB 33, width 0.2, length 15)")
         print(contrast_table().round(2).to_string(index=False))
