@@ -155,7 +155,7 @@ class StreamObsSource(StreamSource):
         band_2 = params.get("band_2", "r")
 
         isochrone_cfg = {
-            "name": "Marigo2017",
+            "name": params.get("isochrone_model", "Marigo2017"),
             "survey": survey,
             "release": release,
             "age": age,

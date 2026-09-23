@@ -89,7 +89,7 @@ def _isochrone_cfg_from_params(params: dict) -> dict:
     """Build the same isochrone-factory dict shape stream_sources.py uses
     (minus 'release', which ugali.isochrone.factory doesn't accept)."""
     return {
-        "name": "Marigo2017",
+        "name": params.get("isochrone_model", "Marigo2017"),
         "survey": params.get("survey", "lsst"),
         "age": params["age"],
         "z": params["z"],

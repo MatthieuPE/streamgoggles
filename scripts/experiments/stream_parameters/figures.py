@@ -205,8 +205,8 @@ def figure_des_streams():
 def figure_isochrone():
     """Detection when the stream's population is not the filter's isochrone.
 
-    The matched filter, the model's training and the label all assume
-    12.5 Gyr, Z = 0.0002. Here the injected stream has another age or
+    The matched filter, the model's training and the label all assume the
+    experiment's own population. Here the injected stream has another age or
     metallicity at the same surface brightness, so what changes is which of
     its stars the filter selects, not how bright the stream is.
     """
@@ -218,28 +218,35 @@ def figure_isochrone():
         results, THRESHOLD_GRID, targets=(TARGET,), group_by=["eval_set", "seed"]
     )
     pooled = matched.groupby("eval_set")[["n_detected", "n_realizations"]].sum()
-    table = pd.DataFrame(
-        [
+    rows = []
+    for name, row in pooled.iterrows():
+        age, z, model, width, sb = name.split("_")
+        rows.append(
             {
-                "age": float(name.split("_")[0][3:]),
-                "z": float(name.split("_")[1][1:]),
-                "richness": float(name.split("_")[2][2:]),
+                "age": float(age[3:]),
+                "z": float(z[1:]),
+                "model": model,
+                "width": float(width[1:]),
+                "richness": float(sb[2:]),
                 "n_detected": row.n_detected,
                 "n_realizations": row.n_realizations,
                 "fraction": row.n_detected / row.n_realizations,
             }
-            for name, row in pooled.iterrows()
-        ]
-    )
+        )
+    table = pd.DataFrame(rows)
+    scanned = table[table.model == "Bressan2012"]
+    reference = {
+        width: group["fraction"].iloc[0]
+        for width, group in table[table.model == "Marigo2017"].groupby("width")
+    }
+
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), sharey=True)
-    scans = [
-        ("age", 0.0002, "age (Gyr)", "Z = 0.0002 (the filter's)"),
-        ("z", 12.5, "metallicity Z", "12.5 Gyr (the filter's)"),
-    ]
-    for ax, (varied, held, xlabel, title) in zip(axes, scans, strict=True):
+    held = {"age": 0.0002, "z": 12.0}
+    labels = {"age": "age (Gyr)", "z": "metallicity Z"}
+    for ax, varied in zip(axes, ["age", "z"], strict=True):
         fixed = "z" if varied == "age" else "age"
-        scan = table[table[fixed] == held]
-        for sb, group in scan.groupby("richness"):
+        scan = scanned[scanned[fixed] == held[varied]]
+        for width, group in scan.groupby("width"):
             group = group.sort_values(varied)
             k = group["n_detected"].to_numpy()
             n = group["n_realizations"].to_numpy()
@@ -247,28 +254,37 @@ def figure_isochrone():
                 [_wilson_interval(int(a), int(b)) for a, b in zip(k, n, strict=True)]
             ).T
             y = k / n
+            colour = WIDTH_COLOURS[width]
             ax.errorbar(
                 group[varied],
                 y,
                 yerr=[np.clip(y - low, 0, None), np.clip(high - y, 0, None)],
+                color=colour,
                 marker="o",
                 capsize=2.5,
                 lw=1.6,
-                label=f"SB {sb:g}",
+                label=f"width {width:g} deg",
             )
-        ax.axvline(held if varied == "z" else 12.5, color="0.5", ls=":", lw=1.2)
+            if width in reference:
+                ax.axhline(reference[width], color=colour, ls=":", lw=1.2)
+        ax.axvline(12.0 if varied == "age" else 0.0002, color="0.5", ls="--", lw=1.0)
         if varied == "z":
-            ax.axvline(0.0002, color="0.5", ls=":", lw=1.2)
             ax.set_xscale("log")
-        ax.set_xlabel(xlabel)
-        ax.set_title(f"varying {varied}, at {title}", fontsize=10.5)
+        ax.set_xlabel(labels[varied])
+        ax.set_title(
+            f"varying {varied}, at the filter's "
+            + ("Z = 0.0002" if varied == "age" else "12 Gyr"),
+            fontsize=10.5,
+        )
         ax.set_ylim(-0.03, 1.03)
         ax.grid(alpha=0.3)
     axes[0].set_ylabel("fraction of streams detected")
-    axes[0].legend(fontsize=9)
+    axes[0].legend(fontsize=9, loc="lower right")
     fig.suptitle(
-        "Stream population against the filter's isochrone (dotted: the filter's own)",
-        fontsize=11,
+        "Stream population against the filter's isochrone, SB 34, m-M 17\n"
+        "dashed: the filter's own values — dotted: its own population, "
+        "same width",
+        fontsize=10.5,
     )
     fig.tight_layout()
     FIGURES.mkdir(parents=True, exist_ok=True)
@@ -397,8 +413,8 @@ def main(contrast):
         print("\n== detected when the stream's population is not the filter's")
         print(
             isochrone.assign(percent=(100 * isochrone.fraction).round(0))
-            .sort_values(["richness", "age", "z"])[
-                ["richness", "age", "z", "percent", "n_realizations"]
+            .sort_values(["width", "model", "age", "z"])[
+                ["width", "model", "age", "z", "percent", "n_realizations"]
             ]
             .to_string(index=False)
         )

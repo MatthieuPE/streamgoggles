@@ -24,7 +24,7 @@ to those streams:
   length             uniform 4-30 deg        (4.8-29.2)
   surface brightness uniform 32-34.5         (31.9-34.3)
   distance gradient  uniform +-0.2 mag/deg, at most 1.5 mag end to end
-  age, metallicity   fixed 12.5 Gyr, Z = 0.0002
+  age, metallicity   fixed 12 Gyr, Z = 0.0002
 
 The rest is the configuration selected by the hyperparameter experiment (batch
 Dice, batch 8, background fraction 0.05, U-Net depth 2 width 12), on DES year 6
@@ -64,8 +64,17 @@ RESULTS = OUT / "results.pkl"
 SURVEY, RELEASE = "des", "yr6"
 REGION = {"center_ra": 0.0, "center_dec": -50.0, "width_deg": 25.0, "height_deg": 18.0}
 CLIPPING = {"g": {"min": 16.0, "max": 24.5}, "r": {"min": 16.0, "max": 24.5}}
+# ugali picks an isochrone by nearest neighbour among the files on disk,
+# without saying so. des/marigo2017 held four of them when the models below
+# were trained -- 10 and 12 Gyr, Z = 0.0001 and 0.0002 -- so the 12.5 Gyr this
+# experiment asked for was always the 12.0 Gyr file, and is named honestly
+# here. The full grid (126 ages x 91 metallicities) has since been installed,
+# which leaves those four files untouched and the filter identical vertex for
+# vertex; keeping 12.0 here is what makes that true, since asking for 12.5 now
+# would resolve to a file no trained model ever saw.
+POPULATION = {"age": 12.0, "z": 0.0002}
 FILTERS = {
-    "good": {"type": "isochrone", "reference_isochrone": {"age": 12.5, "z": 0.0002}},
+    "good": {"type": "isochrone", "reference_isochrone": dict(POPULATION)},
     "decoy": {"type": "box", "color_range": (1.2, 1.5), "mag_range": (18.0, 24.5)},
 }
 STEP = 0.5
@@ -98,7 +107,7 @@ EVAL_SEED = 2026
 # only -- training never sees these values (it draws from the ranges above),
 # so the model is not tuned to them. Their stellar populations are not
 # modelled: every injected stream keeps this experiment's isochrone
-# (12.5 Gyr, Z = 0.0002).
+# (12 Gyr, Z = 0.0002).
 DES_STREAMS = {
     "Tucana III": (0.18, 4.8, 17.0, 32.0),
     "ATLAS": (0.24, 22.6, 16.8, 33.0),
@@ -121,24 +130,39 @@ DES_STREAMS = {
 MAX_EVAL_LENGTH = 15.0
 
 # Isochrone mismatch: the stream's population differs from the one the matched
-# filter assumes (12.5 Gyr, Z = 0.0002), which is also the only population the
-# model was trained on. Age is scanned at the filter's metallicity, metallicity
-# at the filter's age, plus two corners where both are wrong. Geometry is held
-# at the middle of the grid; surface brightness is scanned because that is what
-# sets how much margin there is to lose.
-ISOCHRONE_AGES = [9.0, 10.5, 12.5, 13.5]
+# filter assumes, which is also the only population the model was trained on.
+# Scanned in the filter's own family, so age and metallicity are the only
+# things that differ. Bressan2012 at the filter's own values is scanned as
+# well: that point differs only by the isochrone family, which measures that
+# systematic separately instead of leaving it mixed in.
+ISOCHRONE_MODEL = "Marigo2017"
+ISOCHRONE_OTHER_FAMILY = "Bressan2012"
+ISOCHRONE_AGES = [9.0, 10.5, 12.0, 13.5]
 ISOCHRONE_Z = [0.0001, 0.0002, 0.0005, 0.001]
-ISOCHRONE_CORNERS = [(10.0, 0.001), (13.5, 0.0001)]
-ISOCHRONE_GEOMETRY = {"width": 0.6, "length": 15.0, "distance_modulus": 17.0}
-ISOCHRONE_SB = [33.0, 34.0]
+ISOCHRONE_CORNERS = [(9.0, 0.001), (13.5, 0.0001)]
+# Two operating points: one with margin to lose (width 0.6 at SB 34, which the
+# grid recovers 93% of) and one already on the edge (width 0.2, 33%), since a
+# point the models recover 100% of can only show that nothing broke.
+ISOCHRONE_GEOMETRY = [(0.6, 34.0), (0.2, 34.0)]
+ISOCHRONE_LENGTH, ISOCHRONE_DISTANCE = 15.0, 17.0
 
 
 def isochrone_populations():
-    """(age, Z) pairs of the mismatch scan, the filter's own pair included."""
-    pairs = [(age, 0.0002) for age in ISOCHRONE_AGES]
-    pairs += [(12.5, z) for z in ISOCHRONE_Z if (12.5, z) not in pairs]
+    """(age, Z, isochrone family) of the mismatch scan.
+
+    Age scanned at the filter's metallicity, metallicity at the filter's age,
+    two corners with both wrong, and the filter's own pair in both families.
+    """
+    pairs = [(age, POPULATION["z"]) for age in ISOCHRONE_AGES]
+    pairs += [
+        (POPULATION["age"], z)
+        for z in ISOCHRONE_Z
+        if (POPULATION["age"], z) not in pairs
+    ]
     pairs += [pair for pair in ISOCHRONE_CORNERS if pair not in pairs]
-    return pairs
+    return [(age, z, ISOCHRONE_MODEL) for age, z in pairs] + [
+        (POPULATION["age"], POPULATION["z"], ISOCHRONE_OTHER_FAMILY)
+    ]
 
 
 # Three training sets, each a set of ranges the stream parameters are drawn
@@ -176,10 +200,13 @@ def training_parameters(training_set="des"):
         return ParameterSpec(name=name, dist_type=kind, min_val=low, max_val=high)
 
     def override(spec):
-        """The training set's own range for this parameter, if it has one."""
+        """The training set's own value for this parameter, if it has one: a
+        (low, high[, "log"]) range, or a single value held fixed."""
         changed = TRAINING_SETS[training_set].get(spec.name)
         if changed is None:
             return spec
+        if not isinstance(changed, tuple):
+            return fixed(spec.name, changed)
         low, high, *log = changed
         kind = DistributionType.LOG_UNIFORM if log else DistributionType.UNIFORM
         return uniform(spec.name, low, high, kind)
@@ -194,8 +221,9 @@ def training_parameters(training_set="des"):
             "distance_modulus": uniform("distance_modulus", 15.0, 19.0),
             "distance_gradient": uniform("distance_gradient", -0.2, 0.2),
             "max_distance_change": fixed("max_distance_change", 1.5),
-            "age": fixed("age", 12.5),
-            "z": fixed("z", 0.0002),
+            "age": fixed("age", POPULATION["age"]),
+            "z": fixed("z", POPULATION["z"]),
+            "isochrone_model": fixed("isochrone_model", "Marigo2017"),
         }.items()
     }
 
@@ -394,15 +422,17 @@ def evaluation_points(mode):
                 the matched filter assumes
     """
 
-    def point(name, width, length, distance_modulus, sb, age=12.5, z=0.0002):
+    def point(name, width, length, distance_modulus, sb, **population):
         return name, {
             "morphology": "uniform",
             "richness": sb,
             "width": width,
             "length": length,
             "distance_modulus": distance_modulus,
-            "age": age,
-            "z": z,
+            "age": POPULATION["age"],
+            "z": POPULATION["z"],
+            "isochrone_model": "Marigo2017",
+            **population,
         }
 
     if mode == "des":
@@ -413,14 +443,17 @@ def evaluation_points(mode):
     if mode == "isochrone":
         return [
             point(
-                f"age{age:g}_z{z:g}_sb{sb:g}",
+                f"age{age:g}_z{z:g}_{model}_w{width:g}_sb{sb:g}",
+                width=width,
+                length=ISOCHRONE_LENGTH,
+                distance_modulus=ISOCHRONE_DISTANCE,
                 sb=sb,
                 age=age,
                 z=z,
-                **ISOCHRONE_GEOMETRY,
+                isochrone_model=model,
             )
-            for age, z in isochrone_populations()
-            for sb in ISOCHRONE_SB
+            for age, z, model in isochrone_populations()
+            for width, sb in ISOCHRONE_GEOMETRY
         ]
     return [
         point(f"dm{distance:g}_w{width:g}_sb{sb:g}", width, EVAL_LENGTH, distance, sb)

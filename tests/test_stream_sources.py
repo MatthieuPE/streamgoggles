@@ -147,6 +147,24 @@ def test_realize_population_age_changes_true_magnitudes(uniform_params):
     )
 
 
+def test_realize_isochrone_model_is_configurable(uniform_params):
+    """The stream's isochrone family is a parameter, not a constant.
+
+    It matters because ugali resolves (age, Z) to the nearest isochrone file
+    it has on disk, without saying so: a family whose grid is sparse for a
+    given survey silently collapses different populations onto one file.
+    Scanning age or metallicity therefore needs the family to be choosable.
+    """
+    params = dict(uniform_params, survey="des", release="yr6")
+    young = StreamObsSource().realize(
+        dict(params, age=9.0, isochrone_model="Bressan2012"), np.random.default_rng(7)
+    )
+    old = StreamObsSource().realize(
+        dict(params, age=13.5, isochrone_model="Bressan2012"), np.random.default_rng(7)
+    )
+    assert not np.allclose(young["des_g_true"].to_numpy(), old["des_g_true"].to_numpy())
+
+
 def test_realize_population_z_changes_color(uniform_params):
     """A different isochrone doesn't just shift both bands by the same
     amount -- it must change the stream's g-r color, i.e. actually produce
