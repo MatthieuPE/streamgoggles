@@ -342,6 +342,37 @@ number 1e-3 describes the target, not the rate actually reached. At a fixed
 threshold of 0.5 the models flag 6e-5 (quick) and 2e-6 (long) of the
 stream-free sky.
 
+### Conclusions so far
+
+1. **At fixed surface brightness, distance helps rather than hurts.** A stream
+   of given surface brightness and angular size holds more stars the farther
+   it is (about ∝ distance²), and the matched filter's background is slightly
+   lower at the fainter magnitudes of a distant isochrone: the contrast rises
+   from 0.12 at distance modulus 15 to 0.60 at 19. Detection follows: at SB 34
+   and 0.2 degrees wide, 1% of streams at distance modulus 15 and 98% at 19.
+2. **Wider streams are easier at the same surface brightness**, since the
+   density per pixel is unchanged but more pixels carry it: at SB 34 and
+   distance modulus 16, 3% at 0.2 degrees, 30% at 0.6, 57% at 1.2.
+3. **The hard regime is close, narrow and faint** — distance modulus 15-16,
+   0.2 degrees, SB 34 — where 1-3% of streams are found. Everything at SB 32
+   is found everywhere, and everything beyond distance modulus 18 is found at
+   SB 33 and 34 as well.
+4. **Training four times longer brings nothing here** (77.5% against 78.2%
+   over the SB 33-34 cells, p = 0.63), although the long models fit the label
+   better (validation loss 0.39 against 0.46). Explore with the quick model.
+5. **In the transition cells, one training tells you almost nothing**: the six
+   trainings of the same configuration range from 5% to 100% at SB 34,
+   distance modulus 16 and 1.2 degrees. Pool several trainings before reading
+   any number there.
+6. **These models say "background" with one almost constant value**, so their
+   false-alarm curve is a step and the usable operating point is just above
+   that floor, at essentially no false alarms. Threshold tuning will have to
+   work with that, not with a smooth trade-off curve.
+
+What this says about the DES streams is measured in the next section rather
+than extrapolated from this grid, since they differ in several parameters at
+once.
+
 ### Caveats
 
 - Six trainings for the quick models, two for the long ones.
