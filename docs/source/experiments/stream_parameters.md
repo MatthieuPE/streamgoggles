@@ -392,6 +392,12 @@ stream-free sky.
    the filter's 12 falls to 15% from 33%, fewer and brighter stars for the
    same light. All of this is invisible where there is margin: at width 0.6
    every population lands between 89% and 98%.
+9. **Averaging the six trainings into one map recovers all 14 DES streams at
+   88% or better** (mean 99.0% against 94.2% for a single training), with the
+   whole gain in the two streams the trainings disagreed on: Wambelong 49% to
+   88%, Aliqa Uma 80% to 98%. It matches the best single training rather than
+   the average, so the spread was noise, not some trainings being better.
+   This is the configuration to deploy.
 
 ## The DES 2018 streams, simulated
 
@@ -517,6 +523,41 @@ carried its own fitted normalization and the input had to be converted into
 it). The ensemble is then scored exactly like a single model, threshold
 included: its own threshold is chosen on the stream-free sky at the same
 false-alarm rate.
+
+#### What the ensemble does
+
+```{image} figures/stream_parameters/des_streams.png
+:alt: Recovery per DES stream, with the ensemble overlaid
+:width: 100%
+```
+
+The diamonds on the figure above are the six models averaged into one map.
+They answer the question the spread raised:
+
+| stream | mean of the six (range) | the six averaged | change |
+|---|---|---|---|
+| Wambelong | 49% (15-85) | **88%** | +39 |
+| Aliqa Uma | 80% (35-95) | **98%** | +18 |
+| Jhelum, Turranburra | 97% (85-100) | 100% | +3 |
+| ATLAS, Phoenix | 98% (95-100) | 100% | +2 |
+| Elqui | 99% (95-100) | 100% | +1 |
+| the other 8 | 100% | 100% | 0 |
+| **mean over the 14** | **94.2%** | **99.0%** | **+4.8** |
+
+The gain is concentrated exactly where the six models disagreed, which is what
+averaging is supposed to do and confirms the disagreement was mostly noise
+rather than some trainings being better models. On Wambelong the ensemble
+(88%, 60 injections, 68% interval 84-92) matches or beats the **best** of the
+six (85%), not just their mean — so this is not a matter of discarding bad
+trainings, which could not be done in practice anyway without knowing in
+advance which ones they are.
+
+For a real search this is the configuration to deploy: six quick trainings
+cost about 70 minutes in total, and their averaged map recovers all 14 DES
+streams at 88% or better, against 49% for the worst stream under a single
+training. The threshold is chosen on the ensemble's own map at the same
+false-alarm rate, so nothing about the operating point is borrowed from the
+members.
 
 ### A population the filter does not describe
 

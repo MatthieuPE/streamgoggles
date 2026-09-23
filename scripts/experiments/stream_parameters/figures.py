@@ -171,12 +171,32 @@ def figure_des_streams():
         ]
     ).sort_values("fraction")
 
+    ensemble_path = DATA / "des_results_ensemble.pkl"
+    if ensemble_path.exists():
+        ens = detection_at_false_alarm_rate(
+            pd.read_pickle(ensemble_path),
+            THRESHOLD_GRID,
+            targets=(TARGET,),
+            group_by=["eval_set", "seed"],
+        ).set_index("eval_set")
+        table["ensemble"] = [ens.loc[n, "detection_fraction"] for n in table["stream"]]
+
     fig, ax = plt.subplots(figsize=(9, 6))
     y = np.arange(len(table))
     ax.barh(y, table["fraction"], color="#6baed6", height=0.6)
     ax.hlines(y, table["min"], table["max"], color="#08306b", lw=2)
     ax.plot(table["min"], y, "|", color="#08306b", ms=9)
     ax.plot(table["max"], y, "|", color="#08306b", ms=9)
+    if "ensemble" in table:
+        ax.plot(
+            table["ensemble"],
+            y,
+            "D",
+            color="#cb181d",
+            ms=6,
+            label="the six averaged into one map (60 injections)",
+        )
+        ax.legend(fontsize=8.5, loc="lower left")
     ax.set_yticks(y)
     ax.set_yticklabels(
         [
