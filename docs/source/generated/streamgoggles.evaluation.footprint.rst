@@ -1,4 +1,4 @@
-﻿streamgoggles.evaluation.footprint
+streamgoggles.evaluation.footprint
 ==================================
 
 .. automodule:: streamgoggles.evaluation.footprint

@@ -1,4 +1,4 @@
-streamgoggles.datasets.transforms
+﻿streamgoggles.datasets.transforms
 =================================
 
 .. automodule:: streamgoggles.datasets.transforms
@@ -8,6 +8,8 @@ streamgoggles.datasets.transforms
 
    .. autosummary::
    
+      QueryDistanceTransform
       RobustNormalizer
       StreamMapTransform
+      WindowNormalizer
    

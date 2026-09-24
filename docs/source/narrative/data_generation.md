@@ -150,6 +150,17 @@ filters:
   decoy: {type: box, color_range: [1.2, 1.5], mag_range: [18.0, 24.5]}
 ```
 
+```{warning}
+An isochrone's `age` and `z` are a **request**, not a guarantee. ugali resolves
+them to the nearest isochrone file present on disk and says nothing when the
+nearest one is far away, so a sparse local grid silently maps different
+populations onto one isochrone. Two requests that differ and yet produce
+identical star counts are the symptom. Check what the survey's directory under
+`~/.ugali/isochrones/<survey>/<family>/` actually holds before scanning age or
+metallicity; installing more files afterwards changes which one a given
+request resolves to, and so changes results that were reproducible before.
+```
+
 The order is the channel order, so a config written from Python must use
 `yaml.safe_dump(..., sort_keys=False)`: the default sorts keys alphabetically
 and would swap the channels.

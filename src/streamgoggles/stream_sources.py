@@ -96,7 +96,16 @@ class StreamObsSource(StreamSource):
         - ``morphology``: "uniform" | "spline" (decision 5 -- no other values).
         - ``nstars``: true number of stars to generate (already converted
           from richness upstream -- see inject_utils.py; never computed here).
-        - ``distance_modulus``: true distance modulus of the stream (mag).
+        - ``distance_modulus``: true distance modulus of the stream (mag), at
+          its centre (``phi1 = 0``).
+        - ``distance_gradient``: optional, default 0 -- change of the distance
+          modulus along the track, mag per degree of ``phi1``, so a star at
+          ``phi1`` sits at ``distance_modulus + distance_gradient * phi1``.
+        - ``max_distance_change``: optional -- caps the total change of
+          distance modulus from one end of the stream to the other (mag), by
+          clipping ``distance_gradient`` to ``max_distance_change / length``.
+          A gradient drawn independently of the length would otherwise let a
+          long stream span several magnitudes.
         - ``age``: population age (Gyr).
         - ``z``: population metallicity (mass fraction).
         - ``survey``, ``release``: optional, default "lsst"/"dp2" -- the
@@ -146,7 +155,7 @@ class StreamObsSource(StreamSource):
         band_2 = params.get("band_2", "r")
 
         isochrone_cfg = {
-            "name": "Marigo2017",
+            "name": params.get("isochrone_model", "Marigo2017"),
             "survey": survey,
             "release": release,
             "age": age,
@@ -154,8 +163,16 @@ class StreamObsSource(StreamSource):
             "band_1": band_1,
             "band_2": band_2,
         }
+        gradient = float(params.get("distance_gradient", 0.0))
+        if params.get("max_distance_change") is not None and "length" in params:
+            bound = float(params["max_distance_change"]) / float(params["length"])
+            gradient = float(np.clip(gradient, -bound, bound))
         distance_modulus_cfg = {
-            "center": {"type": "Constant", "value": distance_modulus},
+            "center": (
+                {"type": "Line", "slope": gradient, "intercept": distance_modulus}
+                if gradient
+                else {"type": "Constant", "value": distance_modulus}
+            ),
             "spread": {"type": "Constant", "value": 0.0},
         }
 

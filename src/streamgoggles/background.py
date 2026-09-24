@@ -89,7 +89,14 @@ def build_raw_background_maps(
     result = {}
     for filter_name, matched_filter in matched_filters.items():
         per_distance = {}
+        # A filter whose selection does not depend on the trial distance (the
+        # fixed decoy box) gives the same map at every distance: build it once
+        # and share it.
+        once = getattr(matched_filter, "distance_independent", False)
         for dm in distance_moduli:
+            if once and per_distance:
+                per_distance[float(dm)] = next(iter(per_distance.values()))
+                continue
             selected = matched_filter.select(catalog, bands, dm)
             raw_map, valid_mask = make_raw_map(catalog, selected, pix)
             per_distance[float(dm)] = (raw_map, valid_mask)

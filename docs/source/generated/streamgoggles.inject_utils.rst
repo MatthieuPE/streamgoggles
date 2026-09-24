@@ -1,4 +1,4 @@
-﻿streamgoggles.inject\_utils
+streamgoggles.inject\_utils
 ===========================
 
 .. automodule:: streamgoggles.inject_utils

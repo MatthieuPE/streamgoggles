@@ -263,13 +263,43 @@ batch anyway).
 
 ## Preprocessing ({py:mod}`streamgoggles.datasets.transforms`)
 
-- `RobustNormalizer` — per-channel `(x - mean) / std`, fit once on pooled
-  training data, computed over *valid* pixels only so the fixed invalid-fill
-  value never skews the statistics. Applied to `map_stack` only —
-  `label_stack` is never normalized, whatever scale it's actually in (a
-  literal count under `label_policy="stream_count"`, already bounded `{0,
-  1}` under `label_policy="stream_detection"`), since the loss functions and
-  evaluation metrics are defined against that literal label scale.
+Two normalizers exist. Both standardize each channel `c` of the input,
+`x'_c(p) = (x_c(p) - μ_c) / σ_c`, over the window's *valid* pixels `V` only
+(those whose HEALPix neighbours all lie inside the footprint), so the fixed
+invalid fill value (0) never enters the statistics and is left as it is. They
+differ in where `μ_c` and `σ_c` come from:
+
+- `WindowNormalizer` — **from the window itself**. For each window and each
+  channel,
+
+  $$
+  \mu_c = \frac{1}{|V|}\sum_{p\in V} x_c(p), \qquad
+  \sigma_c = \sqrt{\frac{1}{|V|}\sum_{p\in V}\big(x_c(p)-\mu_c\big)^2}.
+  $$
+
+  Nothing is fitted or stored, and nothing is assumed about the background:
+  a window and the same window with every count doubled, or with a constant
+  added, give the same input. This is the normalization used from the
+  {doc}`../experiments/stream_parameters` experiment on (decision: on real
+  data the background level is not known in advance).
+- `RobustNormalizer` — **fitted once**: `μ_c` and `σ_c` are computed once, over
+  the valid pixels of several training windows pooled together, then applied
+  unchanged to every window (training, validation and evaluation). The
+  absolute density level of the sky is therefore kept. This is what the
+  notebooks and the earlier experiments ({doc}`../experiments/loss_selection`,
+  {doc}`../experiments/hyperparameters`, {doc}`../experiments/two_streams`)
+  were run with.
+
+A channel that is constant over `V` (`σ_c = 0`) is only centred. The
+distance channels of the query-distance model (constant maps holding each
+matched-filter map's distance) are added after normalization and are never
+normalized.
+
+Normalization applies to `map_stack` only — `label_stack` is never
+normalized, whatever scale it's actually in (a literal count under
+`label_policy="stream_count"`, already bounded `{0, 1}` under
+`label_policy="stream_detection"`), since the loss functions and evaluation
+metrics are defined against that literal label scale.
 - `StreamMapTransform` — composes optional normalization with optional
   augmentation (random 90° rotations, horizontal/vertical flips), applied
   identically to `map_stack`, `label_stack`, and `valid_mask` so all three

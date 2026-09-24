@@ -21,6 +21,7 @@
    injector
    matched_filter
    models
+   objects_overlap
    rasterize
    sample
    storage
