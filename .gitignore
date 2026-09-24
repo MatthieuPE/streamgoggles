@@ -177,3 +177,5 @@ claude/
 .vscode/
 # Local experiment plots (not tracked)
 plots/
+
+.DS_Store
