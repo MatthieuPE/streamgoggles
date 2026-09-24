@@ -1,10 +1,18 @@
-"""Download DES DR2 stars from NOIRLab Astro Data Lab, one declination strip
-at a time.
+"""Download DES Y6 Gold stars from NOIRLab Astro Data Lab, one declination
+strip at a time.
 
-DR2 is the public six-year release (691,483,608 objects in `des_dr2.main`).
-The internal Y6 Gold value-added catalogue is not hosted at Data Lab, so
-`des_dr2.main` is what there is; its `mag_auto_*_dered` columns already carry
-the SFD98 extinction correction, so nothing needs dereddening afterwards.
+`des_dr2.y6_gold` is the Y6 Gold value-added catalogue: 343 columns, with the
+quality flags, the fitted photometry and the several star/galaxy classifiers
+that `des_dr2.main` lacks. It does not appear in the schema listing but it is
+queryable. Gold is used here rather than `main` because of `flags_foreground`
+(bright stars, nearby galaxies -- exactly the things that fake a localized
+overdensity) and because `main`'s coadd classifier degrades at the faint end.
+
+Photometry is `psf_mag_aper_8_*_corrected`: PSF magnitudes, right for point
+sources, with the extinction already applied (the raw magnitude minus
+`a_fiducial_*`, whose ratio to `ebv_sfd98` is the DES coefficient 3.186 in g).
+Magnitudes use a -9999000000 sentinel rather than null, which the magnitude
+range in the selection removes.
 
 A single full-footprint query is refused ("Query exceeded the maximum
 execution time"), so this splits the sky into declination strips and writes
@@ -19,17 +27,21 @@ depth can be seen before it is chosen.
 
 Run from the repository root:
   python scripts/fetch_des_dr2.py --out ~/Documents/data/DES_yr6 [--count]
+      [--manifest]
       [--dec-min -70] [--dec-max 5] [--step 1.0] [--snr-floor 2]
 """
 
 import argparse
+import json
+import subprocess
 import time
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
 import pandas as pd
 
-TABLE = "des_dr2.main"
+TABLE = "des_dr2.y6_gold"
 # Cuts applied server side, so the download holds only what could ever be
 # used. They are deliberately looser than the analysis cuts: the magnitude
 # clip (16 to 24.5) and the real signal-to-noise threshold are applied in the
@@ -37,10 +49,17 @@ TABLE = "des_dr2.main"
 COLUMNS = [
     "ra",
     "dec",
-    "mag_auto_g_dered",
-    "mag_auto_r_dered",
-    "magerr_auto_g",
-    "magerr_auto_r",
+    "psf_mag_aper_8_g_corrected AS g",
+    "psf_mag_aper_8_r_corrected AS r",
+    "psf_mag_err_aper_8_g AS g_err",
+    "psf_mag_err_aper_8_r AS r_err",
+    # All three classifiers, because they disagree and are not nested: at
+    # g 24-25.5, ext_coadd calls 12.9% of objects stars where ext_mash calls
+    # 3.5%, and 1.5% of objects are mash-stars that ext_coadd rejects. Which
+    # one to trust is an analysis decision, so it is not made here.
+    "ext_coadd",
+    "ext_mash",
+    "ext_xgb",
 ]
 BRIGHT, FAINT = 15.5, 25.0
 MIN_STRIP = 0.05  # degrees; below this, give up rather than bisect further
@@ -49,12 +68,14 @@ MIN_STRIP = 0.05  # degrees; below this, give up rather than bisect further
 def where_clause(dec_low, dec_high, max_magerr):
     """The selection, minus the columns: stars, clean pixels, usable photometry."""
     return f"""
-        extended_class_coadd BETWEEN 0 AND 1
-        AND flags_g < 4 AND flags_r < 4
-        AND imaflags_iso_g = 0 AND imaflags_iso_r = 0
-        AND magerr_auto_g < {max_magerr} AND magerr_auto_r < {max_magerr}
-        AND mag_auto_g_dered BETWEEN {BRIGHT} AND {FAINT}
-        AND mag_auto_r_dered BETWEEN {BRIGHT} AND {FAINT}
+        flags_footprint = 1
+        AND flags_foreground = 0
+        AND flags_gold = 0
+        AND (ext_coadd BETWEEN 0 AND 1 OR ext_mash BETWEEN 0 AND 1)
+        AND psf_mag_err_aper_8_g < {max_magerr}
+        AND psf_mag_err_aper_8_r < {max_magerr}
+        AND psf_mag_aper_8_g_corrected BETWEEN {BRIGHT} AND {FAINT}
+        AND psf_mag_aper_8_r_corrected BETWEEN {BRIGHT} AND {FAINT}
         AND dec >= {dec_low} AND dec < {dec_high}
     """
 
@@ -72,8 +93,140 @@ def compact(frame):
     fine for the magnitudes, not worth risking on the coordinates that decide
     which HEALPix pixel a star lands in.
     """
-    magnitudes = [c for c in frame.columns if c not in ("ra", "dec")]
-    return frame.astype({c: "float32" for c in magnitudes})
+    classifiers = [c for c in frame.columns if c.startswith("ext_")]
+    magnitudes = [c for c in frame.columns if c not in ("ra", "dec", *classifiers)]
+    types = {c: "float32" for c in magnitudes}
+    types.update({c: "int16" for c in classifiers})
+    return frame.astype(types)
+
+
+COLUMN_NOTES = {
+    "ra": "right ascension, degrees (J2000)",
+    "dec": "declination, degrees (J2000)",
+    "g": "psf_mag_aper_8_g_corrected: PSF magnitude, extinction applied",
+    "r": "psf_mag_aper_8_r_corrected: PSF magnitude, extinction applied",
+    "g_err": "psf_mag_err_aper_8_g; SNR = 1.0857 / err, equal to "
+    "psf_flux_s2n_aper_8_g to three decimals",
+    "r_err": "psf_mag_err_aper_8_r; same convention",
+    "ext_coadd": "coadd classifier: 0 high-confidence star, 1 candidate star, "
+    "2-3 galaxies, -9 no data. Degrades faintward",
+    "ext_mash": "MASH classifier, 0-1 stars, 2 ambiguous, 3-4 galaxies. The "
+    "more reliable one at faint magnitudes",
+    "ext_xgb": "boosted-tree classifier, same 0-4 convention",
+}
+
+
+def write_manifest(out_dir, dec_min, dec_max, step, snr_floor):
+    """Record what was downloaded, beside the files themselves.
+
+    A directory of parquet files says nothing about which table it came from,
+    which cuts are already applied, or when -- and those decide whether an
+    analysis is valid. Anything reading this data should read this first.
+    """
+    files = sorted(out_dir.glob("des_y6gold_dec*.parquet"))
+    per_file = []
+    for path in files:
+        frame = pd.read_parquet(path, columns=["dec"])
+        per_file.append(
+            {
+                "file": path.name,
+                "rows": len(frame),
+                "dec_min": round(float(frame["dec"].min()), 4),
+                "dec_max": round(float(frame["dec"].max()), 4),
+                "bytes": path.stat().st_size,
+            }
+        )
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        commit = None
+
+    manifest = {
+        "description": (
+            "DES DR2 point sources for the streamgoggles stream search. One "
+            "parquet file per one-degree declination strip; concatenate them "
+            "for the full footprint."
+        ),
+        "source": {
+            "service": "NOIRLab Astro Data Lab (datalab.noirlab.edu)",
+            "table": TABLE,
+            "table_rows_total": 691_483_608,
+            "release": (
+                "DES Y6 Gold, the value-added catalogue: quality flags, fitted "
+                "photometry and several star/galaxy classifiers. Not listed in "
+                "the Data Lab schema browser, but queryable."
+            ),
+            "downloaded_utc": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+            "fetched_by": "scripts/fetch_des_dr2.py",
+            "git_commit": commit,
+        },
+        "selection": {
+            "sql_where": " ".join(
+                where_clause(dec_min, dec_max, 1.0857 / snr_floor).split()
+            ),
+            "star_galaxy": (
+                "the UNION of ext_coadd 0-1 and ext_mash 0-1, deliberately "
+                "loose: the two disagree, are not nested, and ext_coadd "
+                "degrades faintward. All three classifiers are stored so the "
+                "cut can be chosen and changed without downloading again."
+            ),
+            "quality": (
+                "flags_footprint = 1, flags_foreground = 0, flags_gold = 0. "
+                "flags_foreground is the reason to prefer Gold: it removes "
+                "bright-star haloes and nearby galaxies, which are what fake "
+                "a localized overdensity."
+            ),
+            "signal_to_noise": (
+                f"> {snr_floor:g} in both g and r (a floor, not the analysis"
+                " cut: choose that downstream, the errors are kept)"
+            ),
+            "magnitudes": (
+                f"{BRIGHT} to {FAINT} dereddened in both bands, wider than the"
+                " pipeline's 16 to 24.5 clip on purpose"
+            ),
+            "extinction": (
+                "already applied: the _corrected PSF magnitudes carry it"
+                " (a_fiducial / ebv_sfd98 = 3.186 in g, the DES coefficient)"
+            ),
+            "not_applied": [
+                "the choice of star/galaxy classifier (the union is kept)",
+                "the 16 to 24.5 magnitude clip the models assume",
+                "the final signal-to-noise cut",
+            ],
+        },
+        "columns": COLUMN_NOTES,
+        "dtypes": {
+            "ra": "float64",
+            "dec": "float64",
+            "magnitudes and errors": "float32",
+            "classifiers": "int16",
+        },
+        "coverage": {
+            "dec_min": dec_min,
+            "dec_max": dec_max,
+            "strip_degrees": step,
+            "ra": "unrestricted (the full footprint at each declination)",
+        },
+        "totals": {
+            "files": len(per_file),
+            "rows": sum(f["rows"] for f in per_file),
+            "bytes": sum(f["bytes"] for f in per_file),
+        },
+        "files": per_file,
+    }
+    path = out_dir / "manifest.json"
+    path.write_text(json.dumps(manifest, indent=2) + "\n")
+    print(
+        f"manifest: {manifest['totals']['rows']:,} stars in "
+        f"{manifest['totals']['files']} files "
+        f"({manifest['totals']['bytes'] / 1e9:.2f} GB) -> {path}"
+    )
+    return manifest
 
 
 def fetch_strip(query_client, dec_low, dec_high, max_magerr, depth=0):
@@ -118,12 +271,16 @@ def count_rows(query_client, dec_min, dec_max, max_magerr):
     return int(run(query_client, sql)["n"].iloc[0])
 
 
-def main(out_dir, dec_min, dec_max, step, snr_floor, count_only):
+def main(out_dir, dec_min, dec_max, step, snr_floor, count_only, manifest_only=False):
     from dl import authClient as ac
     from dl import queryClient as qc
 
     ac.login("anonymous")
     max_magerr = 1.0857 / snr_floor
+
+    if manifest_only:
+        write_manifest(Path(out_dir).expanduser(), dec_min, dec_max, step, snr_floor)
+        return
 
     if count_only:
         start = time.time()
@@ -142,7 +299,7 @@ def main(out_dir, dec_min, dec_max, step, snr_floor, count_only):
     kept = 0
     for low in edges:
         high = low + step
-        path = out_dir / f"des_dr2_dec{low:+06.1f}.parquet"
+        path = out_dir / f"des_y6gold_dec{low:+06.1f}.parquet"
         if path.exists():
             kept += len(pd.read_parquet(path, columns=["ra"]))
             print(f"dec {low:+.1f}: already downloaded", flush=True)
@@ -157,6 +314,7 @@ def main(out_dir, dec_min, dec_max, step, snr_floor, count_only):
             flush=True,
         )
     print(f"\n{kept:,} stars in {out_dir}")
+    write_manifest(out_dir, dec_min, dec_max, step, snr_floor)
 
 
 if __name__ == "__main__":
@@ -174,6 +332,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--count", action="store_true", help="count rows, download none"
     )
+    parser.add_argument(
+        "--manifest",
+        action="store_true",
+        help="rewrite manifest.json from the files already downloaded",
+    )
     arguments = parser.parse_args()
     main(
         arguments.out,
@@ -182,4 +345,5 @@ if __name__ == "__main__":
         arguments.step,
         arguments.snr_floor,
         arguments.count,
+        arguments.manifest,
     )
