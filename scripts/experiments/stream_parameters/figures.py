@@ -42,6 +42,10 @@ REPO = Path(__file__).resolve().parents[3]
 DATA = REPO / "data" / "experiments" / "stream_parameters"
 FIGURES = REPO / "docs" / "source" / "experiments" / "figures" / "stream_parameters"
 TARGET = 1e-3
+# The current series uses the 13 Gyr filter of Shipp et al. (2018) and writes
+# under this prefix; the 12 Gyr series owns the untagged names. Figures built
+# from a results file that only exists untagged say so in their title.
+TAG = "a13_"
 WIDTH_COLOURS = {0.2: "#08519c", 0.6: "#e6550d", 1.2: "#31a354"}
 STYLES = {4800: ("-", "o", "4800 w"), 19200: ("--", "s", "19200 w")}
 
@@ -132,7 +136,10 @@ def figure_training_spread(matched):
     ax.set_ylim(-0.03, 1.03)
     ax.grid(alpha=0.3)
     ax.legend(fontsize=9)
-    ax.set_title("SB 34: one point per trained model (6 x 4800 windows)", fontsize=11)
+    ax.set_title(
+        "SB 34: one point per trained model (6 x 4800 windows, 12 Gyr filter)",
+        fontsize=11,
+    )
     fig.tight_layout()
     fig.savefig(FIGURES / "training_spread.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
@@ -140,7 +147,7 @@ def figure_training_spread(matched):
 
 def figure_des_streams():
     """Recovery of each DES 2018 stream, with the range over the trainings."""
-    path = DATA / "des_results.pkl"
+    path = DATA / f"{TAG}des_results.pkl"
     if not path.exists():
         return None
     spec = importlib.util.spec_from_file_location(
@@ -171,7 +178,7 @@ def figure_des_streams():
         ]
     ).sort_values("fraction")
 
-    ensemble_path = DATA / "des_results_ensemble.pkl"
+    ensemble_path = DATA / f"{TAG}des_results_ensemble.pkl"
     if ensemble_path.exists():
         ens = detection_at_false_alarm_rate(
             pd.read_pickle(ensemble_path),
@@ -210,7 +217,8 @@ def figure_des_streams():
     ax.set_xlabel("fraction of injections recovered at the stream's known position")
     ax.grid(alpha=0.3, axis="x")
     ax.set_title(
-        "DES 2018 streams, simulated with their own parameters\n"
+        "DES 2018 streams, simulated with their own parameters "
+        "(13 Gyr filter)\n"
         "bars: mean of 6 trainings (20 injections each) — "
         "lines: lowest to highest training, not a confidence interval",
         fontsize=10.5,
@@ -230,7 +238,7 @@ def figure_isochrone():
     metallicity at the same surface brightness, so what changes is which of
     its stars the filter selects, not how bright the stream is.
     """
-    path = DATA / "isochrone_results.pkl"
+    path = DATA / f"{TAG}isochrone_results.pkl"
     if not path.exists():
         return None
     results = pd.read_pickle(path)
@@ -257,12 +265,12 @@ def figure_isochrone():
     # The scan runs in the filter's own family; the other family appears once,
     # at the filter's own values, to measure that systematic on its own.
     scanned = table[table.model == "Marigo2017"]
-    own = scanned[(scanned.age == 12.0) & (scanned.z == 0.0002)]
+    own = scanned[(scanned.age == 13.0) & (scanned.z == 0.0002)]
     reference = dict(zip(own["width"], own["fraction"], strict=True))
     other = table[table.model != "Marigo2017"]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), sharey=True)
-    held = {"age": 0.0002, "z": 12.0}
+    held = {"age": 0.0002, "z": 13.0}
     labels = {"age": "age (Gyr)", "z": "metallicity Z"}
     for ax, varied in zip(axes, ["age", "z"], strict=True):
         fixed = "z" if varied == "age" else "age"
@@ -288,7 +296,7 @@ def figure_isochrone():
             )
             if width in reference:
                 ax.axhline(reference[width], color=colour, ls=":", lw=1.2)
-        ax.axvline(12.0 if varied == "age" else 0.0002, color="0.5", ls="--", lw=1.0)
+        ax.axvline(13.0 if varied == "age" else 0.0002, color="0.5", ls="--", lw=1.0)
         for _, row in other.iterrows():
             ax.plot(
                 row["age"] if varied == "age" else row["z"],
@@ -306,7 +314,7 @@ def figure_isochrone():
         ax.set_xlabel(labels[varied])
         ax.set_title(
             f"varying {varied}, at the filter's "
-            + ("Z = 0.0002" if varied == "age" else "12 Gyr"),
+            + ("Z = 0.0002" if varied == "age" else "13 Gyr"),
             fontsize=10.5,
         )
         ax.set_ylim(-0.03, 1.03)
@@ -314,7 +322,8 @@ def figure_isochrone():
     axes[0].set_ylabel("fraction of streams detected")
     axes[0].legend(fontsize=9, loc="lower right")
     fig.suptitle(
-        "Stream population against the filter's isochrone, SB 34, m-M 17\n"
+        "Stream population against the filter's isochrone "
+        "(13 Gyr, Z = 0.0002), SB 34, m-M 17\n"
         "dashed: the filter's own values — dotted: the rate there, per width",
         fontsize=10.5,
     )
@@ -451,8 +460,8 @@ def main(contrast):
             .to_string(index=False)
         )
     for name, label in (
-        ("des_results_ensemble.pkl", "DES streams"),
-        ("results_ensemble.pkl", "grid"),
+        (f"{TAG}des_results_ensemble.pkl", "DES streams"),
+        ("des_results_ensemble.pkl", "DES streams, 12 Gyr filter"),
     ):
         if (DATA / name).exists():
             ens = detection_at_false_alarm_rate(

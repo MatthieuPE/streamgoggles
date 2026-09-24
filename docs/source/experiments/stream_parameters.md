@@ -376,26 +376,29 @@ stream-free sky.
    that floor, at essentially no false alarms. Threshold tuning will have to
    work with that, not with a smooth trade-off curve.
 
-7. **Simulated with their own parameters, 12 of the 14 DES 2018 streams are
-   recovered in at least 97% of injections** at their known positions, and the
-   two exceptions (Wambelong 49%, Aliqa Uma 80%) are the ones the grid points
-   to. See the next section for what that does and does not mean. The models
+7. **Simulated with their own parameters, 13 of the 14 DES 2018 streams are
+   recovered in at least 94% of injections** by a single training (ten of them
+   in every injection), and the one exception, Wambelong at 57%, is the stream
+   the grid points to. See the next section for what that does and does not mean. The models
    scoring this never saw those parameter values: a 4800-window training is
    expected to contain 0.03 to 0.12 streams even loosely resembling a given
    one of them.
 8. **A stream whose population is not the filter's isochrone is not thereby
-   harder to find** — the filter's own values are not the best point (Z =
-   0.0005 is recovered at 43% against 33%), and the isochrone family does not
-   matter at all (32% against 33%). What predicts detection is how many stars
-   the population puts through the filter at fixed surface brightness
-   (correlation 0.70). **The exception is young populations**: 9 Gyr against
-   the filter's 12 falls to 15% from 33%, fewer and brighter stars for the
-   same light. All of this is invisible where there is margin: at width 0.6
-   every population lands between 89% and 98%.
-9. **Averaging the six trainings into one map recovers all 14 DES streams at
-   88% or better** (mean 99.0% against 94.2% for a single training), with the
-   whole gain in the two streams the trainings disagreed on: Wambelong 49% to
-   88%, Aliqa Uma 80% to 98%. It matches the best single training rather than
+   harder to find.** Scanned against both filters, the filter's own values are
+   never the best point (41% against 30% at 13 Gyr; 43% against 33% at
+   12 Gyr), and the isochrone family is worth a few points in no consistent
+   direction. Part of the variation follows how many stars the population puts
+   through the filter at fixed surface brightness, but only part of it
+   (correlation 0.70 at one filter, an insignificant 0.47 at the other).
+   **What does replicate is that young populations are worst**: the two
+   youngest are the two worst against both filters, 15-18% against 30%, fewer
+   and brighter stars for the same light. **Age is therefore the axis worth
+   covering in training; metallicity is not.** All of it is invisible where
+   there is margin: at width 0.6 every population lands between 87% and 100%.
+9. **Averaging the six trainings into one map recovers 13 of the 14 DES
+   streams in every injection, and Wambelong in 92%** (mean 99.4% against
+   95.4% for a single training), with the whole gain in the streams the
+   trainings disagreed on: Wambelong 57% to 92%, Aliqa Uma 88% to 100%. It matches the best single training rather than
    the average, so the spread was noise, not some trainings being better.
    This is the configuration to deploy.
 
@@ -406,7 +409,10 @@ several at once. So each of the 14 DES streams with measured parameters
 (Shipp et al. 2018) is simulated **with its own width, length, distance and
 surface brightness**, injected at random positions in the study region, and
 scored at its known track by the six quick models — 20 injections per model,
-120 per stream.
+120 per stream. The numbers below are the **13 Gyr series** (the filter of
+Shipp et al. 2018); the 12 Gyr series it replaced gave 94.2% against 95.4%
+over the 14 streams, the two differing nowhere by more than the spread
+between trainings.
 
 ### What the models scoring this figure were trained on
 
@@ -454,16 +460,14 @@ sampling alone would give about ±4.5 points on 120 injections. Where the lines
 are short, all six models agree. Each stream is queried at the grid distance
 nearest its own.*
 
-| stream | m−M | width | SB | recovered (range over trainings) |
-|---|---|---|---|---|
-| Tucana III, Molonglo, Indus, Ravi, Chenab, Turbio, Willka Yaku | 16.1-18.0 | 0.18-0.83 | 31.9-34.1 | **100%** |
-| Elqui | 18.5 | 0.54 | 34.3 | 99% (95-100) |
-| ATLAS | 16.8 | 0.24 | 33.0 | 98% (95-100) |
-| Phoenix | 16.4 | 0.16 | 32.6 | 98% (95-100) |
-| Jhelum | 15.6 | 1.16 | 33.3 | 97% (85-100) |
-| Turranburra | 17.2 | 0.60 | 34.0 | 97% (85-100) |
-| Aliqa Uma | 17.3 | 0.26 | 33.8 | 80% (35-95) |
-| **Wambelong** | **15.9** | **0.40** | **33.7** | **49% (15-85)** |
+| stream | m−M | width | SB | one training, mean (range) | the six averaged |
+|---|---|---|---|---|---|
+| Wambelong | 15.9 | 0.40 | 33.7 | 57% (5-95) | **92%** |
+| Aliqa Uma | 17.3 | 0.26 | 33.8 | 88% (65-100) | 100% |
+| Turranburra | 17.2 | 0.60 | 34.0 | 94% (80-100) | 100% |
+| Jhelum | 15.6 | 1.16 | 33.3 | 97% (85-100) | 100% |
+| the other ten | | | | 100% | 100% |
+| **mean over the 14** | | | | **95.4%** | **99.4%** |
 
 **Statement.** Simulated with their own parameters, **12 of the 14 streams are
 recovered in at least 97% of injections**, including the two faintest ones
@@ -536,26 +540,28 @@ They answer the question the spread raised:
 
 | stream | mean of the six (range) | the six averaged | change |
 |---|---|---|---|
-| Wambelong | 49% (15-85) | **88%** | +39 |
-| Aliqa Uma | 80% (35-95) | **98%** | +18 |
-| Jhelum, Turranburra | 97% (85-100) | 100% | +3 |
-| ATLAS, Phoenix | 98% (95-100) | 100% | +2 |
-| Elqui | 99% (95-100) | 100% | +1 |
-| the other 8 | 100% | 100% | 0 |
-| **mean over the 14** | **94.2%** | **99.0%** | **+4.8** |
+| Wambelong | 57% (5-95) | **92%** | +35 |
+| Aliqa Uma | 88% (65-100) | 100% | +12 |
+| Turranburra | 94% (80-100) | 100% | +6 |
+| Jhelum | 97% (85-100) | 100% | +3 |
+| the other ten | 100% | 100% | 0 |
+| **mean over the 14** | **95.4%** | **99.4%** | **+4.0** |
+
+The 12 Gyr series says the same thing: 94.2% to 99.0%, with Wambelong 49% to
+88%. The gain does not depend on which isochrone the filter uses.
 
 The gain is concentrated exactly where the six models disagreed, which is what
 averaging is supposed to do and confirms the disagreement was mostly noise
 rather than some trainings being better models. On Wambelong the ensemble
-(88%, 60 injections, 68% interval 84-92) matches or beats the **best** of the
-six (85%), not just their mean — so this is not a matter of discarding bad
+(92%, 60 injections, 68% interval 87-95) matches or beats the **best** of the
+six (95%), not just their mean — so this is not a matter of discarding bad
 trainings, which could not be done in practice anyway without knowing in
 advance which ones they are.
 
 For a real search this is the configuration to deploy: six quick trainings
-cost about 70 minutes in total, and their averaged map recovers all 14 DES
-streams at 88% or better, against 49% for the worst stream under a single
-training. The threshold is chosen on the ensemble's own map at the same
+cost about 75 minutes in total, and their averaged map recovers **13 of the
+14 DES streams in every injection**, with Wambelong at 92% — against 57% for
+that stream under a single training, and 5% under the unluckiest one. The threshold is chosen on the ensemble's own map at the same
 false-alarm rate, so nothing about the operating point is borrowed from the
 members.
 
@@ -652,49 +658,60 @@ matched-filter map without becoming any fainter on the sky.
 The dashed line marks the filter's own value, the dotted line the rate there,
 and the × is the other isochrone family at those same values.*
 
-| population | width 0.2 (33% at the filter's own) | width 0.6 (93%) |
-|---|---|---|
-| 9 Gyr, Z = 0.0002 | **15%** | 89% |
-| 10.5 Gyr, Z = 0.0002 | 22% | 89% |
-| **12 Gyr, Z = 0.0002** (the filter's) | 33% | 93% |
-| 13.5 Gyr, Z = 0.0002 | 29% | 98% |
-| 12 Gyr, Z = 0.0001 | 24% | 96% |
-| 12 Gyr, Z = 0.0005 | **43%** | 97% |
-| 12 Gyr, Z = 0.001 | 31% | 98% |
-| 9 Gyr, Z = 0.001 | 29% | 89% |
-| 13.5 Gyr, Z = 0.0001 | 38% | 97% |
-| 12 Gyr, Z = 0.0002, Bressan2012 | 32% | 94% |
+Scanned twice, once against each filter. Each entry pools 120 injections, so
+each carries about ±4.5 points of sampling error on its own.
+
+| injected population | width 0.2 | width 0.6 | (12 Gyr filter, width 0.2) |
+|---|---|---|---|
+| 9 Gyr, Z = 0.0002 | **18%** | 87% | 15% |
+| 10.5 Gyr, Z = 0.0002 | **15%** | 92% | 22% |
+| 12 Gyr, Z = 0.0002 | 24% | 94% | 33% (its own) |
+| **13 Gyr, Z = 0.0002** (the filter's) | 30% | 95% | — |
+| 13.5 Gyr, Z = 0.0002 | 23% | 100% | 29% |
+| 13 Gyr, Z = 0.0001 | **39%** | 96% | 24% |
+| 13 Gyr, Z = 0.0005 | 32% | 93% | 43% |
+| 13 Gyr, Z = 0.001 | 22% | 95% | 31% |
+| 9 Gyr, Z = 0.001 | 32% | 90% | 29% |
+| 13.5 Gyr, Z = 0.0001 | **41%** | 97% | 38% |
+| 13 Gyr, Z = 0.0002, Bressan2012 | 24% | 98% | 32% |
 
 Three things come out of it, and the second is not what the test was set up to
 find.
 
-**1. The isochrone family does not matter.** Bressan2012 at the filter's own
-age and metallicity gives 32% against Marigo2017's 33%, and 94% against 93%.
-Whatever the mismatch costs, it is not sensitive to which library the stream
-was drawn from.
+**1. The isochrone family barely matters.** Bressan2012 at the filter's own
+age and metallicity gives 24% against Marigo2017's 30% at width 0.2 (and 98%
+against 95% at width 0.6). The 12 Gyr series put the same pair at 32% against
+33%. Both gaps are within about a standard error of each other, so the family
+is worth at most a few points, in no consistent direction.
 
 **2. Mismatch alone does not predict the loss — the filter's own population is
-not the best one.** Z = 0.0005 is detected at 43% against the matched 33%, and
-(13.5 Gyr, Z = 0.0001) at 38%. A pure mismatch penalty would peak at the
-filter's own values and fall away on both sides; this does not.
+never the best one.** Against the 13 Gyr filter, (13.5 Gyr, Z = 0.0001) is
+detected at 41% and (13 Gyr, Z = 0.0001) at 39%, against 30% for the filter's
+own values. Against the 12 Gyr filter the best point was Z = 0.0005 at 43%
+against 33%. A pure mismatch penalty would peak at the filter's own values and
+fall away on both sides. Neither scan does, and the winning direction is not
+even the same one — metal-poor here, metal-rich there.
 
-What does predict it is **how many stars the population puts through the
-filter**. Across the ten populations, detection correlates with the
-filter-selected star count at 0.70 (width 0.2). Surface brightness is held
-fixed, so a population with fainter stars per unit light simply has *more* of
-them, and more survive to be selected: 499 selected stars at 9 Gyr against 624
-at (12 Gyr, Z = 0.0005), the best-detected point. The mismatch penalty and the
-star-count gain pull in opposite directions, and over this range the star
-count usually wins.
+Part of the answer is **how many stars the population puts through the
+filter**: surface brightness is held fixed, so a population whose light sits
+in fainter stars simply has more of them to be selected. Detection correlates
+with the filter-selected star count at 0.70 against the 12 Gyr filter, which
+is the cleaner of the two, but only 0.47 against the 13 Gyr one — with eleven
+points that second figure is not significant, and two populations break it
+badly (10.5 Gyr has 582 selected stars and 15% detection; 13 Gyr at
+Z = 0.0001 has 562 and 39%). **So the star count explains part of this and
+not all of it**, and what the rest is has not been established here.
 
-**3. Young populations are the real risk.** The clear loss is at 9 Gyr: 15%
-against 33%, less than half, and the bars do not overlap. At fixed surface
-brightness a young population's light sits in fewer, brighter stars, so
-fewer of them clear the detection limit at all. Metal-rich mismatch, over the
-metal-poor range streams actually occupy, costs nothing.
+**3. Young populations are the real risk, and that does replicate.** The two
+youngest populations are the two worst against both filters: 18% and 15%
+against the 13 Gyr filter's own 30%, and 15% and 22% against the 12 Gyr
+filter's own 33%. At fixed surface brightness a young population's light sits
+in fewer, brighter stars, so fewer of them clear the detection limit at all.
+Metallicity, over the metal-poor range streams actually occupy, costs nothing
+in either scan.
 
 None of this is visible at width 0.6, where every population lands between
-89% and 98%: with enough margin the choice of population barely registers.
+87% and 100%: with enough margin the choice of population barely registers.
 That is the argument for scanning at an operating point with something to
 lose.
 
