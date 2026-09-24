@@ -122,6 +122,11 @@ def compact(frame):
     magnitudes = [c for c in frame.columns if c not in ("ra", "dec", *classifiers)]
     types = {c: "float32" for c in magnitudes}
     types.update({c: "int16" for c in classifiers})
+    # Positions are cast too, though they keep their precision. An empty
+    # strip -- one outside the footprint -- comes back from read_csv as
+    # object columns and would be written with parquet type "null", which
+    # then promotes ra and dec to object in any concat that includes it.
+    types.update({"ra": "float64", "dec": "float64"})
     return frame.astype(types)
 
 
