@@ -8,6 +8,13 @@ queryable. Gold is used here rather than `main` because of `flags_foreground`
 (bright stars, nearby galaxies -- exactly the things that fake a localized
 overdensity) and because `main`'s coadd classifier degrades at the faint end.
 
+Stars are `0 <= EXT_XGB <= 1`, because that is the selection streamobs's DES
+Y6 model reproduces (`config/surveys/des_yr6.yaml`: its stellar completeness
+and galaxy-misclassification curves are both derived for that cut). Using any
+other classifier would make the real catalogue and the injected streams two
+different samples. It matters: the union of ext_coadd and ext_mash, which
+looks more generous, misses 14.6% of all EXT_XGB stars.
+
 Photometry is `psf_mag_aper_8_*_corrected`: PSF magnitudes, right for point
 sources, with the extinction already applied (the raw magnitude minus
 `a_fiducial_*`, whose ratio to `ebv_sfd98` is the DES coefficient 3.186 in g).
@@ -53,10 +60,9 @@ COLUMNS = [
     "psf_mag_aper_8_r_corrected AS r",
     "psf_mag_err_aper_8_g AS g_err",
     "psf_mag_err_aper_8_r AS r_err",
-    # All three classifiers, because they disagree and are not nested: at
-    # g 24-25.5, ext_coadd calls 12.9% of objects stars where ext_mash calls
-    # 3.5%, and 1.5% of objects are mash-stars that ext_coadd rejects. Which
-    # one to trust is an analysis decision, so it is not made here.
+    # The other two classifiers come along for diagnostics only; the sample
+    # is defined by ext_xgb, and they disagree strongly (at g 24-25.5,
+    # ext_coadd calls 12.9% of objects stars where ext_mash calls 3.5%).
     "ext_coadd",
     "ext_mash",
     "ext_xgb",
@@ -65,13 +71,25 @@ BRIGHT, FAINT = 15.5, 25.0
 MIN_STRIP = 0.05  # degrees; below this, give up rather than bisect further
 
 
-def where_clause(dec_low, dec_high, max_magerr):
+# Which objects count as stars. "xgb" is the streamobs-consistent default;
+# "union" is broader but is NOT a superset -- it misses 14.6% of EXT_XGB
+# stars -- so it exists for comparison, not as a safer choice.
+CLASSIFIERS = {
+    "xgb": "ext_xgb BETWEEN 0 AND 1",
+    "union": (
+        "(ext_xgb BETWEEN 0 AND 1 OR ext_coadd BETWEEN 0 AND 1"
+        " OR ext_mash BETWEEN 0 AND 1)"
+    ),
+}
+
+
+def where_clause(dec_low, dec_high, max_magerr, classifier="xgb"):
     """The selection, minus the columns: stars, clean pixels, usable photometry."""
     return f"""
         flags_footprint = 1
         AND flags_foreground = 0
         AND flags_gold = 0
-        AND (ext_coadd BETWEEN 0 AND 1 OR ext_mash BETWEEN 0 AND 1)
+        AND {CLASSIFIERS[classifier]}
         AND psf_mag_err_aper_8_g < {max_magerr}
         AND psf_mag_err_aper_8_r < {max_magerr}
         AND psf_mag_aper_8_g_corrected BETWEEN {BRIGHT} AND {FAINT}
@@ -116,7 +134,7 @@ COLUMN_NOTES = {
 }
 
 
-def write_manifest(out_dir, dec_min, dec_max, step, snr_floor):
+def write_manifest(out_dir, dec_min, dec_max, step, snr_floor, classifier="xgb"):
     """Record what was downloaded, beside the files themselves.
 
     A directory of parquet files says nothing about which table it came from,
@@ -167,13 +185,15 @@ def write_manifest(out_dir, dec_min, dec_max, step, snr_floor):
         },
         "selection": {
             "sql_where": " ".join(
-                where_clause(dec_min, dec_max, 1.0857 / snr_floor).split()
+                where_clause(dec_min, dec_max, 1.0857 / snr_floor, classifier).split()
             ),
             "star_galaxy": (
-                "the UNION of ext_coadd 0-1 and ext_mash 0-1, deliberately "
-                "loose: the two disagree, are not nested, and ext_coadd "
-                "degrades faintward. All three classifiers are stored so the "
-                "cut can be chosen and changed without downloading again."
+                f"{CLASSIFIERS[classifier]} -- 0 <= EXT_XGB <= 1 is the "
+                "selection streamobs's DES Y6 model reproduces, so the real "
+                "catalogue and the injected streams are the same sample. "
+                "ext_coadd and ext_mash are stored for diagnostics but do not "
+                "define the sample; the union of those two misses 14.6% of "
+                "EXT_XGB stars."
             ),
             "quality": (
                 "flags_footprint = 1, flags_foreground = 0, flags_gold = 0. "
@@ -194,7 +214,6 @@ def write_manifest(out_dir, dec_min, dec_max, step, snr_floor):
                 " (a_fiducial / ebv_sfd98 = 3.186 in g, the DES coefficient)"
             ),
             "not_applied": [
-                "the choice of star/galaxy classifier (the union is kept)",
                 "the 16 to 24.5 magnitude clip the models assume",
                 "the final signal-to-noise cut",
             ],
@@ -229,7 +248,7 @@ def write_manifest(out_dir, dec_min, dec_max, step, snr_floor):
     return manifest
 
 
-def fetch_strip(query_client, dec_low, dec_high, max_magerr, depth=0):
+def fetch_strip(query_client, dec_low, dec_high, max_magerr, classifier, depth=0):
     """One declination strip, bisected as many times as the server needs.
 
     A strip that exceeds the execution limit is split in two and each half
@@ -238,7 +257,7 @@ def fetch_strip(query_client, dec_low, dec_high, max_magerr, depth=0):
     """
     sql = (
         f"SELECT {', '.join(COLUMNS)} FROM {TABLE} "
-        f"WHERE {where_clause(dec_low, dec_high, max_magerr)}"
+        f"WHERE {where_clause(dec_low, dec_high, max_magerr, classifier)}"
     )
     try:
         return run(query_client, sql)
@@ -256,22 +275,35 @@ def fetch_strip(query_client, dec_low, dec_high, max_magerr, depth=0):
             flush=True,
         )
         halves = [
-            fetch_strip(query_client, dec_low, middle, max_magerr, depth + 1),
-            fetch_strip(query_client, middle, dec_high, max_magerr, depth + 1),
+            fetch_strip(
+                query_client, dec_low, middle, max_magerr, classifier, depth + 1
+            ),
+            fetch_strip(
+                query_client, middle, dec_high, max_magerr, classifier, depth + 1
+            ),
         ]
         return pd.concat(halves, ignore_index=True)
 
 
-def count_rows(query_client, dec_min, dec_max, max_magerr):
+def count_rows(query_client, dec_min, dec_max, max_magerr, classifier="xgb"):
     """How many rows the whole selection holds, before downloading any."""
     sql = (
         f"SELECT count(*) AS n FROM {TABLE} "
-        f"WHERE {where_clause(dec_min, dec_max, max_magerr)}"
+        f"WHERE {where_clause(dec_min, dec_max, max_magerr, classifier)}"
     )
     return int(run(query_client, sql)["n"].iloc[0])
 
 
-def main(out_dir, dec_min, dec_max, step, snr_floor, count_only, manifest_only=False):
+def main(
+    out_dir,
+    dec_min,
+    dec_max,
+    step,
+    snr_floor,
+    count_only,
+    manifest_only=False,
+    classifier="xgb",
+):
     from dl import authClient as ac
     from dl import queryClient as qc
 
@@ -279,12 +311,14 @@ def main(out_dir, dec_min, dec_max, step, snr_floor, count_only, manifest_only=F
     max_magerr = 1.0857 / snr_floor
 
     if manifest_only:
-        write_manifest(Path(out_dir).expanduser(), dec_min, dec_max, step, snr_floor)
+        write_manifest(
+            Path(out_dir).expanduser(), dec_min, dec_max, step, snr_floor, classifier
+        )
         return
 
     if count_only:
         start = time.time()
-        total = count_rows(qc, dec_min, dec_max, max_magerr)
+        total = count_rows(qc, dec_min, dec_max, max_magerr, classifier)
         print(
             f"{total:,} rows over dec {dec_min:+g} to {dec_max:+g} "
             f"at SNR > {snr_floor:g} ({time.time() - start:.0f}s)"
@@ -305,7 +339,7 @@ def main(out_dir, dec_min, dec_max, step, snr_floor, count_only, manifest_only=F
             print(f"dec {low:+.1f}: already downloaded", flush=True)
             continue
         start = time.time()
-        frame = compact(fetch_strip(qc, low, high, max_magerr))
+        frame = compact(fetch_strip(qc, low, high, max_magerr, classifier))
         frame.to_parquet(path, index=False)
         kept += len(frame)
         print(
@@ -314,7 +348,7 @@ def main(out_dir, dec_min, dec_max, step, snr_floor, count_only, manifest_only=F
             flush=True,
         )
     print(f"\n{kept:,} stars in {out_dir}")
-    write_manifest(out_dir, dec_min, dec_max, step, snr_floor)
+    write_manifest(out_dir, dec_min, dec_max, step, snr_floor, classifier)
 
 
 if __name__ == "__main__":
@@ -337,6 +371,12 @@ if __name__ == "__main__":
         action="store_true",
         help="rewrite manifest.json from the files already downloaded",
     )
+    parser.add_argument(
+        "--classifier",
+        choices=list(CLASSIFIERS),
+        default="xgb",
+        help="which objects count as stars (default: the streamobs selection)",
+    )
     arguments = parser.parse_args()
     main(
         arguments.out,
@@ -346,4 +386,5 @@ if __name__ == "__main__":
         arguments.snr_floor,
         arguments.count,
         arguments.manifest,
+        arguments.classifier,
     )
