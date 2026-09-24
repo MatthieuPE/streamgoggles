@@ -6,8 +6,10 @@ neither is what the model is for. They are masked out of training so the model
 never learns them as signal, and out of evaluation so finding one is not
 counted either way.
 
-Catalogues ship with the package (`streamgoggles/data/`), so nothing here
-needs the network:
+Catalogues live in the repository's `data/others/`, outside the package and
+outside version control, so nothing here needs the network. Point
+`STREAMGOGGLES_DATA` elsewhere to use another copy; an installed wheel has
+no data directory of its own, so that variable is how it finds one.
 
 - `dwarf_all.csv` and `gc_harris.csv`, both from the local volume database
   (https://github.com/apace7/local_volume_database), sharing one schema:
@@ -17,13 +19,18 @@ needs the network:
   the downloaded catalogue: 383,237 pixels, 5,026 square degrees.
 """
 
+import os
 from pathlib import Path
 
 import healpy as hp
 import numpy as np
 from astropy.table import Table
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(
+    os.environ.get(
+        "STREAMGOGGLES_DATA", Path(__file__).resolve().parents[2] / "data" / "others"
+    )
+)
 GC_URL = (
     "https://raw.githubusercontent.com/apace7/local_volume_database/"
     "main/data/gc_harris.csv"
@@ -88,8 +95,9 @@ def get_footprint(footprint=None, nside=512, nest=False, **_):
         path = FOOTPRINTS.get(str(footprint), footprint)
         if not Path(path).exists():
             raise FileNotFoundError(
-                f"no footprint {footprint!r}; known names are "
-                f"{sorted(FOOTPRINTS)}, or give a path or a mask"
+                f"no footprint {footprint!r} at {path}; known names are "
+                f"{sorted(FOOTPRINTS)}, or give a path or a mask. Data lives in "
+                f"{DATA}, overridable with STREAMGOGGLES_DATA."
             )
         stored = np.asarray(hp.read_map(path), dtype=float)
         stored_nside = hp.npix2nside(stored.size)
