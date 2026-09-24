@@ -1,4 +1,4 @@
-﻿streamgoggles.matched\_filter
+streamgoggles.matched\_filter
 =============================
 
 .. automodule:: streamgoggles.matched_filter

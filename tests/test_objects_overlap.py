@@ -84,3 +84,79 @@ def test_masking_gives_an_object_with_no_size_the_floor_radius():
     dwarf, inside = get_dwarf_within_footprint(footprint="des_yr6")
     _, radii = mask_objects(dwarf, inside, nside=256, min_radius_deg=0.2)
     assert radii.min() >= 0.2
+
+
+# ---------------------------------------------------------------------------
+# Known streams
+# ---------------------------------------------------------------------------
+
+
+def test_stream_widths_match_the_ones_streams_are_injected_with():
+    """A stream should be masked at the width it is simulated with."""
+    import importlib.util
+    from pathlib import Path
+
+    from streamgoggles.objects_overlap import DES2018_STREAM_WIDTHS
+
+    path = Path(__file__).parents[1] / "scripts/experiments/stream_parameters/run.py"
+    spec = importlib.util.spec_from_file_location("sp_run", path)
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+    injected = {name: width for name, (width, *_) in run.DES_STREAMS.items()}
+    assert injected == DES2018_STREAM_WIDTHS
+
+
+def test_a_broad_structure_is_masked_to_its_width_not_a_multiple():
+    from streamgoggles.objects_overlap import mask_radius
+
+    assert mask_radius(0.5) == pytest.approx(1.5)  # cold stream: 3 sigma
+    assert mask_radius(6.0) == pytest.approx(6.0)  # Sagittarius: its extent
+
+
+def test_stream_names_match_exactly_and_references_can_be_dropped():
+    from streamgoggles.objects_overlap import stream_tracks
+
+    jhelum = stream_tracks("Jhelum")
+    assert set(jhelum) == {"Jhelum.ibata2021", "Jhelum.ibata2024"}
+    # Bonaca's two components are separate names, not caught by "Jhelum".
+    assert not any("Jhelum-a" in ref or "Jhelum-b" in ref for ref in jhelum)
+    trimmed = stream_tracks("Jhelum", exclude={"Jhelum.ibata2024"})
+    assert set(trimmed) == {"Jhelum.ibata2021"}
+
+
+def test_every_des2018_stream_has_a_track():
+    from streamgoggles.objects_overlap import DES2018_STREAM_WIDTHS, stream_tracks
+
+    missing = [name for name in DES2018_STREAM_WIDTHS if not stream_tracks(name)]
+    assert not missing, f"no galstreams track for {missing}"
+
+
+def test_dropping_the_long_jhelum_track_shrinks_its_mask():
+    from streamgoggles.objects_overlap import mask_streams
+
+    _, full = mask_streams({"Jhelum": 1.16}, nside=128)
+    _, trimmed = mask_streams({"Jhelum": 1.16}, nside=128, exclude={"Jhelum.ibata2024"})
+    assert trimmed["Jhelum"].size < 0.6 * full["Jhelum"].size
+
+
+def test_background_mask_is_the_footprint_minus_both_masks():
+    from streamgoggles.objects_overlap import build_background_mask
+
+    m = build_background_mask(nside=128)
+    assert not (m["usable"] & ~m["footprint"]).any()
+    assert not (m["usable"] & m["streams"]).any()
+    assert not (m["usable"] & m["objects"]).any()
+    assert np.array_equal(m["usable"], m["footprint"] & ~m["streams"] & ~m["objects"])
+    # Streams cost a real share of DES, objects a small one.
+    share = (m["streams"] & m["footprint"]).sum() / m["footprint"].sum()
+    assert 0.2 < share < 0.45
+
+
+def test_the_background_mask_is_available_by_name():
+    """Training and evaluation read the same sky, by name."""
+    usable, _, _ = get_footprint("des_yr6_background")
+    footprint, _, _ = get_footprint("des_yr6")
+    assert usable.sum() < footprint.sum()
+    assert not (usable & ~footprint).any()
+    kept = usable.sum() / footprint.sum()
+    assert 0.55 < kept < 0.8, f"about 68% of DES is usable, got {100 * kept:.1f}%"

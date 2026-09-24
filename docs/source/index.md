@@ -39,6 +39,7 @@ straight to the {doc}`api` reference.
 narrative/overview
 narrative/ml_concepts
 narrative/data_generation
+narrative/real_des_background
 narrative/datasets_and_models
 narrative/training_and_evaluation
 narrative/notebooks

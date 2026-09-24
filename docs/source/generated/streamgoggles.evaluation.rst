@@ -1,4 +1,4 @@
-﻿streamgoggles.evaluation
+streamgoggles.evaluation
 ========================
 
 .. automodule:: streamgoggles.evaluation
