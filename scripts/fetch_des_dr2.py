@@ -47,6 +47,12 @@ from io import StringIO
 from pathlib import Path
 
 import pandas as pd
+import requests
+from dl.queryClient import queryClientError
+
+# What a failed query can raise: the client's own error (which carries the
+# server's HTML for a 502), a transport failure, or a truncated CSV body.
+QUERY_ERRORS = (queryClientError, requests.RequestException, pd.errors.ParserError)
 
 TABLE = "des_dr2.y6_gold"
 # Cuts applied server side, so the download holds only what could ever be
@@ -69,6 +75,7 @@ COLUMNS = [
 ]
 BRIGHT, FAINT = 15.5, 25.0
 MIN_STRIP = 0.05  # degrees; below this, give up rather than bisect further
+RETRY_PAUSES = (5, 15, 45)  # seconds, for a server that stumbles rather than refuses
 
 
 # Which objects count as stars. "xgb" is the streamobs-consistent default;
@@ -248,41 +255,54 @@ def write_manifest(out_dir, dec_min, dec_max, step, snr_floor, classifier="xgb")
     return manifest
 
 
-def fetch_strip(query_client, dec_low, dec_high, max_magerr, classifier, depth=0):
-    """One declination strip, bisected as many times as the server needs.
+def is_too_big(error):
+    """Did the server refuse this query for its size, or just fall over?
 
-    A strip that exceeds the execution limit is split in two and each half
-    retried, so the number of queries follows the density on the sky rather
-    than being guessed in advance.
+    Bisecting helps only in the first case. A 502, a dropped connection or a
+    read timeout says nothing about the query, and splitting on those turns
+    one transient failure into a cascade -- which is what happened at dec -10,
+    where a 502 drove the strip down to 0.06 degrees before the run died.
     """
+    text = str(error).lower()
+    return "execution time" in text or "timeout" in text or "too large" in text
+
+
+def fetch_strip(query_client, dec_low, dec_high, max_magerr, classifier, depth=0):
+    """One declination strip: retried when the server stumbles, bisected only
+    when the query is genuinely too big for the execution limit."""
     sql = (
         f"SELECT {', '.join(COLUMNS)} FROM {TABLE} "
         f"WHERE {where_clause(dec_low, dec_high, max_magerr, classifier)}"
     )
-    try:
-        return run(query_client, sql)
-    except Exception as error:
-        width = dec_high - dec_low
-        if width <= MIN_STRIP:
-            raise RuntimeError(
-                f"dec {dec_low:+.3f} to {dec_high:+.3f} fails even at "
-                f"{width:g} degrees: {error}"
-            ) from error
-        middle = (dec_low + dec_high) / 2
-        print(
-            f"    dec {dec_low:+.2f} to {dec_high:+.2f} refused "
-            f"({str(error)[:60].strip()}); splitting",
-            flush=True,
-        )
-        halves = [
-            fetch_strip(
-                query_client, dec_low, middle, max_magerr, classifier, depth + 1
-            ),
-            fetch_strip(
-                query_client, middle, dec_high, max_magerr, classifier, depth + 1
-            ),
-        ]
-        return pd.concat(halves, ignore_index=True)
+    last = None
+    for attempt, pause in enumerate(RETRY_PAUSES, start=1):
+        try:
+            return run(query_client, sql)
+        except QUERY_ERRORS as error:
+            last = error
+            if is_too_big(error):
+                break
+            print(
+                f"    dec {dec_low:+.2f} to {dec_high:+.2f} failed "
+                f"({str(error).splitlines()[0][:50].strip()}); "
+                f"retry {attempt} of {len(RETRY_PAUSES)} in {pause}s",
+                flush=True,
+            )
+            time.sleep(pause)
+
+    width = dec_high - dec_low
+    if width <= MIN_STRIP:
+        raise RuntimeError(
+            f"dec {dec_low:+.3f} to {dec_high:+.3f} fails even at "
+            f"{width:g} degrees: {last}"
+        ) from last
+    middle = (dec_low + dec_high) / 2
+    print(f"    dec {dec_low:+.2f} to {dec_high:+.2f} too big; splitting", flush=True)
+    halves = [
+        fetch_strip(query_client, dec_low, middle, max_magerr, classifier, depth + 1),
+        fetch_strip(query_client, middle, dec_high, max_magerr, classifier, depth + 1),
+    ]
+    return pd.concat(halves, ignore_index=True)
 
 
 def count_rows(query_client, dec_min, dec_max, max_magerr, classifier="xgb"):
@@ -330,7 +350,7 @@ def main(
     # round, not int: (dec_max - dec_min) / step lands just under the integer
     # often enough that truncating drops the last strip, or every strip.
     edges = [dec_min + step * i for i in range(round((dec_max - dec_min) / step))]
-    kept = 0
+    kept, failed = 0, []
     for low in edges:
         high = low + step
         path = out_dir / f"des_y6gold_dec{low:+06.1f}.parquet"
@@ -339,7 +359,14 @@ def main(
             print(f"dec {low:+.1f}: already downloaded", flush=True)
             continue
         start = time.time()
-        frame = compact(fetch_strip(qc, low, high, max_magerr, classifier))
+        try:
+            frame = compact(fetch_strip(qc, low, high, max_magerr, classifier))
+        except (RuntimeError, *QUERY_ERRORS) as error:
+            # One hopeless strip should not cost the other seventy-four: note
+            # it and carry on, then run again to fill the gap.
+            failed.append(low)
+            print(f"dec {low:+.1f}: GAVE UP ({str(error)[:80]})", flush=True)
+            continue
         frame.to_parquet(path, index=False)
         kept += len(frame)
         print(
@@ -347,6 +374,8 @@ def main(
             f"in {time.time() - start:5.0f}s  ->  {path.name}",
             flush=True,
         )
+    if failed:
+        print(f"\nnot downloaded: {failed} -- run again to retry them")
     print(f"\n{kept:,} stars in {out_dir}")
     write_manifest(out_dir, dec_min, dec_max, step, snr_floor, classifier)
 
