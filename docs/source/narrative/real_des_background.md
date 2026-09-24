@@ -134,8 +134,10 @@ looked for inside it.
 - **Tracks** come from `galstreams`. Its `MWStreams()` class raises an
   `IndexError` against astropy 8, so the track files it ships are read
   directly; both kinds are already densified (measured tracks, and the Shipp et
-  al. endpoint pairs interpolated to 200 points). All references for a stream
-  are used, so the mask covers every published version of its track.
+  al. endpoint pairs interpolated to 200 points).
+- **Which track**: the DES measurement (Shipp et al. 2018, 2019) wherever
+  `galstreams` carries one, rather than every published track — see the note
+  on the Ibata et al. (2024) extensions below.
 - **Widths** are those of Shipp et al. (2018), the same numbers the injected
   analogues use; a test keeps the two tables identical.
 - **How far out**: three times the width for a cold stream, where the width is
@@ -146,13 +148,27 @@ looked for inside it.
 ```{include} figures/real_background/streams_table.md
 ```
 
-**Jhelum deserves a note.** It costs more than any other stream, and more than
-Sagittarius, because `galstreams` holds a track for it from Ibata et al.
-(2024) that is **95.6° long**, against about 28° in the earlier measurements —
-it is the broad diagonal band crossing the whole footprint in the final mask
-below. Masking it is the conservative choice and is what was done. Dropping it
-is one argument (`exclude_tracks={"Jhelum.ibata2024"}`) and would raise the
-usable sky from 68.4% of the footprint to 77.6%.
+**Why the DES track, and not every track.** Several streams have a track from
+Ibata et al. (2024) that extends them far beyond what DES measured:
+
+| stream | DES track (Shipp) | Ibata et al. 2024 |
+|---|---|---|
+| Jhelum | 24.6° and 13.4° (two components) | **95.6°** |
+| Indus | 18.2° | **90.3°** |
+| Tucana III | 4.3° | 17.0° |
+| Phoenix | 11.8° | 17.9° |
+
+A first version of this mask used every track and masked all of it. The long
+Jhelum track alone then cost 13.7% of the footprint, as a band across the
+whole survey, and the background kept 68.4% of the footprint instead of the
+79.9% below. The streams being looked for are the DES 2018 ones, as DES
+measured them, so their DES tracks are used. **Chenab is the deliberate
+exception**: its other tracks (Koposov et al. 2019, 2023) follow the whole
+Orphan-Chenab stream, one spectroscopically established stream crossing the
+footprint rather than a disputed extension, so all of it is masked. ATLAS,
+Aliqa Uma and Molonglo have no DES track in `galstreams` and use every track it
+has. The choice is the `STREAM_TRACKS` table in
+`streamgoggles.objects_overlap`; passing `tracks={}` restores every track.
 
 ```{image} figures/real_background/streams.png
 :alt: Tracks of the masked streams over the DES density
@@ -161,14 +177,14 @@ usable sky from 68.4% of the footprint to 77.6%.
 
 *The tracks of every masked stream over the stars that passed the cuts. Five of
 them — Jhelum, Ravi, Chenab, Tucana III and Indus — crowd together between
-RA 320° and 345°, Dec −50° and −62°, which is why their labels are offset.*
+RA 300° and 345°, Dec −45° and −62°, which is why their labels are offset.*
 
 ```{image} figures/real_background/streams_masked.png
 :alt: DES density after removing the stream mask
 :width: 100%
 ```
 
-*The same stars with the stream mask applied: 13,208,188 removed.*
+*The same stars with the stream mask applied: 8,391,055 removed.*
 
 ### Globular clusters and dwarf galaxies
 
@@ -205,7 +221,7 @@ Two things about what that selects:
 *The 49 dwarf galaxies (circles) and 3 globular clusters (squares) inside the
 footprint, labelled where a label fits.*
 
-The masks are small: 12.2 deg² in all, of which 6.5 deg² is not already inside
+The masks are small: 12.2 deg² in all, of which 6.7 deg² is not already inside
 a stream mask. The full list:
 
 ```{include} figures/real_background/objects_table.md
@@ -225,9 +241,9 @@ the footprint.*
 | | area | share of footprint | stars |
 |---|---|---|---|
 | footprint | 5,026 deg² | 100% | 40,111,394 after the cuts |
-| known streams | 1,582 deg² | 31.5% | 13,208,188 removed |
-| clusters and dwarfs, outside the streams | 6.5 deg² | 0.1% | 131,884 removed (some also in a stream) |
-| **background** | **3,438 deg²** | **68.4%** | **26,834,962** |
+| known streams | 1,002 deg² | 19.9% | 8,391,055 removed |
+| clusters and dwarfs, outside the streams | 6.7 deg² | 0.1% | 131,884 removed (some also in a stream) |
+| **background** | **4,017 deg²** | **79.9%** | **31,649,940** |
 
 ```{image} figures/real_background/background.png
 :alt: Density of the final background
@@ -239,7 +255,7 @@ the download.*
 
 Three products come out of this, all outside version control:
 
-- `~/Documents/data/DES_yr6/des_yr6_background.parquet`: the 26,834,962
+- `~/Documents/data/DES_yr6/des_yr6_background.parquet`: the 31,649,940
   stars, as `ra`, `dec`, `des_yr6_g_obs`, `des_yr6_r_obs` — the four columns
   the injection pipeline reads.
 - `des_yr6_background.json` beside it: everything above, machine-readable —

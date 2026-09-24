@@ -18,7 +18,7 @@ no data directory of its own, so that variable is how it finds one.
 - `footprint_des_yr6_nside512.fits.gz`, the DES Y6 Gold coverage built from
   the downloaded catalogue: 383,237 pixels, 5,026 square degrees.
 - `mask_des_yr6_background_nside512.fits.gz`, that coverage with known
-  streams and objects removed: 3,438 square degrees, the sky training and
+  streams and objects removed: 4,017 square degrees, the sky training and
   evaluation both use (`get_footprint("des_yr6_background")`).
 """
 
@@ -244,38 +244,74 @@ GALSTREAMS_NAMES = {
 }
 
 
-def stream_tracks(name, exclude=()):
-    """Every galstreams track for one stream, as {reference: (ra, dec)}.
+# Which galstreams tracks define each stream's mask: the DES measurement
+# (Shipp et al. 2018, 2019) wherever galstreams carries one. The other
+# references extend some streams far past what DES measured -- Ibata et al.
+# (2024) trace Jhelum over 95.6 degrees and Indus over 90.3, against 24.6 and
+# 18.2 in DES -- and masking those extensions cost 9 points of the footprint
+# for Jhelum alone. Streams absent from this table use every track galstreams
+# has: ATLAS, Aliqa Uma and Molonglo have no DES track there, and Chenab is
+# masked along the whole Orphan-Chenab stream, which is one established
+# stream crossing the footprint rather than a disputed extension.
+STREAM_TRACKS = {
+    "Jhelum": ("Jhelum-a.shipp2019", "Jhelum-b.shipp2019"),
+    "Indus": ("Indus.shipp2019",),
+    "Tucana III": ("TucanaIII.shipp2019",),
+    "Phoenix": ("Phoenix.shipp2019",),
+    "Elqui": ("Elqui.shipp2019",),
+    "Turranburra": ("Turranburra.shipp2019",),
+    "Ravi": ("Ravi.shipp2018",),
+    "Turbio": ("Turbio.shipp2018",),
+    "Wambelong": ("Wambelong.shipp2018",),
+    "Willka Yaku": ("Willka_Yaku.shipp2018",),
+}
+
+
+def stream_tracks(name, exclude=(), tracks=STREAM_TRACKS):
+    """The galstreams tracks for one stream, as {reference: (ra, dec)}.
+
+    Parameters:
+        name: the stream, as the DES 2018 paper names it.
+        exclude: references to leave out, as "<name>.<reference>".
+        tracks: {stream: references} choosing the tracks explicitly; a stream
+            not in it gets every track whose name matches exactly (so "Jhelum"
+            alone finds Ibata 2021 and 2024 but not the Jhelum-a and Jhelum-b
+            components). Pass {} for every matching track of every stream.
 
     The shipped track files are read directly, because
     `galstreams.MWStreams()` raises an IndexError against astropy 8. Both kinds
     are already densified: `track.st.*` are measured tracks, `track.ep.*` are
     endpoint pairs interpolated to 200 points.
-
-    The name must match exactly, so "Jhelum" finds Ibata 2021 and 2024 but not
-    Bonaca's `Jhelum-a` and `Jhelum-b` components. `exclude` drops references
-    by their "<name>.<reference>" label, e.g. "Jhelum.ibata2024" -- worth
-    knowing about, since that one track is 95.6 degrees long against about 28
-    for the others and makes Jhelum the largest item in the whole mask.
     """
     import galstreams
     from astropy.table import Table as _Table
 
     folder = Path(galstreams.__file__).parent / "tracks"
-    galstreams_name = GALSTREAMS_NAMES.get(name, name.replace(" ", "_"))
-    tracks = {}
-    for path in sorted(folder.glob(f"track.??.{galstreams_name}.*.ecsv")):
+    chosen = tracks.get(name) if tracks else None
+    if chosen is not None:
+        paths = []
+        for reference in chosen:
+            found = sorted(folder.glob(f"track.??.{reference}.ecsv"))
+            if not found:
+                raise FileNotFoundError(f"galstreams has no track {reference!r}")
+            paths.extend(found)
+    else:
+        galstreams_name = GALSTREAMS_NAMES.get(name, name.replace(" ", "_"))
+        paths = sorted(folder.glob(f"track.??.{galstreams_name}.*.ecsv"))
+
+    found_tracks = {}
+    for path in paths:
         if path.name.endswith(".summary.ecsv"):
             continue
         reference = path.name[len("track.st.") : -len(".ecsv")]
         if reference in exclude:
             continue
         table = _Table.read(path)
-        tracks[reference] = (
+        found_tracks[reference] = (
             np.asarray(table["ra"].value, dtype=float),
             np.asarray(table["dec"].value, dtype=float),
         )
-    return tracks
+    return found_tracks
 
 
 def mask_radius(width, width_factor=3.0, wide_stream_deg=2.0, wide_stream_factor=1.0):
@@ -298,6 +334,7 @@ def mask_streams(
     wide_stream_factor=1.0,
     exclude=(),
     nest=False,
+    tracks=STREAM_TRACKS,
 ):
     """A HEALPix mask over the tracks of known streams.
 
@@ -305,7 +342,7 @@ def mask_streams(
         widths: {stream name: width in degrees}. None is the DES 2018 streams
             plus Sagittarius.
         width_factor, wide_stream_deg, wide_stream_factor: see `mask_radius`.
-        exclude: track references to leave out (see `stream_tracks`).
+        exclude, tracks: which galstreams tracks to use (see `stream_tracks`).
 
     Returns:
         (mask, pixels): the union, and each stream's own pixels, so a caller
@@ -320,7 +357,7 @@ def mask_streams(
             mask_radius(width, width_factor, wide_stream_deg, wide_stream_factor)
         )
         own = np.zeros_like(mask)
-        for ra, dec in stream_tracks(name, exclude).values():
+        for ra, dec in stream_tracks(name, exclude, tracks).values():
             vectors = hp.ang2vec(ra, dec, lonlat=True)
             # A few hundred points per track is plenty: consecutive discs of
             # this radius overlap heavily, so sampling costs no coverage.
@@ -340,6 +377,7 @@ def build_background_mask(
     wide_stream_deg=2.0,
     wide_stream_factor=1.0,
     exclude_tracks=(),
+    tracks=STREAM_TRACKS,
     object_radius_factor=5.0,
     object_min_radius_deg=0.05,
 ):
@@ -364,6 +402,7 @@ def build_background_mask(
         wide_stream_deg,
         wide_stream_factor,
         exclude_tracks,
+        tracks=tracks,
     )
     clusters, clusters_in = get_GC_within_footprint(footprint=footprint, nside=nside)
     dwarfs, dwarfs_in = get_dwarf_within_footprint(footprint=footprint, nside=nside)

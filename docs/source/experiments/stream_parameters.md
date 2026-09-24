@@ -401,6 +401,12 @@ stream-free sky.
    trainings disagreed on: Wambelong 57% to 92%, Aliqa Uma 88% to 100%. It matches the best single training rather than
    the average, so the spread was noise, not some trainings being better.
    This is the configuration to deploy.
+10. **Training with age and metallicity drawn beats training on the filter's
+    population alone, everywhere but at 9 Gyr** — +12.3 points on average at
+    width 0.2, +16 at the filter's own population, and one training on the DES
+    streams from 95.4% to 98.1% with Wambelong's worst training from 5% to 50%.
+    The 9 Gyr deficit does not move, so it is the filter's, not the training's.
+    Adopted.
 
 ## The DES 2018 streams, simulated
 
@@ -654,9 +660,10 @@ matched-filter map without becoming any fainter on the sky.
 :width: 100%
 ```
 
-*Each point pools 120 injections (6 trainings × 20), with Wilson 68% bars.
-The dashed line marks the filter's own value, the dotted line the rate there,
-and the × is the other isochrone family at those same values.*
+*Each point pools 120 injections (6 trainings × 20), with Wilson 68% bars —
+sampling only. Solid: the models trained on the filter's population alone.
+Dashed: the models trained with age and metallicity drawn (see the next
+section). The dotted line marks the filter's own value.*
 
 Scanned twice, once against each filter. Each entry pools 120 injections, so
 each carries about ±4.5 points of sampling error on its own.
@@ -726,17 +733,67 @@ unchanged:
 | width | 0.1 to 1.5 deg (log) | **0.05 to 3 deg** (log) | 0.1 to 1.5 deg (log) |
 | length | 4 to 30 deg | **3 to 30 deg** | 4 to 30 deg |
 | distance gradient | ±0.2 mag/deg | **±0.4 mag/deg** | ±0.2 mag/deg |
-| age | 12 Gyr | 12 Gyr | **9 to 13.5 Gyr** |
+| age | the filter's (13 Gyr) | 13 Gyr | **9 to 13.5 Gyr** |
 | metallicity | Z = 0.0002 | Z = 0.0002 | **Z = 0.0001 to 0.001** (log) |
 
-`wide` asks what it cost to point the training at this population: it spends
-much of its capacity on streams brighter and fainter, thinner and thicker than
-any DES stream, so if the DES recovery survives it, the earlier result was not
-an artefact of aiming. `population` asks the complementary question, whether
-showing the model streams the filter's single isochrone does not describe
-makes it more robust to the mismatch scanned above. The distance range stays
-15 to 19 in both: it is the axis the model is explicitly queried on, and
-widening it would change the input channels rather than the training set.
+`wide` was defined but **not run**. The question behind it — were the DES
+streams recovered only because training had seen them? — is already answered
+by how training works: it draws each parameter from continuous ranges and
+never sees a DES stream's values (a 4800-window training is expected to hold
+0.03 to 0.12 streams even loosely resembling any one of them; see "What the
+models scoring this figure were trained on").
+
+`population` asks whether showing the model streams the filter's single
+isochrone does not describe makes it more robust to the mismatch scanned
+above. It is the `des` training with age and metallicity drawn instead of
+fixed, at the 13 Gyr filter, six seeds, scored on exactly the scan's points
+and on the DES streams.
+
+#### Drawing age and metallicity: better everywhere, except the youngest
+
+On the scan, at the hard operating point (width 0.2, SB 34):
+
+| population | trained on 13 Gyr only | age and Z drawn | change |
+|---|---|---|---|
+| 9 Gyr, Z = 0.0002 | 18% | 18% | **+0** |
+| 10.5 Gyr, Z = 0.0002 | 15% | 21% | +6 |
+| 12 Gyr, Z = 0.0002 | 24% | 37% | +12 |
+| **13 Gyr, Z = 0.0002** (the filter's) | 30% | 46% | **+16** |
+| 13.5 Gyr, Z = 0.0002 | 23% | 36% | +13 |
+| 13 Gyr, Z = 0.0001 | 39% | 54% | +15 |
+| 13 Gyr, Z = 0.0005 | 32% | 44% | +12 |
+| 13 Gyr, Z = 0.001 | 22% | 40% | +18 |
+| **mean over the eleven populations** | **27.4%** | **39.7%** | **+12.3** |
+
+At width 0.6 the mean goes from 94.2% to 99.2%, and ten of the eleven
+populations reach 98% or more.
+
+Two things stand out. **The gain includes the filter's own population**
+(+16 points), which training on that population alone was supposedly best
+at: variety in the stream stars the filter sees helps the model even on the
+stars it was tuned for, which reads as a regularization effect rather than
+as coverage of the mismatch. And **the youngest population does not move**:
+18% either way at 9 Gyr. Having seen streams that young in training does not
+help, so that deficit belongs to the filter at fixed surface brightness —
+fewer, brighter stars for the same light — and not to the training.
+
+On the DES streams:
+
+| | trained on 13 Gyr only | age and Z drawn |
+|---|---|---|
+| one training, mean over the 14 | 95.4% | **98.1%** |
+| Wambelong, one training (range over six) | 57% (5-95) | **79% (50-95)** |
+| Aliqa Uma, one training (range over six) | 88% (65-100) | **96% (85-100)** |
+| the six averaged, mean over the 14 | 99.4% | 99.3% |
+
+A single training becomes both better and far more consistent — Wambelong's
+worst training goes from 5% to 50% — while the ensemble, already at its
+ceiling, does not change. Averaging and population variety remove the same
+training-to-training noise, so their gains overlap rather than add.
+
+**Decision: train with age and metallicity drawn** (age 9 to 13.5 Gyr, Z
+0.0001 to 0.001 log-uniform). It costs nothing, makes each training more
+reliable, and helps on every population but the one it cannot help.
 
 ## Generation cost
 

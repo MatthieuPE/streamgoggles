@@ -364,7 +364,14 @@ def figure_final(cut, scale, masks, kept):
             label=f"clusters and dwarfs, outside the streams: {objects * area:,.1f} deg²",
         ),
     ]
-    sp.ax.legend(handles=handles, loc="lower left", fontsize=9, framealpha=0.9)
+    # Upper right, below the equatorial stripe, is the one empty corner.
+    sp.ax.legend(
+        handles=handles,
+        loc="upper right",
+        bbox_to_anchor=(1.0, 0.83),
+        fontsize=9,
+        framealpha=0.9,
+    )
     sp.ax.set_title(
         f"the final mask: {100 * usable / total:.1f}% of {total * area:,.0f} deg² kept",
         fontsize=11,
@@ -400,7 +407,7 @@ def stream_table(masks):
                     MASK["wide_stream_factor"],
                 ),
                 "footprint_percent": 100 * cost,
-                "tracks": ", ".join(r.split(".", 1)[1] for r in references),
+                "tracks": ", ".join(references),
             }
         )
     return pd.DataFrame(rows).sort_values("footprint_percent", ascending=False)

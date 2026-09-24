@@ -19,7 +19,10 @@ has not been varied yet and is a default rather than a result.
 | training length | 4800 windows while exploring (~3 min); 19200 for final results (~10 min) | {doc}`hyperparameters` |
 | decoy channel | fixed colour-magnitude box, colour 1.2-1.5, g 18-24.5 | {doc}`hyperparameters` (section 8) |
 | network | U-Net, depth 2, base width 12, sigmoid head | {doc}`hyperparameters` |
-| deployment | one model (averaging several trainings costs more than one long training and does no better) | {doc}`hyperparameters` |
+| deployment | the six quick trainings averaged into one map: 13 of the 14 DES streams found in every injection, Wambelong in 92% (one training: 57%). The hyperparameter experiment found averaging did no better than one long training; its models each carried their own fitted normalization, where these standardize every window by itself | {doc}`stream_parameters` |
+| training population | age 9-13.5 Gyr and Z 0.0001-0.001 drawn, not fixed: +12 points on the hardest streams, and one training's DES recovery from 95.4% to 98.1% | {doc}`stream_parameters` |
+| matched-filter isochrone | 13 Gyr, Z = 0.0002, Marigo2017, following Shipp et al. (2018) | {doc}`stream_parameters` |
+| real background | DES Y6 Gold, `0 <= EXT_XGB <= 1` as streamobs selects, S/N > 5, known streams and objects masked: 4,017 deg² (not yet used in training) | {doc}`../narrative/real_des_background` |
 | threshold | chosen from a false-alarm budget, not fixed at 0.5 | {doc}`hyperparameters` |
 | learning rate | 2e-3 (not varied yet) | — |
 
@@ -170,7 +173,7 @@ it moves the results.
 | Threshold tuning | Which probability threshold for the final maps, and does it hold on streams and backgrounds not used to choose it? | planned |
 | {doc}`hyperparameters` | Which training length, training surface brightness range, network depth and width, learning rate and batch size detect most streams at SB 33 and some at SB 34, with a clean background? | done for training range, length, network size, averaging and the decoy channel: one model trained on SB 32-34.5 with 19200 windows (4800 while exploring); learning rate and batch size not run yet |
 | {doc}`two_streams` | Does a model trained on one stream per window still find a stream with a neighbour nearby? | done: yes at 2 degrees or more and for crossing streams; a faint stream within about 1 degree of a brighter parallel one is suppressed |
-| {doc}`stream_parameters` | Detection across the range of the known DES streams (distance, width, length, surface brightness, distance gradient), with a model queried at one trial distance and shown its two neighbours. | first results (6 quick seeds, 2 long): at fixed surface brightness closer and narrower streams are harder; 12 of the 14 DES 2018 streams, simulated with their own parameters, are recovered in at least 97% of injections at their known positions; 19200 training windows bring nothing over 4800 here |
+| {doc}`stream_parameters` | Detection across the range of the known DES streams (distance, width, length, surface brightness, distance gradient), with a model queried at one trial distance and shown its two neighbours. | at fixed surface brightness closer and narrower streams are harder; 19200 training windows bring nothing over 4800 here; the six quick trainings averaged recover 13 of the 14 DES 2018 streams in every injection and Wambelong in 92%; drawing age and metallicity in training helps everywhere but at 9 Gyr, whose deficit is the filter's |
 | Generic matched filter | One filter swept over trial distance modulus, with the filter's parameters (age, metallicity, trial distance) given to the network as inputs. | planned |
 | Stream populations | Several streams injected in the footprint; per-stream (object-level) metrics next to the per-pixel ones. | planned |
 | Survey-wide contamination | False alarms over a fully tiled footprint, rather than around one injected stream. | planned |
