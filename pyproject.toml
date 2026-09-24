@@ -20,6 +20,9 @@ build-backend = "uv_build"
 
 [tool.uv.build]
 packages = [{include = "streamgoggles", from = "src"}]
+# The catalogues and footprints in streamgoggles/data are read at run time by
+# objects_overlap, so they have to travel with the package.
+source-include = ["src/streamgoggles/data/*.csv", "src/streamgoggles/data/*.fits.gz"]
 
 [dependency-groups]
 test = [
