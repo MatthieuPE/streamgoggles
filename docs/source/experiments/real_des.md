@@ -5,8 +5,8 @@ adopted configuration on the **real DES Y6 sky**, with every known stream,
 globular cluster and dwarf galaxy masked out of it, then runs it over the whole
 DES footprint with the known streams **put back**, to see whether it finds them.
 
-**Status: set up and tested end to end; not run yet.** This page records the
-design. Results go below it once the trainings have run.
+**Status: running** (started 2026-09-25). This page records the design;
+results go below it once the trainings have run.
 
 What it is meant to deliver:
 
@@ -34,33 +34,93 @@ call them background. Inference on a sky without them could not find them.
 
 ## Two folds, so no pixel is predicted by a model that trained on it
 
-There is only one real sky. A model predicting pixels it trained on has
-already been taught what their background looks like, which flatters its
-false-alarm rate, and that rate is what a detection threshold is set from. So
-the footprint is split in two, and each half is predicted only by models that
-never saw it:
+### Why
 
-- **The split**: 20° stripes of right ascension, alternating between the
-  folds (`objects_overlap.spatial_fold`). Stripes rather than one cut give
-  both folds the whole range of galactic latitude DES spans, so neither trains
-  on an easier sky. At Dec −50° a stripe is about 13° across, wider than an
-  11° window. Fold 0 holds 163,107 pixels (2,140 deg²) of the training sky,
-  fold 1 holds 143,139 (1,880 deg²).
-- **By pixel, not by star**: each star goes with the HEALPix pixel it falls
+**A detection is a comparison.** The network's output is never read on its
+own: a stream counts as detected when the output along its track stands out
+from the output on **stream-free sky**. The threshold is the level that fewer
+than 10⁻³ of stream-free pixels exceed, and the signal-to-noise compares the
+track with stream-shaped bands drawn on stream-free sky. A detection therefore
+means "the network responds more to this stream than to sky without one", and
+it is only as fair as that comparison.
+
+**Training bends the sky it trains on.** Every training window is labelled
+zero everywhere except the injected stream. One training shows the model
+4,800 windows of 96 × 96 pixels, about 44 million pixel-views, over some
+300,000 sky pixels: **each background pixel is shown to the model about 150
+times, each time labelled "nothing here".** Whatever real structure sits in
+that background — a survey artefact, a depth pattern, an unmasked stream no
+one has found yet — the model is trained, repeatedly, to answer zero on.
+
+**Without folds, the comparison is tilted.** At inference the known streams
+are new to the model, since they were masked in training. But the stream-free
+sky they are compared against is exactly the sky the model was drilled on. It
+looks quieter than sky the model has never seen, so the threshold comes out
+lower and the signal-to-noise higher than they should be: a stream could be
+declared detected against a background made artificially calm. With two
+folds, a stream and the background it is compared with are **both** predicted
+by models that never saw them.
+
+**And unknown streams would be taught away.** Without folds, a real stream
+nobody has found yet, sitting in the training sky, is taught to the model as
+background about 150 times over, so the model learns to miss exactly what a
+search is for. With folds it is taught as background only to its own fold's
+models, and predicted by the other fold's, which never saw it. That matters
+less for recovering the DES 2018 streams, which are masked either way, than
+for any discovery later.
+
+### How
+
+- **Alternating stripes of right ascension**, 20° wide
+  (`objects_overlap.spatial_fold`):
+
+  ```
+  RA   0°──20°──40°──60°──80°──100° ...   and 340°–360°, 300°–320° ... the other way
+       │ A  │ B  │ A  │ B  │ A  │
+  ```
+
+  The six models of fold A train on the A stripes only and predict the B
+  stripes; the six of fold B train on B and predict A. Every pixel of the final
+  map comes from the ensemble that never trained on it.
+- **Stripes rather than two halves**, because the sky is not uniform: the star
+  density climbs steeply toward the galactic plane at the east and west ends
+  of DES. With a left-right split one ensemble would train only on the dense
+  side and be asked about the sparse one. Stripes give both folds the whole
+  range of galactic latitude. At Dec −50° a stripe is about 13° across, wider
+  than an 11° window. Fold A holds 163,107 pixels (2,140 deg²) of the training
+  sky, fold B 143,139 (1,880 deg²).
+- **By pixel, not by star.** Each star goes with the HEALPix pixel it falls
   in, and the pixel with its centre. A first version split the stars by their
-  own positions. That left 1,177 pixels on the stripe edges partly in each
-  fold, so a pixel could be predicted by a model that had trained on part of
-  it. A test now holds stars on both sides of an edge in one pixel and checks
-  they land in the same fold.
-- **Training**: six models per fold, each seeing only its fold's stars.
-  Injected streams are placed on the fold's own pixels, and any part of a
-  stream crossing into the other fold falls on empty pixels, zeroed in both
-  input and label, exactly like a hole in the footprint.
-- **Inference**: both ensembles run on every tile of the inference sky, and
-  each pixel keeps the output of the ensemble trained on the *other* fold.
+  own positions, which left 1,177 pixels on the stripe edges partly in each
+  fold — pixels that the model later asked to predict them had half-trained
+  on. A test holds stars on both sides of an edge in one pixel and checks they
+  land in the same fold.
+- **In training**, streams are injected on the fold's own pixels; any part of
+  a stream crossing into the other fold falls on empty pixels, zeroed in input
+  and label alike, exactly like a hole in the footprint.
 
-The known streams are masked in both folds' training, so detecting them is
-never a model recognising something it was taught.
+One nuance. To predict a pixel, a model reads the whole 11° window around it,
+so for pixels near a stripe edge the window reaches into stripes the model
+*did* train on. What is guaranteed is that the pixel being judged was never
+trained on, not that nothing in its neighbourhood was. It concerns a band a
+few degrees wide along each edge, and stream and background pixels alike, so
+it does not tilt the comparison.
+
+### What it costs, and how big the effect is
+
+Twice the training, and each model sees half the sky. Training windows near a
+stripe edge see an artificial straight hole. And if the two ensembles end up
+calibrated slightly differently, the output map could show the stripe pattern
+itself; that is checked on the maps, and a threshold can be set per fold if it
+appears.
+
+How much a model's output on its own training sky actually differs is not
+known in advance: it may be small, since each pixel is seen under many
+rotations and window positions. The folds measure it for free. Both ensembles
+run on every tile anyway, so inference also writes each ensemble's output on
+its **own** stripes (`maps/in_fold/`), and the summary compares the two on
+stream-free sky. If the difference proves negligible, later runs can train
+once on the whole sky.
 
 ## The configuration
 
