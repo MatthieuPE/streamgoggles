@@ -998,3 +998,87 @@ def test_stream_detection_end_to_end(injector):
     d = stream_detection(results, THRESHOLD_GRID, at=(0.5,))
     assert list(d["richness"]) == [3000, 6000]
     assert (d["n_realizations"] == 2).all()
+
+
+# ---------------------------------------------------------------------------
+# Real streams on real skies
+# ---------------------------------------------------------------------------
+
+
+def _curved_track(n=400):
+    """A gently curving 20-degree track around RA 30, Dec -40."""
+    t = np.linspace(-10, 10, n)
+    return 30.0 + t, -40.0 + 0.02 * t**2
+
+
+def test_false_alarm_rates_are_per_group_and_count_ties_against():
+    from streamgoggles.evaluation.footprint import false_alarm_map
+
+    prediction = np.array([0.1, 0.5, 0.9, 1.0, 0.2, 0.4, 0.4, 0.8])
+    calibration = np.ones(8, dtype=bool)
+    groups = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+    rate = false_alarm_map(prediction, calibration, groups)
+    # Group 0: 0.9 is matched or beaten by 2 of its 4 calibration pixels.
+    assert rate[2] == pytest.approx(2 / 4)
+    # Group 1 is ranked on its own: 0.8 is its highest, 1 of 4.
+    assert rate[7] == pytest.approx(1 / 4)
+    # A tie counts against: the two 0.4s are each at "3 of 4 at least as high".
+    assert rate[5] == rate[6] == pytest.approx(3 / 4)
+
+
+def test_false_alarm_rate_is_nan_where_there_is_no_prediction():
+    from streamgoggles.evaluation.footprint import false_alarm_map
+
+    prediction = np.array([0.3, np.nan, 0.7])
+    rate = false_alarm_map(prediction, np.array([True, False, True]))
+    assert np.isnan(rate[1]) and np.isfinite(rate[[0, 2]]).all()
+
+
+def test_track_band_follows_a_curved_track():
+    from streamgoggles.evaluation.footprint import track_band
+
+    nside = 128
+    ra, dec = _curved_track()
+    band = track_band([(ra, dec)], 0.5, nside)
+    # Every track point's pixel is in the band, and its area is about
+    # 2 * width * length.
+    assert band[hp.ang2pix(nside, ra, dec, lonlat=True)].all()
+    area = band.sum() * hp.nside2pixarea(nside, degrees=True)
+    assert 16 < area < 28
+
+
+def test_moving_a_band_keeps_its_shape():
+    from streamgoggles.evaluation.footprint import _moved
+
+    ra, dec = _curved_track()
+    vectors = np.array(hp.ang2vec(ra, dec, lonlat=True))
+    target = np.array(hp.ang2vec(300.0, -20.0, lonlat=True))
+    moved = _moved(vectors, target, roll=1.0)
+    # Rigid: every pairwise angle is preserved, and the centroid lands there.
+    np.testing.assert_allclose(moved @ moved.T, vectors @ vectors.T, atol=1e-9)
+    centre = moved.mean(axis=0)
+    assert np.dot(centre / np.linalg.norm(centre), target) > 0.9999
+
+
+def test_a_line_of_flagged_pixels_is_detected_and_noise_is_not():
+    """The criterion's two outcomes on one synthetic sky: a stream of flagged
+    pixels along a curved track stands out from stream-shaped bands of the
+    same sky, and the same track on noise alone does not."""
+    from streamgoggles.evaluation.footprint import real_track_statistics, track_band
+
+    nside = 128
+    rng = np.random.default_rng(0)
+    npix = hp.nside2npix(nside)
+    _, dec = hp.pix2ang(nside, np.arange(npix), lonlat=True)
+    sky = (dec < -10) & (dec > -70)
+    band = track_band([_curved_track()], 0.5, nside)
+    calibration = sky & ~track_band([_curved_track()], 3.0, nside)
+    noise = sky & (rng.random(npix) < 0.01)
+
+    with_stream = noise | (band & (rng.random(npix) < 0.5))
+    found = real_track_statistics(with_stream, sky, band, calibration, rng, 100)
+    assert found["n_flagged"] >= 20 and found["snr"] >= 2 and found["p_value"] < 0.02
+
+    alone = real_track_statistics(noise, sky, band, calibration, rng, 100)
+    assert alone["snr"] < 2
+    assert alone["null_density_mean"] == pytest.approx(0.01, rel=0.3)

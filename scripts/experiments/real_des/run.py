@@ -366,6 +366,363 @@ def infer(seeds):
     (MAPS / "summary.json").write_text(json.dumps(summary, indent=2))
 
 
+# The calibration sky: where false-alarm rates and null bands are measured.
+# The training mask removes every known stream, cluster and dwarf, but the
+# first maps show real structure still in what it leaves, at radii measured
+# from the maps' flagged-pixel profiles (docs: "What the stream-free sky still
+# holds"). Each radius is where the excess reaches the far-field level.
+CALIBRATION_DISCS = {
+    # name: (ra, dec, radius_deg)
+    "LMC periphery": (80.894, -69.756, 20.0),  # 52% at 12-15 deg, 3% by 18-21
+    "SMC periphery": (13.187, -72.829, 12.0),  # 23% at 9-12 deg, 1% by 12-15
+}
+SAGITTARIUS_EXTENT_DEG = 9.0  # from its track; 8% at 8-9 deg, background by 9-10
+DWARF_HALF_LIGHT_RADII = 12.0  # Sculptor's excess reaches 2 deg, Fornax's 2
+CLUSTER_RADIUS_DEG = 2.0  # NGC 1904, NGC 1261: 72-86% within 1 deg, ~4% at 1-2
+CALIBRATION_MASK = OUT / "calibration_mask_nside512.fits.gz"
+
+
+def calibration_mask(nside=512):
+    """The stream-free sky with the unmasked structure the maps revealed removed.
+
+    Built on the training mask, so every known stream, cluster and dwarf is
+    already out; this removes, in addition, the Magellanic Clouds'
+    peripheries, Sagittarius out to 9 degrees from its track, every dwarf to
+    12 half-light radii, and every globular cluster whose centre lies within
+    2 degrees of the footprint to 2 degrees -- including the bright ones whose
+    centres sit in Gold's foreground holes, which the training mask never
+    selected.
+    """
+    import healpy as hp
+    import numpy as np
+
+    from streamgoggles.objects_overlap import (
+        get_dwarf,
+        get_footprint,
+        get_GC,
+        mask_objects,
+        mask_streams,
+    )
+
+    usable, _, _ = get_footprint("des_yr6_background", nside=nside)
+    covered, _, _ = get_footprint("des_yr6", nside=nside)
+    removed = np.zeros_like(usable)
+    for ra, dec, radius in CALIBRATION_DISCS.values():
+        vector = hp.ang2vec(ra, dec, lonlat=True)
+        removed[hp.query_disc(nside, vector, np.radians(radius))] = True
+    sagittarius, _ = mask_streams(
+        {"Sagittarius": SAGITTARIUS_EXTENT_DEG},
+        nside=nside,
+        wide_stream_deg=0.0,
+        wide_stream_factor=1.0,
+        tracks={},
+    )
+    removed |= sagittarius
+
+    def near_footprint(catalogue, reach_deg):
+        near = []
+        for row in catalogue:
+            vector = hp.ang2vec(float(row["ra"]), float(row["dec"]), lonlat=True)
+            disc = hp.query_disc(nside, vector, np.radians(reach_deg))
+            near.append(bool(covered[disc].any()))
+        return np.array(near)
+
+    dwarfs = get_dwarf()
+    dwarf_mask, _ = mask_objects(
+        dwarfs,
+        near_footprint(dwarfs, 2.0),
+        nside=nside,
+        radius_factor=DWARF_HALF_LIGHT_RADII,
+    )
+    clusters = get_GC()
+    cluster_mask, _ = mask_objects(
+        clusters,
+        near_footprint(clusters, CLUSTER_RADIUS_DEG),
+        nside=nside,
+        radius_factor=0.0,
+        min_radius_deg=CLUSTER_RADIUS_DEG,
+    )
+    removed |= dwarf_mask | cluster_mask
+    calibration = usable & ~removed
+    hp.write_map(
+        CALIBRATION_MASK,
+        calibration.astype(np.uint8),
+        dtype=np.uint8,
+        overwrite=True,
+        coord="C",
+        column_names=["CALIBRATION"],
+    )
+    area = hp.nside2pixarea(nside, degrees=True)
+    print(
+        f"calibration sky: {calibration.sum() * area:,.0f} deg^2 of the "
+        f"{usable.sum() * area:,.0f} the training mask leaves",
+        flush=True,
+    )
+    return calibration
+
+
+# The detection criterion of the simulated experiments, on real tracks.
+TARGET_FALSE_ALARM_RATE = 1e-3
+MIN_FLAGGED_PIXELS = 20
+MIN_SNR = 2.0
+N_NULL_BANDS = 200
+DETECTION_SEED = 2026
+DETECTIONS = OUT / "detections.csv"
+
+
+def detection_tracks():
+    """One track per stream for its detection band: the DES measurement.
+
+    The masks use every reference where that is the cautious choice; a
+    detection band must follow the stream as DES measured it. Chenab's mask
+    covers the whole Orphan-Chenab stream, but its band is Chenab's DES
+    segment, or "detecting Chenab" would mean detecting Orphan. Where
+    galstreams has no DES track, the reference whose length matches DES's
+    (ATLAS: Li et al. 2021, 23.6 deg against 22.6).
+    """
+    from streamgoggles.objects_overlap import STREAM_TRACKS
+
+    return {
+        **STREAM_TRACKS,
+        "Chenab": ("Orphan-Chenab.shipp2019",),
+        "ATLAS": ("AAU-ATLAS.li2021",),
+        "Aliqa Uma": ("AAU-AliqaUma.li2021",),
+        "Molonglo": ("Molonglo.grillmair2017b",),
+    }
+
+
+def detect():
+    """Each DES 2018 stream, judged along its DES track at every distance.
+
+    Flagged pixels are those whose false-alarm rate -- against the calibration
+    sky of their own fold -- is at most 1e-3. A stream is detected at a
+    distance when at least 20 pixels within one width of its track are
+    flagged and their density stands out from 200 copies of the band moved
+    onto calibration sky by an S/N of at least 2: the criterion of the
+    simulated experiments. It is reported at the queried distance nearest the
+    stream's own, and at every other, since a detection that peaks at the
+    stream's distance is one that belongs to the stream.
+    """
+    import healpy as hp
+    import numpy as np
+    import pandas as pd
+
+    from streamgoggles.evaluation.footprint import (
+        false_alarm_map,
+        real_track_statistics,
+        track_band,
+    )
+    from streamgoggles.objects_overlap import get_footprint, spatial_fold, stream_tracks
+
+    sp = stream_parameters_module()
+    nside = 512
+    calibration = (
+        hp.read_map(CALIBRATION_MASK).astype(bool)
+        if CALIBRATION_MASK.exists()
+        else calibration_mask(nside)
+    )
+    inference, _, _ = get_footprint("des_yr6_inference", nside=nside)
+    ra, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    folds = spatial_fold(ra, STRIPE_DEG, N_FOLDS)
+    chosen = detection_tracks()
+    bands = {
+        name: track_band(
+            list(stream_tracks(name, tracks=chosen).values()), width, nside
+        )
+        & inference
+        for name, (width, _, _, _) in sp.DES_STREAMS.items()
+    }
+    rng = np.random.default_rng(DETECTION_SEED)
+    rows = []
+    for query in sp.QUERY_GRID:
+        prediction = hp.read_map(MAPS / f"prediction_dm{query:.1f}.fits")
+        prediction[prediction == hp.UNSEEN] = np.nan
+        rate = false_alarm_map(prediction, calibration, folds)
+        scored = np.isfinite(rate)
+        flagged = scored & (rate <= TARGET_FALSE_ALARM_RATE)
+        for name, (width, length, distance, sb) in sp.DES_STREAMS.items():
+            stats = real_track_statistics(
+                flagged, scored, bands[name], calibration, rng, N_NULL_BANDS
+            )
+            rows.append(
+                {
+                    "stream": name,
+                    "distance_modulus": distance,
+                    "width": width,
+                    "surface_brightness": sb,
+                    "query": query,
+                    **stats,
+                    "detected": bool(
+                        stats["n_flagged"] >= MIN_FLAGGED_PIXELS
+                        and stats["snr"] >= MIN_SNR
+                    ),
+                }
+            )
+        print(f"m-M {query:.1f}: done", flush=True)
+    table = pd.DataFrame(rows)
+    table.to_csv(DETECTIONS, index=False)
+    nearest = table.loc[
+        table.groupby("stream")
+        .apply(lambda g: (g["query"] - g["distance_modulus"]).abs().idxmin())
+        .to_numpy()
+    ].sort_values("snr", ascending=False)
+    pd.set_option("display.width", 200)
+    print(
+        nearest[
+            [
+                "stream",
+                "distance_modulus",
+                "query",
+                "band_pixels",
+                "n_flagged",
+                "null_density_mean",
+                "snr",
+                "p_value",
+                "detected",
+            ]
+        ]
+        .round(4)
+        .to_string(index=False)
+    )
+    print(
+        f"\ndetected at the nearest distance: {int(nearest.detected.sum())} of {len(nearest)}"
+    )
+    summary = input_significance(nearest)
+    summary.to_csv(STREAM_SUMMARY, index=False)
+    figure_detections(table, summary)
+    return table
+
+
+STREAM_SUMMARY = OUT / "stream_summary.csv"
+DOC_FIGURES = REPO / "docs" / "source" / "experiments" / "figures" / "real_des"
+
+
+def input_significance(nearest):
+    """How visible each stream is in the matched-filter counts the model reads.
+
+    The classic matched-filter test, on the same band: counts within one
+    width of the track against the mean in side bands two to four widths
+    away (off the stream's wings), at the queried distance nearest the
+    stream's own. It separates a stream the network misses from one the
+    input does not contain.
+    """
+    import numpy as np
+
+    from streamgoggles.evaluation.footprint import track_band
+    from streamgoggles.objects_overlap import get_footprint, stream_tracks
+
+    sp = stream_parameters_module()
+    background, _, _ = build_sky(INFERENCE_CATALOGUE)
+    inference, _, _ = get_footprint("des_yr6_inference", nside=512)
+    valid = background.valid_mask_full & inference
+    chosen = detection_tracks()
+    rows = []
+    for row in nearest.itertuples():
+        width = sp.DES_STREAMS[row.stream][0]
+        tracks = list(stream_tracks(row.stream, tracks=chosen).values())
+        band = track_band(tracks, width, 512) & valid
+        side = (
+            track_band(tracks, 4 * width, 512)
+            & ~track_band(tracks, 2 * width, 512)
+            & valid
+        )
+        counts = background.raw_map_full_dict["good"][row.query]
+        expected = counts[side].mean() * band.sum()
+        rows.append(
+            {
+                "stream": row.stream,
+                "distance_modulus": row.distance_modulus,
+                "query": row.query,
+                "input_contrast": counts[band].mean() / counts[side].mean() - 1,
+                "input_snr": (counts[band].sum() - expected) / np.sqrt(expected),
+                "network_snr": row.snr,
+                "n_flagged": row.n_flagged,
+                "detected": row.detected,
+            }
+        )
+    import pandas as pd
+
+    return pd.DataFrame(rows).sort_values("network_snr", ascending=False)
+
+
+def figure_detections(table, summary):
+    """S/N against queried distance per stream; and network against input."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    DOC_FIGURES.mkdir(parents=True, exist_ok=True)
+    order = summary.stream.tolist()
+    fig, axes = plt.subplots(4, 4, figsize=(14, 11), sharex=True, sharey=True)
+    for ax, name in zip(axes.flat, order, strict=False):
+        rows = table[table.stream == name].sort_values("query")
+        found = bool(summary.set_index("stream").loc[name, "detected"])
+        ax.plot(
+            rows["query"],
+            rows["snr"],
+            marker="o",
+            ms=4,
+            lw=1.6,
+            color="#2a78d6" if found else "#8a8986",
+        )
+        ax.axvline(rows["distance_modulus"].iloc[0], color="#eb6834", lw=1.2, ls="--")
+        ax.axhline(MIN_SNR, color="0.6", lw=0.8, ls=":")
+        ax.set_yscale("symlog", linthresh=2)
+        ax.set_title(f"{name}{'' if not found else '  (detected)'}", fontsize=9.5)
+        ax.grid(alpha=0.25)
+    for ax in axes.flat[len(order) :]:
+        ax.axis("off")
+    for ax in axes[-1]:
+        ax.set_xlabel("queried m−M")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("S/N along the track")
+    fig.suptitle(
+        "Each DES 2018 stream along its DES track, at every queried distance — "
+        "dashed: its catalogued distance; dotted: S/N = 2",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    fig.savefig(DOC_FIGURES / "snr_by_distance.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    points = ax.scatter(
+        summary.input_snr,
+        np.maximum(summary.network_snr, 0.3),
+        c=summary.distance_modulus,
+        cmap="Blues",
+        vmin=15.0,
+        vmax=19.0,
+        s=70,
+        edgecolors="#1a1a19",
+        linewidths=0.6,
+    )
+    for row in summary.itertuples():
+        on_floor = row.network_snr < 0.3
+        # Missed streams all sit on the floor, a few tenths apart in x:
+        # slanted labels keep them apart.
+        ax.annotate(
+            row.stream,
+            (row.input_snr, max(row.network_snr, 0.3)),
+            fontsize=8,
+            xytext=(4, 6) if on_floor else (5, 3),
+            textcoords="offset points",
+            rotation=50 if on_floor else 0,
+        )
+    ax.set_yscale("log")
+    ax.axhline(MIN_SNR, color="0.6", lw=0.8, ls=":")
+    ax.axvline(0, color="0.6", lw=0.8)
+    ax.set_xlabel("S/N of the stream in the matched-filter counts (input)")
+    ax.set_ylabel("S/N of the network's flagged pixels (output; 0 drawn at 0.3)")
+    fig.colorbar(points, ax=ax, label="catalogued m−M")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(DOC_FIGURES / "input_vs_network.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
 def figures():
     """One map per queried distance, and an animation through them.
 
@@ -432,7 +789,9 @@ def figures():
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("step", choices=["train", "infer", "figures"])
+    parser.add_argument(
+        "step", choices=["train", "infer", "figures", "calibration", "detect"]
+    )
     parser.add_argument("--fold", type=int, choices=list(range(N_FOLDS)))
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS)
     arguments = parser.parse_args()
@@ -442,5 +801,9 @@ if __name__ == "__main__":
         train(arguments.fold, arguments.seeds)
     elif arguments.step == "infer":
         infer(arguments.seeds)
+    elif arguments.step == "calibration":
+        calibration_mask()
+    elif arguments.step == "detect":
+        detect()
     else:
         figures()

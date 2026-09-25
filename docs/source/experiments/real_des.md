@@ -5,8 +5,15 @@ adopted configuration on the **real DES Y6 sky**, with every known stream,
 globular cluster and dwarf galaxy masked out of it, then runs it over the whole
 DES footprint with the known streams **put back**, to see whether it finds them.
 
-**Status: running** (started 2026-09-25). This page records the design;
-results go below it once the trainings have run.
+**Status: trained and run** (2026-09-25): twelve models, the nine maps, and a
+first test of the DES 2018 streams. The design comes first on this page, the
+results after it, from "Results: the maps" on.
+
+**In short: 5 of the 14 DES 2018 streams are detected** — Elqui, Tucana III,
+Willka Yaku, ATLAS and Chenab, each peaking at its own distance. Three of the
+nine others are not in the matched-filter maps at all; the rest are, but lie
+nearer than m−M 16.5, where the network is least sensitive, as the
+simulations had warned.
 
 What it is meant to deliver:
 
@@ -180,15 +187,197 @@ minute and a half each. Each data-loading worker receives a 297 MB copy of the
 dataset, after dropping the catalogue (nothing downstream reads it) and
 storing the count maps as float32, which is exact for counts.
 
-## What comes after the maps
+## Results: the maps
 
-- **A threshold**: the false-alarm rate measured on the inference sky away from
-  the known streams, which the fold split makes an honest one.
-- **The DES 2018 streams**: each queried near its own distance and judged along
-  its DES track, with the same criterion as the simulated streams: enough
-  flagged pixels near the track, and a signal-to-noise against stream-shaped
-  bands of the stream-free sky.
-- An animation of the maps through the distances.
+```{image} figures/real_des/prediction.gif
+:alt: The network's output over the DES footprint, stepping through the queried distance moduli from 15 to 19
+:width: 100%
+```
+
+*The out-of-fold ensemble output over the inference sky, one frame per
+queried distance modulus from 15 to 19; the DES 2018 tracks are outlined in
+orange. Sagittarius, the clusters and the dwarfs are masked (white).*
+
+```{image} figures/real_des/prediction_dm16.5.png
+:alt: Network output at m-M 16.5
+:width: 100%
+```
+
+*m−M 16.5 (20 kpc). ATLAS is the dark line on its track near RA 15-30°,
+Dec −25° to −33°. The strips along the edge of the Sagittarius mask and at the
+footprint's edges are real structure the masks left, taken up below.*
+
+```{image} figures/real_des/prediction_dm18.5.png
+:alt: Network output at m-M 18.5
+:width: 100%
+```
+
+*m−M 18.5 (50 kpc): the Magellanic Clouds' distance, and the southern edge of
+the footprint lights up toward them. Elqui and Chenab are at their own
+distances here; rings surround the masks of the Sculptor and Fornax dwarfs.*
+
+### How much the folds mattered
+
+The ensembles also predicted their own training stripes, which is what a
+model trained on the whole sky would have done. On stream-free sky, the
+fraction of pixels above 0.5:
+
+| m−M | from the ensemble that never saw the pixel | from the one that trained on it | ratio |
+|---|---|---|---|
+| 15.0 | 0.42% | 0.15% | **2.8×** |
+| 15.5 | 0.52% | 0.18% | **2.9×** |
+| 16.0 | 1.13% | 0.69% | 1.6× |
+| 16.5 | 2.16% | 1.78% | 1.2× |
+| 17.0 | 3.18% | 2.83% | 1.1× |
+| 19.0 | 3.21% | 2.95% | 1.1× |
+
+A model scored on its own training sky would have shown a false-alarm rate
+**nearly three times too low at m−M 15-15.5**, and about 10% too low beyond
+m−M 17. The folds were worth their cost.
+
+### What the stream-free sky still holds
+
+About 3% of the training mask's sky was above 0.5 beyond m−M 17 — far more
+than any simulated sky gave. The maps show why: it is not noise but real
+structure the masks left. The fraction of flagged pixels around each
+structure, at its own distance, against distance from it:
+
+| structure | flagged pixels by distance | radius in the training mask | calibration radius |
+|---|---|---|---|
+| LMC | 67% at 9-12°, 52% at 12-15°, 9% at 15-18°, 3% (background) at 18-21° | not masked | **20°** |
+| SMC | 90% at 6-9°, 23% at 9-12°, 1% at 12-15° | not masked | **12°** |
+| Sagittarius | 45% at 6-7° from its track, 8% at 8-9°, background at 9-10° | 6° | **9°** |
+| Sculptor, Fornax | 37% and 18% at 1-2°, nothing beyond | 0.94°, 1.5° (5 half-light radii) | **12 half-light radii** |
+| NGC 1904, NGC 1261 | 72% and 86% within 1°, about 4% at 1-2° | not selected: their centres sit in Gold's foreground holes | **2°**, for any cluster within 2° of the footprint |
+
+The Magellanic Clouds light up at exactly their distance, and the dwarfs'
+stars extend past their masks — the network is finding real stellar
+structure. For measuring false alarms, these are removed: the **calibration
+sky** is the training mask's sky minus these regions, 3,331 of its 4,017 deg².
+On it, the fraction above 0.5 falls to 0.2-0.8% at every distance, while the
+removed 17% of sky held up to 18% flagged pixels: **80-85% of the apparent
+false alarms beyond m−M 16.5 were these structures**. The training itself
+still saw them, taught as background; whether masking them in training too
+changes the models is left for a later run.
+
+## Results: the DES 2018 streams
+
+### The test
+
+The criterion of the simulated experiments, adapted to real tracks
+(`evaluation.footprint`: `false_alarm_map`, `track_band`,
+`real_track_statistics`):
+
+- **A false-alarm-rate map per distance.** Each pixel gets the fraction of
+  calibration pixels *of its own fold* that the network scored at least as
+  high. The two folds' ensembles are calibrated separately, so one cut then
+  means the same thing everywhere; ties count against the pixel.
+- **Flagged**: a false-alarm rate of 10⁻³ or less.
+- **The band**: pixels within one width of the stream's DES track. One track
+  per stream: Shipp et al. (2018, 2019) where `galstreams` carries it — for
+  Chenab its DES segment, not the whole Orphan-Chenab stream its mask
+  covers — else the reference matching DES's length (ATLAS: Li et al. 2021,
+  23.6° against 22.6°).
+- **The null bands**: the band's pixels moved rigidly onto 200 random places
+  and orientations of the calibration sky, kept when at least 90% land on it.
+- **Detected**: at least 20 flagged pixels in the band, and a flagged density
+  standing out from the null bands at S/N ≥ 2 (`band_snr`), at the queried
+  distance nearest the stream's own.
+
+### The result: 5 of 14
+
+| stream | m−M | queried | flagged / band pixels | S/N | |
+|---|---|---|---|---|---|
+| Elqui | 18.5 | 18.5 | 283 / 952 | 96 | ✔ |
+| Tucana III | 17.0 | 17.0 | 43 / 104 | 43 | ✔ |
+| Willka Yaku | 17.7 | 17.5 | 64 / 215 | 39 | ✔ |
+| ATLAS | 16.8 | 17.0 | 146 / 843 | 21 | ✔ |
+| Chenab | 18.0 | 18.0 | 48 / 1201 | 7.5 | ✔ |
+| Molonglo, Wambelong, Turbio, Aliqa Uma, Turranburra, Phoenix, Indus, Ravi, Jhelum | 15.6-17.3 | | 0 flagged | < 0 | ✘ |
+
+```{image} figures/real_des/snr_by_distance.png
+:alt: S/N along each stream's track at every queried distance
+:width: 100%
+```
+
+*S/N along each stream's track at every queried distance; dashed, its
+catalogued distance. The five detections peak at or next to it — Elqui at
+18.5 exactly, ATLAS at 16.5 for 16.8, Chenab at 18.5 for 18.0 — which is what
+ties each detection to its stream. Turbio and Turranburra light up only at
+18.5-19, far from their own distances: Turbio's southern end runs within about
+13° of the SMC, and neither excess is the stream.*
+
+### Why nine are missed
+
+Two measurements separate a stream the network misses from one the input
+does not contain: the classic matched-filter significance of the stream in the
+counts the network reads (the band against side bands two to four widths
+away), and the network's own S/N.
+
+```{image} figures/real_des/input_vs_network.png
+:alt: The network's S/N against each stream's S/N in the matched-filter counts, coloured by distance
+:width: 90%
+```
+
+*Each stream's S/N in the input counts (x) against the network's (y), coloured
+by its distance. Every detected stream is at m−M 16.8 or beyond (dark); every
+stream visible in the input but missed is nearer than 16.5 (pale).*
+
+They fall into three groups:
+
+- **Not in the input at all**: Ravi (input S/N −1.0), Aliqa Uma (−1.8) and
+  Jhelum (−2.8). Along their DES tracks, with this filter and these cuts, the
+  matched-filter counts show no excess; no model reading these maps could find
+  them. Why — the tracks, the filter, the depth — is open.
+- **An excess, but not at one distance**: Turbio's excess is 6-9% at every
+  channel distance from 14.5 to 19.5, and Molonglo's 8-11% from 14.5 to 17.5.
+  A stream is concentrated at its distance; a flat excess is a density
+  difference across the band, and the network declining to call it a stream
+  is arguably right. Wambelong and Turranburra show marginal inputs (S/N 3.8
+  and 4.9).
+- **In the input, and missed**: Phoenix (input S/N 11.7, contrast 22%) and
+  Indus (12.4, 6%). Phoenix is the clearest case: its excess peaks at its own
+  distance and falls off on both sides, the same profile as ATLAS, and the
+  counts show it as a thin line — yet the network responds only in patches,
+  reaching false-alarm rates of about 10⁻², not 10⁻³. It is not the
+  per-pixel statistic: averaging the output over the whole band gives Phoenix
+  S/N 1.1 and Indus 0.3, against 11-28 for the detected streams.
+
+**The pattern is distance**: everything detected lies at m−M ≥ 16.8,
+everything visible but missed at m−M ≤ 16.4. It is the weakness the
+simulations measured ({doc}`stream_parameters`, conclusion 3: at fixed surface
+brightness, closer streams are harder, and m−M 15-16 is the hard regime), now
+seen on real streams.
+
+## Conclusions so far
+
+1. **5 of the 14 DES 2018 streams are detected** on real DES Y6 data by a model
+   that never saw them — Elqui, Tucana III, Willka Yaku, ATLAS, Chenab — each
+   peaking at its own distance.
+2. **The fold design mattered**: scored on its own training sky, the model's
+   false-alarm rate is nearly three times too low at m−M 15-15.5.
+3. **The masks were too small for real structure**: the Magellanic Clouds'
+   outskirts, Sagittarius beyond 6°, the Sculptor and Fornax dwarfs, and
+   bright clusters hidden in Gold's holes. They made most of the apparent
+   false alarms; a calibration mask removes them for measurement.
+4. **Of the nine missed**, three (Ravi, Aliqa Uma, Jhelum) are absent from the
+   matched-filter input itself, and two (Turbio, Molonglo) show excesses that
+   are not concentrated at one distance. **Phoenix and Indus are in the input
+   but missed**: both lie nearer than m−M 16.5, where the network is least
+   sensitive.
+
+## What comes next
+
+- **Nearby streams**: the network's sensitivity below m−M 16.5 is now the
+  limit on the streams that are in the data. Options: a training that weights
+  nearby streams more, the longer (19200-window) tier there, or pairing the
+  network with the plain matched-filter test at short distances, where the
+  input alone already finds Phoenix and Indus.
+- **The masks in training**: retrain with the calibration mask's regions
+  removed from the training sky too, so the Magellanic outskirts and dwarf
+  rings are no longer taught as background.
+- **Ravi, Aliqa Uma, Jhelum**: why the filter counts show nothing along their
+  DES tracks.
 
 ## Reproducing
 
@@ -199,6 +388,9 @@ From the repository root, in the `streamml` environment, with both skies built
 python scripts/experiments/real_des/run.py train --fold 0    # six models, ~1.5 h
 python scripts/experiments/real_des/run.py train --fold 1
 python scripts/experiments/real_des/run.py infer             # nine maps, ~5 min
+python scripts/experiments/real_des/run.py figures           # a map per distance, the GIF
+python scripts/experiments/real_des/run.py calibration       # the calibration mask
+python scripts/experiments/real_des/run.py detect            # the DES 2018 test, its figures
 ```
 
 Each finished model is saved as it completes, so a run resumes where it

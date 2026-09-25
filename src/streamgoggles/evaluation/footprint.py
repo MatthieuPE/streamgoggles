@@ -1390,3 +1390,177 @@ def plot_stream_detection(
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
     return ax
+
+
+# ---------------------------------------------------------------------------
+# Real streams on real skies
+# ---------------------------------------------------------------------------
+#
+# The functions above judge injected streams, straight by construction and
+# known in their own frame. A real stream is a catalogued track that curves,
+# on the one sky there is. The criterion is the same -- enough flagged pixels
+# within one width of the track, standing out from stream-shaped bands of
+# stream-free sky -- but the band is defined by distance to the track, the
+# null bands are that same set of pixels moved rigidly elsewhere, and
+# "flagged" is read from a false-alarm-rate map so that one cut means the same
+# thing wherever the model's calibration differs.
+
+
+def false_alarm_map(
+    prediction: np.ndarray,
+    calibration: np.ndarray,
+    groups: np.ndarray | None = None,
+) -> np.ndarray:
+    """Each pixel's false-alarm rate: the fraction of stream-free pixels the
+    model scored at least as high.
+
+    Computed within each group separately -- for spatial folds, each fold's
+    pixels against that fold's own calibration pixels -- so that a map stitched
+    from differently calibrated models can be cut at one rate everywhere. Ties
+    count against the pixel ("at least as high"), which keeps a saturated
+    output from looking rarer than it is.
+
+    Parameters:
+        prediction: HEALPix map of the model's output, NaN where not scored.
+        calibration: bool HEALPix mask of stream-free pixels.
+        groups: integer HEALPix map of groups (e.g. the fold of each pixel);
+            None puts every pixel in one group.
+
+    Returns:
+        HEALPix map of false-alarm rates in [0, 1], NaN where the prediction
+        is NaN or the pixel's group has no calibration pixel.
+    """
+    rate = np.full(prediction.shape, np.nan)
+    finite = np.isfinite(prediction)
+    if groups is None:
+        groups = np.zeros(prediction.shape, dtype=np.int64)
+    for group in np.unique(groups[finite]):
+        members = finite & (groups == group)
+        reference = np.sort(prediction[members & calibration])
+        if reference.size == 0:
+            continue
+        at_least = reference.size - np.searchsorted(
+            reference, prediction[members], side="left"
+        )
+        rate[members] = at_least / reference.size
+    return rate
+
+
+def track_band(tracks, width_deg: float, nside: int) -> np.ndarray:
+    """HEALPix pixels within `width_deg` of any point of the given tracks.
+
+    Parameters:
+        tracks: iterable of ``(ra, dec)`` arrays, degrees -- a stream's tracks,
+            possibly several (e.g. `objects_overlap.stream_tracks(...).values()`).
+        width_deg: half-width of the band, degrees.
+        nside: resolution.
+
+    Returns:
+        bool HEALPix mask.
+    """
+    band = np.zeros(hp.nside2npix(nside), dtype=bool)
+    radius = np.radians(width_deg)
+    for ra, dec in tracks:
+        vectors = np.asarray(hp.ang2vec(np.asarray(ra), np.asarray(dec), lonlat=True))
+        vectors = vectors.reshape(-1, 3)
+        if len(vectors) > 1:
+            steps = np.degrees(
+                np.arccos(np.clip(np.sum(vectors[1:] * vectors[:-1], axis=1), -1, 1))
+            )
+            spacing = max(float(np.median(steps)), 1e-6)
+            # Discs no more than a quarter width apart leave no gaps.
+            vectors = vectors[:: max(1, int(width_deg / 4 / spacing))]
+        for vector in vectors:
+            band[hp.query_disc(nside, vector, radius)] = True
+    return band
+
+
+def _moved(vectors: np.ndarray, target: np.ndarray, roll: float) -> np.ndarray:
+    """Rotate `vectors` rigidly: their centroid onto `target`, then roll."""
+    from scipy.spatial.transform import Rotation
+
+    centre = vectors.mean(axis=0)
+    centre /= np.linalg.norm(centre)
+    axis = np.cross(centre, target)
+    sine = np.linalg.norm(axis)
+    angle = np.arctan2(sine, float(np.dot(centre, target)))
+    align = (
+        Rotation.from_rotvec(axis / sine * angle)
+        if sine > 1e-12
+        else Rotation.identity()
+    )
+    return (Rotation.from_rotvec(target * roll) * align).apply(vectors)
+
+
+def real_track_statistics(
+    flagged: np.ndarray,
+    scored: np.ndarray,
+    band: np.ndarray,
+    calibration: np.ndarray,
+    rng: np.random.Generator,
+    n_null_bands: int = 200,
+    min_band_coverage: float = 0.9,
+) -> dict:
+    """Flagged pixels along a real stream, against its shape moved elsewhere.
+
+    - **band**: the scored pixels of ``band`` (within one width of the track);
+    - **null bands**: the band's pixels moved rigidly -- its centroid onto a
+      random calibration pixel, turned by a random angle -- keeping only
+      placements with at least ``min_band_coverage`` of the moved pixels on
+      scored calibration sky. Their flagged densities are what stream-free sky
+      gives in a region of exactly this stream's shape.
+
+    Parameters:
+        flagged: bool HEALPix map of flagged pixels (e.g. false-alarm rate at
+            or below a target).
+        scored: bool HEALPix map of pixels with a prediction.
+        band: bool HEALPix mask of the stream's band.
+        calibration: bool HEALPix mask of stream-free pixels.
+        rng: generator for the null placements.
+
+    Returns:
+        dict with ``band_pixels``, ``n_flagged`` (flagged pixels in the band),
+        ``null_density_mean``, ``null_density_std``, ``n_null_bands``,
+        ``snr`` (`band_snr`) and ``p_value`` (fraction of null bands at least
+        as dense, with a +1 correction).
+    """
+    nside = hp.npix2nside(len(flagged))
+    in_band = np.flatnonzero(band & scored)
+    n_flagged = int(flagged[in_band].sum())
+    if in_band.size == 0:
+        return {
+            "band_pixels": 0,
+            "n_flagged": 0,
+            "null_density_mean": np.nan,
+            "null_density_std": np.nan,
+            "n_null_bands": 0,
+            "snr": np.nan,
+            "p_value": np.nan,
+        }
+    vectors = np.array(hp.pix2vec(nside, np.flatnonzero(band))).T
+    targets = np.flatnonzero(calibration & scored)
+    usable = calibration & scored
+    densities, attempts = [], 0
+    while len(densities) < n_null_bands and attempts < 50 * n_null_bands:
+        attempts += 1
+        target = np.array(hp.pix2vec(nside, int(targets[rng.integers(targets.size)])))
+        moved = np.unique(
+            hp.vec2pix(nside, *_moved(vectors, target, rng.uniform(0, 2 * np.pi)).T)
+        )
+        inside = moved[usable[moved]]
+        if inside.size < min_band_coverage * moved.size:
+            continue
+        densities.append(flagged[inside].mean())
+    null = np.array(densities, dtype=float)
+    mean = float(null.mean()) if null.size else np.nan
+    std = float(null.std()) if null.size else np.nan
+    density = n_flagged / in_band.size
+    return {
+        "band_pixels": int(in_band.size),
+        "n_flagged": n_flagged,
+        "null_density_mean": mean,
+        "null_density_std": std,
+        "n_null_bands": int(null.size),
+        "snr": float(band_snr(n_flagged, in_band.size, mean, std)),
+        "p_value": float((1 + (null >= density).sum()) / (null.size + 1)),
+    }
