@@ -474,21 +474,12 @@ def detection_tracks():
     """One track per stream for its detection band: the DES measurement.
 
     The masks use every reference where that is the cautious choice; a
-    detection band must follow the stream as DES measured it. Chenab's mask
-    covers the whole Orphan-Chenab stream, but its band is Chenab's DES
-    segment, or "detecting Chenab" would mean detecting Orphan. Where
-    galstreams has no DES track, the reference whose length matches DES's
-    (ATLAS: Li et al. 2021, 23.6 deg against 22.6).
+    detection band must follow the stream as DES measured it
+    (`objects_overlap.DES2018_TRACKS`, where the choices are explained).
     """
-    from streamgoggles.objects_overlap import STREAM_TRACKS
+    from streamgoggles.objects_overlap import DES2018_TRACKS
 
-    return {
-        **STREAM_TRACKS,
-        "Chenab": ("Orphan-Chenab.shipp2019",),
-        "ATLAS": ("AAU-ATLAS.li2021",),
-        "Aliqa Uma": ("AAU-AliqaUma.li2021",),
-        "Molonglo": ("Molonglo.grillmair2017b",),
-    }
+    return dict(DES2018_TRACKS)
 
 
 def detect():

@@ -232,6 +232,72 @@ DES2018_STREAM_WIDTHS = {
     "Turranburra": 0.60,
     "Wambelong": 0.40,
 }
+# Their distance moduli, from the same table (and kept in step the same way).
+DES2018_DISTANCE_MODULI = {
+    "Tucana III": 17.0,
+    "ATLAS": 16.8,
+    "Molonglo": 16.8,
+    "Phoenix": 16.4,
+    "Indus": 16.1,
+    "Jhelum": 15.6,
+    "Ravi": 16.8,
+    "Chenab": 18.0,
+    "Elqui": 18.5,
+    "Aliqa Uma": 17.3,
+    "Turbio": 16.1,
+    "Willka Yaku": 17.7,
+    "Turranburra": 17.2,
+    "Wambelong": 15.9,
+}
+# Their tracks as the paper draws them (Table 1 and Fig. 4): the end points,
+# RA and Dec in degrees, joined by a great-circle arc -- except ATLAS and
+# Palca, which follow the second-order polynomials of its Eqs. 6 and 7. Palca
+# has no published width, so it is only ever drawn. See `des2018_arc`.
+DES2018_ENDPOINTS = {
+    "Tucana III": ((-6.3, -59.7), (3.2, -59.4)),
+    "ATLAS": ((9.3, -20.9), (30.7, -33.2)),
+    "Molonglo": ((6.4, -24.4), (13.6, -28.1)),
+    "Phoenix": ((20.1, -55.3), (27.9, -42.7)),
+    "Indus": ((-36.3, -50.7), (-8.0, -64.8)),
+    "Jhelum": ((-38.8, -45.1), (4.7, -51.7)),
+    "Ravi": ((-25.2, -44.1), (-16.0, -59.7)),
+    "Chenab": ((-40.7, -59.9), (-28.3, -43.0)),
+    "Elqui": ((10.7, -36.9), (20.6, -42.4)),
+    "Aliqa Uma": ((31.7, -31.5), (40.6, -38.3)),
+    "Turbio": ((28.0, -61.0), (27.9, -46.0)),
+    "Willka Yaku": ((36.1, -64.6), (38.4, -58.3)),
+    "Turranburra": ((59.3, -18.0), (75.2, -26.4)),
+    "Wambelong": ((90.5, -45.6), (79.3, -34.3)),
+    "Palca": ((30.3, -53.7), (16.2, 2.4)),
+}
+
+
+def des2018_arc(name, n=200):
+    """A DES 2018 stream's track as the paper draws it, as (ra, dec) in degrees.
+
+    The great-circle arc between its `DES2018_ENDPOINTS`, sampled at `n`
+    points; ATLAS and Palca follow the paper's polynomials instead (Eqs. 6
+    and 7 of Shipp et al. 2018). RA is returned in [0, 360).
+    """
+    (ra1, dec1), (ra2, dec2) = DES2018_ENDPOINTS[name]
+    if name == "ATLAS":
+        ra = np.linspace(ra1, ra2, n)
+        dec = -15.637 - 0.545 * ra - 0.001 * ra**2
+    elif name == "Palca":
+        dec = np.linspace(dec1, dec2, n)
+        ra = 17.277 - 0.495 * dec - 0.0046 * dec**2
+    else:
+        start = hp.ang2vec(ra1, dec1, lonlat=True)
+        end = hp.ang2vec(ra2, dec2, lonlat=True)
+        angle = np.arccos(np.clip(start @ end, -1.0, 1.0))
+        t = np.linspace(0.0, 1.0, n)[:, None]
+        points = (np.sin((1 - t) * angle) * start + np.sin(t * angle) * end) / np.sin(
+            angle
+        )
+        ra, dec = hp.vec2ang(points, lonlat=True)
+    return np.mod(ra, 360.0), np.asarray(dec, dtype=float)
+
+
 # Sagittarius is masked too, as in the DES 2018 analysis: no cold stream is
 # being looked for inside it. Its 6 degrees is galstreams' width_phi2.
 SAGITTARIUS_WIDTH = 6.0
@@ -268,6 +334,20 @@ STREAM_TRACKS = {
     "Turbio": ("Turbio.shipp2018",),
     "Wambelong": ("Wambelong.shipp2018",),
     "Willka Yaku": ("Willka_Yaku.shipp2018",),
+}
+
+# One track per DES 2018 stream, following the stream as DES measured it --
+# for a detection band or a figure, where STREAM_TRACKS's cautious extras
+# would mislead. Chenab is Chenab's DES segment, not the whole Orphan-Chenab
+# stream, or "detecting Chenab" would mean detecting Orphan. Where galstreams
+# has no DES track, the reference whose length matches DES's (ATLAS: Li et al.
+# 2021, 23.6 degrees against 22.6).
+DES2018_TRACKS = {
+    **STREAM_TRACKS,
+    "Chenab": ("Orphan-Chenab.shipp2019",),
+    "ATLAS": ("AAU-ATLAS.li2021",),
+    "Aliqa Uma": ("AAU-AliqaUma.li2021",),
+    "Molonglo": ("Molonglo.grillmair2017b",),
 }
 
 

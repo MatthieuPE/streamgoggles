@@ -92,11 +92,15 @@ def test_masking_gives_an_object_with_no_size_the_floor_radius():
 
 
 def test_stream_widths_match_the_ones_streams_are_injected_with():
-    """A stream should be masked at the width it is simulated with."""
+    """A stream should be masked at the width it is simulated with, and
+    looked for at the distance it is simulated at."""
     import importlib.util
     from pathlib import Path
 
-    from streamgoggles.objects_overlap import DES2018_STREAM_WIDTHS
+    from streamgoggles.objects_overlap import (
+        DES2018_DISTANCE_MODULI,
+        DES2018_STREAM_WIDTHS,
+    )
 
     path = Path(__file__).parents[1] / "scripts/experiments/stream_parameters/run.py"
     spec = importlib.util.spec_from_file_location("sp_run", path)
@@ -104,6 +108,29 @@ def test_stream_widths_match_the_ones_streams_are_injected_with():
     spec.loader.exec_module(run)
     injected = {name: width for name, (width, *_) in run.DES_STREAMS.items()}
     assert injected == DES2018_STREAM_WIDTHS
+    distances = {name: dm for name, (_, _, dm, _) in run.DES_STREAMS.items()}
+    assert distances == DES2018_DISTANCE_MODULI
+
+
+def test_des2018_arcs_are_as_long_as_the_paper_says():
+    """Each drawn track spans its Table 1 length (ATLAS, a polynomial, to 0.3)."""
+    import importlib.util
+    from pathlib import Path
+
+    import healpy as hp
+
+    from streamgoggles.objects_overlap import des2018_arc
+
+    path = Path(__file__).parents[1] / "scripts/experiments/stream_parameters/run.py"
+    spec = importlib.util.spec_from_file_location("sp_run", path)
+    run = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run)
+    for name, (_, length, *_) in run.DES_STREAMS.items():
+        ra, dec = des2018_arc(name, n=400)
+        points = np.array(hp.ang2vec(ra, dec, lonlat=True))
+        steps = np.clip((points[1:] * points[:-1]).sum(axis=1), -1.0, 1.0)
+        drawn = np.degrees(np.arccos(steps)).sum()
+        assert drawn == pytest.approx(length, abs=0.3 if name == "ATLAS" else 0.1), name
 
 
 def test_a_broad_structure_is_masked_to_its_width_not_a_multiple():
