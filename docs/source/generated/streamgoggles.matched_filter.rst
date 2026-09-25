@@ -1,4 +1,4 @@
-streamgoggles.matched\_filter
+﻿streamgoggles.matched\_filter
 =============================
 
 .. automodule:: streamgoggles.matched_filter
@@ -9,9 +9,13 @@ streamgoggles.matched\_filter
    .. autosummary::
    
       build_matched_filters
+      check_error_model
       combine_full_maps
       crop_window
+      error_model
       finalize_full
+      fit_error_model
+      fit_survey_error_model
       make_raw_map
       native_pixel_scale_deg
       project
