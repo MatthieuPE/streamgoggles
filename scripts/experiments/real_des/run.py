@@ -221,6 +221,7 @@ def infer(seeds):
     import numpy as np
     import torch
 
+    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
     from streamgoggles.datasets.transforms import (
         QueryDistanceTransform,
         StreamMapTransform,
@@ -232,6 +233,10 @@ def infer(seeds):
 
     sp = stream_parameters_module()
     MAPS.mkdir(parents=True, exist_ok=True)
+    # One torch thread: two OpenMP runtimes end up loaded in this environment,
+    # and torch's first multithreaded convolution then segfaults (see
+    # configure_torch_threads). Training sets this; inference must too.
+    configure_torch_threads(num_workers=0)
     background, _, pix = build_sky(INFERENCE_CATALOGUE)
     valid = background.valid_mask_full
     usable, _, _ = get_footprint("des_yr6_inference", nside=pix.nside)
@@ -302,40 +307,61 @@ def infer(seeds):
                 f"  {number}/{len(tiles)} tiles, {time.time() - start:.0f}s", flush=True
             )
 
-    # Each pixel from the ensemble that never trained on its fold.
+    # Each pixel from the ensemble that never trained on its fold -- and, as
+    # a diagnostic, from the one that did. Both are already computed on every
+    # tile, so the second costs nothing, and comparing them on stream-free
+    # sky measures what training on a sky does to a model's output there.
     ra, _ = hp.pix2ang(pix.nside, np.arange(hp.nside2npix(pix.nside)), lonlat=True)
     pixel_fold = spatial_fold(ra, STRIPE_DEG, N_FOLDS)
+    stream_free, _, _ = get_footprint("des_yr6_background", nside=pix.nside)
+    (MAPS / "in_fold").mkdir(exist_ok=True)
     summary = {}
     for query in sp.QUERY_GRID:
         stitched = {
             fold: stitch_windows_to_healpix(
                 predictions[(query, fold)], tiles, pix, pix.nside
-            )
+            )[0]
             for fold in range(N_FOLDS)
         }
-        combined = np.full(hp.nside2npix(pix.nside), np.nan)
+        out_of_fold = np.full(hp.nside2npix(pix.nside), np.nan)
+        in_fold = np.full(hp.nside2npix(pix.nside), np.nan)
         for fold in range(N_FOLDS):
-            # A pixel of this fold is read from the ensemble trained on the
-            # other one, which never saw it.
             mine = pixel_fold == fold
-            combined[mine] = stitched[1 - fold][0][mine]
-        combined[~(usable & valid)] = np.nan
-        path = MAPS / f"prediction_dm{query:.1f}.fits"
-        hp.write_map(
-            path,
-            np.where(np.isfinite(combined), combined, hp.UNSEEN).astype(np.float32),
-            dtype=np.float32,
-            overwrite=True,
-            coord="C",
-            column_names=["PROBABILITY"],
+            # The product: this fold's pixels from the ensemble trained on
+            # the other one, which never saw them.
+            out_of_fold[mine] = stitched[1 - fold][mine]
+            # The diagnostic: from the ensemble that trained on them.
+            in_fold[mine] = stitched[fold][mine]
+        for image in (out_of_fold, in_fold):
+            image[~(usable & valid)] = np.nan
+        for image, path in (
+            (out_of_fold, MAPS / f"prediction_dm{query:.1f}.fits"),
+            (in_fold, MAPS / "in_fold" / f"prediction_dm{query:.1f}.fits"),
+        ):
+            hp.write_map(
+                path,
+                np.where(np.isfinite(image), image, hp.UNSEEN).astype(np.float32),
+                dtype=np.float32,
+                overwrite=True,
+                coord="C",
+                column_names=["PROBABILITY"],
+            )
+        entry = {"covered_pixels": int(np.isfinite(out_of_fold).sum())}
+        for name, image in (("out_of_fold", out_of_fold), ("in_fold", in_fold)):
+            quiet = image[stream_free & np.isfinite(image)]
+            entry[name] = {
+                "stream_free_pixels": int(quiet.size),
+                "stream_free_median": float(np.median(quiet)),
+                "stream_free_p99_9": float(np.percentile(quiet, 99.9)),
+                "stream_free_above_0.5": float((quiet > 0.5).mean()),
+            }
+        summary[f"{query:.1f}"] = entry
+        print(
+            f"m-M {query:.1f}: stream-free sky above 0.5 -- out of fold "
+            f"{entry['out_of_fold']['stream_free_above_0.5']:.2e}, in fold "
+            f"{entry['in_fold']['stream_free_above_0.5']:.2e}",
+            flush=True,
         )
-        finite = np.isfinite(combined)
-        summary[f"{query:.1f}"] = {
-            "covered_pixels": int(finite.sum()),
-            "median": float(np.nanmedian(combined)),
-            "above_0.5": int((combined[finite] > 0.5).sum()),
-        }
-        print(f"m-M {query:.1f}: {path.name}, {finite.sum():,} pixels", flush=True)
     (MAPS / "summary.json").write_text(json.dumps(summary, indent=2))
 
 
