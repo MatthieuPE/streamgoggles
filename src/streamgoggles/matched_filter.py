@@ -1139,8 +1139,9 @@ def stitch_windows_to_healpix(
 # magnitude (streamobs.match_filter.build_match_filter). Its error model is the
 # three-parameter exponential below. Without an explicit model, streamobs uses
 # one fitted on LSST DC2 (baseline 0.0048, pivot 28.42, scale 1.00), whose
-# errors are three to five times smaller than DES's at g = 22-24.5: on DES the
+# errors are 4.7 to 7 times smaller than DES's at g = 20-24.5: on DES the
 # filter then keeps 72% of a stream's own stars at m-M 17, and 54% at 19.
+# docs/source/experiments/matched_filter_errors.md compares the options.
 
 ERROR_MODEL_KEYS = ("baseline_error", "exp_pivot", "exp_scale")
 
@@ -1153,11 +1154,14 @@ default_errors_des2018 = {
 # DES Y6, fitted by `fit_survey_error_model("des", "yr6")`: the truth-based
 # scatter of streamobs's DES Y6 model (kind="sample", what stars actually do,
 # about 1.46 times the reported errors), in g, at the depth of the shallower
-# band's 16th percentile (r, 24.72). A test checks the fit still gives these.
+# band's 16th percentile (r, 24.72), over g 16-24.5, the range the filter
+# selects in. It follows that scatter to 5% rms there. A test checks the fit
+# still gives these; docs/source/experiments/matched_filter_errors.md has
+# the figures.
 DES_YR6_ERROR_MODEL = {
-    "baseline_error": 0.0196,
-    "exp_pivot": 28.151,
-    "exp_scale": 1.552,
+    "baseline_error": 0.0216,
+    "exp_pivot": 26.457,
+    "exp_scale": 1.032,
 }
 
 
@@ -1275,6 +1279,7 @@ def fit_survey_error_model(
     kind="sample",
     depth_percentile=16.0,
     depth_bands=("g", "r"),
+    max_magnitude=24.5,
 ):
     """Fit the error model to a streamobs survey's photometric errors.
 
@@ -1284,10 +1289,17 @@ def fit_survey_error_model(
       and the shallowest of `depth_bands` is used, so the filter is wide
       enough for the shallower parts of the footprint;
     - the errors are streamobs's `get_photo_error` for `band` at that depth,
-      from 16 to two magnitudes past it. ``kind="sample"`` is the scatter of
-      observed around true magnitudes, which is what spreads stars around
-      the isochrone; ``kind="catalog"`` would be the reported errors, which
-      run about 1.46 times smaller in DES Y6.
+      from 16 to `max_magnitude`. ``kind="sample"`` is the scatter of observed
+      around true magnitudes, which is what spreads stars around the
+      isochrone; ``kind="catalog"`` would be the reported errors, which run
+      about 1.46 times smaller in DES Y6.
+
+    `max_magnitude` defaults to 24.5, the faint end of the analysis clip,
+    because that is as faint as the filter ever selects. Past it the DES Y6
+    scatter flattens and dips near the detection limit, which the rising
+    exponential cannot follow: fitting to two magnitudes past the depth
+    (26.7) biased the model by -24% at g 23.5-24.5, exactly where a distant
+    stream's stars are, against -1.5% when fitting to 24.5.
 
     Returns:
         (params, depth): the fitted parameters, and the depth used.
@@ -1303,6 +1315,6 @@ def fit_survey_error_model(
         )
         for b in depth_bands
     )
-    magnitudes = np.linspace(16.0, depth + 2.0, 100)
+    magnitudes = np.linspace(16.0, max_magnitude, 100)
     errors = loaded.get_photo_error(band, magnitude=magnitudes, maglim=depth, kind=kind)
     return fit_error_model(magnitudes, errors), depth
