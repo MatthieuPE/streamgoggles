@@ -28,6 +28,7 @@ Run from the repository root:
   python scripts/experiments/real_des/run.py train --fold 0 [--seeds 42 ...]
   python scripts/experiments/real_des/run.py train --fold 1
   python scripts/experiments/real_des/run.py infer
+  python scripts/experiments/real_des/run.py figures   # one map per distance, and a GIF
 """
 
 import argparse
@@ -365,10 +366,73 @@ def infer(seeds):
     (MAPS / "summary.json").write_text(json.dumps(summary, indent=2))
 
 
+def figures():
+    """One map per queried distance, and an animation through them.
+
+    Each shows the out-of-fold ensemble output over the DES footprint on one
+    shared scale, with the DES 2018 streams' tracks outlined for orientation
+    -- along their DES tracks, the ones the training mask used.
+    """
+    import healpy as hp
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import skyproj
+    from PIL import Image
+
+    from streamgoggles.objects_overlap import DES2018_STREAM_WIDTHS, stream_tracks
+
+    sp = stream_parameters_module()
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    tracks = {name: stream_tracks(name) for name in DES2018_STREAM_WIDTHS}
+    frames = []
+    for query in sp.QUERY_GRID:
+        path = MAPS / f"prediction_dm{query:.1f}.fits"
+        if not path.exists():
+            continue
+        values = hp.read_map(path)
+        values = hp.ud_grade(values, nside_out=256)  # legible at page size
+        kpc = 10 ** ((query + 5) / 5) / 1000
+        _, ax = plt.subplots(figsize=(10, 6.6))
+        sky = skyproj.DESSkyproj(ax=ax)
+        sky.draw_hpxmap(values, zoom=False, cmap="Blues", vmin=0.0, vmax=1.0)
+        sky.draw_colorbar(label="network output (out of fold)", fontsize=9)
+        for by_reference in tracks.values():
+            for ra, dec in by_reference.values():
+                jumps = np.flatnonzero(np.abs(np.diff(ra)) > 180) + 1
+                for piece_ra, piece_dec in zip(
+                    np.split(ra, jumps), np.split(dec, jumps), strict=True
+                ):
+                    sky.ax.plot(
+                        piece_ra, piece_dec, color="#eb6834", lw=0.8, alpha=0.55
+                    )
+        sky.ax.set_title(
+            f"m−M = {query:.1f}  ({kpc:.0f} kpc) — DES 2018 tracks in orange",
+            fontsize=11,
+            pad=24,
+        )
+        out = FIGURES / f"prediction_dm{query:.1f}.png"
+        plt.savefig(out, dpi=110, bbox_inches="tight")
+        plt.close()
+        frames.append(out)
+        print(f"{out.name}", flush=True)
+    if frames:
+        images = [Image.open(frame).convert("RGB") for frame in frames]
+        size = images[0].size
+        images = [image.resize(size) for image in images]
+        gif = FIGURES / "prediction.gif"
+        images[0].save(
+            gif, save_all=True, append_images=images[1:], duration=900, loop=0
+        )
+        print(f"{gif.name}: {len(images)} frames", flush=True)
+
+
 if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("step", choices=["train", "infer"])
+    parser.add_argument("step", choices=["train", "infer", "figures"])
     parser.add_argument("--fold", type=int, choices=list(range(N_FOLDS)))
     parser.add_argument("--seeds", type=int, nargs="+", default=SEEDS)
     arguments = parser.parse_args()
@@ -376,5 +440,7 @@ if __name__ == "__main__":
         if arguments.fold is None:
             parser.error("train needs --fold")
         train(arguments.fold, arguments.seeds)
-    else:
+    elif arguments.step == "infer":
         infer(arguments.seeds)
+    else:
+        figures()
