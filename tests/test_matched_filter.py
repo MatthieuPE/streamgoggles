@@ -877,3 +877,152 @@ def test_isochrone_filter_draws_its_polygon_in_the_catalogs_survey():
     assert (
         StreamobsSplineFilter({"age": 12.5, "z": 0.0002}).photometric_system == "lsst"
     )
+
+
+# ---------------------------------------------------------------------------
+# Photometric error model
+# ---------------------------------------------------------------------------
+
+
+def _polygon_area(vertices):
+    """Shoelace area of a (colour, magnitude) polygon."""
+    x, y = vertices[:, 0], vertices[:, 1]
+    return 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+
+
+def _des_filter(error_model=None, **iso):
+    return StreamobsSplineFilter(
+        iso_config={"age": 13.0, "z": 0.0002, **iso},
+        namespace="des_yr6",
+        error_model=error_model,
+    )
+
+
+def test_a_different_error_model_changes_the_filter():
+    """The error model given to the wrapper must reach streamobs: the polygon
+    it builds is not the default one."""
+    from streamgoggles.matched_filter import DES_YR6_ERROR_MODEL
+
+    default = _des_filter()._polygon(["g", "r"], 17.0)
+    calibrated = _des_filter(DES_YR6_ERROR_MODEL)._polygon(["g", "r"], 17.0)
+    assert default.shape != calibrated.shape or not np.allclose(default, calibrated)
+
+
+def test_larger_errors_make_a_wider_filter():
+    """Scaling the errors up widens the polygon, monotonically, at every
+    distance -- the direction the calibration has to move it on DES."""
+    from streamobs.match_filter import default_errors
+
+    for dm in (15.0, 17.0, 19.0):
+        areas = []
+        for baseline in (0.001, 0.01, 0.03):
+            model = {**default_errors, "baseline_error": baseline}
+            areas.append(_polygon_area(_des_filter(model)._polygon(["g", "r"], dm)))
+        assert areas[0] < areas[1] < areas[2], f"at m-M {dm}: {areas}"
+
+
+def test_streamobs_default_passed_explicitly_is_the_default_filter():
+    """Giving the wrapper streamobs's own default reproduces the filter built
+    with no error model at all, vertex for vertex: the model travels to
+    build_match_filter's error_kwargs and nowhere else."""
+    from streamobs.match_filter import default_errors
+
+    implicit = _des_filter()._polygon(["g", "r"], 17.0)
+    explicit = _des_filter(dict(default_errors))._polygon(["g", "r"], 17.0)
+    np.testing.assert_array_equal(implicit, explicit)
+
+
+def test_the_des_error_model_keeps_more_of_a_stream_than_the_lsst_default():
+    """Stars scattered by DES-sized errors around the isochrone: the filter
+    built for those errors keeps more of them than the LSST-fitted default."""
+    from streamgoggles.matched_filter import DES_YR6_ERROR_MODEL, error_model
+
+    default = _des_filter()
+    calibrated = _des_filter(DES_YR6_ERROR_MODEL)
+    rng = np.random.default_rng(0)
+    # Points along the calibrated polygon's own centre line, each shifted in
+    # colour by a DES error: a stand-in for a stream's stars.
+    polygon = calibrated._polygon(["g", "r"], 17.0)
+    g = rng.uniform(polygon[:, 1].min() + 0.5, 24.0, 4000)
+    centre = np.interp(g, np.sort(polygon[:, 1]), polygon[np.argsort(polygon[:, 1]), 0])
+    colour = centre + rng.normal(0, error_model(g, **DES_YR6_ERROR_MODEL))
+    stars = pd.DataFrame({"des_yr6_g_obs": g, "des_yr6_r_obs": g - colour})
+    kept_default = default.select(stars, ["g", "r"], 17.0).mean()
+    kept_calibrated = calibrated.select(stars, ["g", "r"], 17.0).mean()
+    assert kept_calibrated > kept_default
+
+
+def test_error_model_must_be_complete():
+    """A partial model would be completed with streamobs's LSST values."""
+    with pytest.raises(ValueError, match="missing"):
+        _des_filter({"baseline_error": 0.02, "exp_pivot": 28.0})
+    with pytest.raises(ValueError, match="unexpected"):
+        _des_filter(
+            {"baseline_error": 0.02, "exp_pivot": 28.0, "exp_scale": 1.5, "x": 1}
+        )
+
+
+def test_error_model_cannot_be_given_twice():
+    from streamgoggles.matched_filter import DES_YR6_ERROR_MODEL
+
+    with pytest.raises(ValueError, match="twice"):
+        _des_filter(DES_YR6_ERROR_MODEL, error_kwargs=DES_YR6_ERROR_MODEL)
+
+
+def test_filters_config_takes_an_error_model_and_multiplier():
+    from streamgoggles.matched_filter import DES_YR6_ERROR_MODEL
+
+    base = {"type": "isochrone", "reference_isochrone": {"age": 13.0, "z": 0.0002}}
+    filters = build_matched_filters(
+        {
+            "default": base,
+            "des": {**base, "error_model": DES_YR6_ERROR_MODEL},
+            "des_narrow": {
+                **base,
+                "error_model": DES_YR6_ERROR_MODEL,
+                "error_multiplier": [1.0, 1.0],
+            },
+        },
+        namespace="des_yr6",
+    )
+    areas = {
+        name: _polygon_area(f._polygon(["g", "r"], 17.0)) for name, f in filters.items()
+    }
+    assert filters["des"].error_model == DES_YR6_ERROR_MODEL
+    # Halving the multiplier narrows the calibrated filter.
+    assert areas["des_narrow"] < areas["des"]
+    assert areas["des"] != areas["default"]
+
+
+def test_fit_recovers_a_known_error_model():
+    from streamgoggles.matched_filter import error_model, fit_error_model
+
+    truth = {"baseline_error": 0.015, "exp_pivot": 27.8, "exp_scale": 1.4}
+    magnitudes = np.linspace(16, 26.5, 100)
+    fitted = fit_error_model(magnitudes, error_model(magnitudes, **truth))
+    # Pivot and scale are strongly correlated, so compare the curves, which
+    # is what the filter uses, rather than the parameters one by one. MIGRAD
+    # stops at its default tolerance, about 0.2% on this curve even without
+    # noise -- far below what moves a polygon vertex.
+    np.testing.assert_allclose(
+        error_model(magnitudes, **fitted), error_model(magnitudes, **truth), rtol=5e-3
+    )
+
+
+def test_des_error_model_constant_matches_its_fit():
+    """DES_YR6_ERROR_MODEL is what fit_survey_error_model gives today; if
+    streamobs's error curves change, this says the constant is stale."""
+    from streamgoggles.matched_filter import (
+        DES_YR6_ERROR_MODEL,
+        error_model,
+        fit_survey_error_model,
+    )
+
+    fitted, depth = fit_survey_error_model("des", "yr6")
+    assert depth == pytest.approx(24.72, abs=0.02)
+    magnitudes = np.linspace(16, 24.5, 100)
+    np.testing.assert_allclose(
+        error_model(magnitudes, **fitted),
+        error_model(magnitudes, **DES_YR6_ERROR_MODEL),
+        rtol=0.01,
+    )

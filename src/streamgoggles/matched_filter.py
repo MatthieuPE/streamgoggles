@@ -171,13 +171,22 @@ class StreamobsSplineFilter(MatchedFilter):
         namespace: survey/release column namespace (e.g. "lsst_yr1") used to
             look up `<namespace>_<band>_obs` columns via
             `streamobs.columns.obs_col`. None uses bare `<band>_obs`.
+        error_model: the photometric error model that sets the filter's width,
+            as the three parameters of `error_model` (baseline_error,
+            exp_pivot, exp_scale), or None for streamobs's default -- which is
+            fitted on LSST DC2, not DES. See `DES_YR6_ERROR_MODEL`.
 
     Rationale: streamobs's spline-based filter is the canonical implementation.
     Wrapping it here allows reuse without importing streamobs throughout
     the pipeline.
     """
 
-    def __init__(self, iso_config: dict, namespace: str | None = None):
+    def __init__(
+        self,
+        iso_config: dict,
+        namespace: str | None = None,
+        error_model: dict | None = None,
+    ):
         """Initialize filter with reference isochrone.
 
         Parameters:
@@ -185,14 +194,27 @@ class StreamobsSplineFilter(MatchedFilter):
             namespace: survey/release column namespace (e.g. "lsst_yr1"),
                 matching whichever `Survey`/`BackgroundSource` produced the
                 catalogs this filter will be applied to.
+            error_model: parameters of the photometric error model (see the
+                class docstring), or None for streamobs's default.
 
         Raises:
             KeyError if age or z is missing.
+            ValueError if `error_model` does not hold exactly the three
+                parameters, or if the error model is also given through
+                ``iso_config["error_kwargs"]``.
         """
         if "age" not in iso_config or "z" not in iso_config:
             raise KeyError("iso_config must contain 'age' and 'z' (metallicity)")
+        if error_model is not None:
+            if "error_kwargs" in iso_config:
+                raise ValueError(
+                    "the error model is given twice: as error_model and as "
+                    "iso_config['error_kwargs']; pass it once"
+                )
+            error_model = check_error_model(error_model)
         self.iso_config = dict(iso_config)
         self.namespace = namespace
+        self.error_model = error_model
         self._polygon_cache: dict[tuple, np.ndarray] = {}
 
     @property
@@ -223,6 +245,8 @@ class StreamobsSplineFilter(MatchedFilter):
             z = kwargs.pop("z")
             survey = kwargs.pop("survey", self.photometric_system)
             isochrone_model = kwargs.pop("isochrone_model", "Marigo2017")
+            if self.error_model is not None:
+                kwargs["error_kwargs"] = dict(self.error_model)
             self._polygon_cache[cache_key] = build_match_filter(
                 distance_modulus=distance_modulus,
                 age=age,
@@ -453,7 +477,10 @@ class ColorBoxFilter(MatchedFilter):
 
 # The keys each filter type takes in a filters config, required and optional.
 FILTER_TYPES: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "isochrone": (frozenset({"reference_isochrone"}), frozenset()),
+    "isochrone": (
+        frozenset({"reference_isochrone"}),
+        frozenset({"error_model", "error_multiplier"}),
+    ),
     "box": (frozenset({"color_range", "mag_range"}), frozenset()),
     "shifted_box": (
         frozenset({"reference", "color_shift"}),
@@ -475,6 +502,10 @@ def build_matched_filters(
 
     - ``{"type": "isochrone", "reference_isochrone": {"age": 12.5, "z": 0.0002}}``
       -- `StreamobsSplineFilter`, the real matched filter around an isochrone.
+      Optional ``"error_model"`` (the three parameters of `error_model`, e.g.
+      `DES_YR6_ERROR_MODEL`) sets the photometric errors that widen it, and
+      ``"error_multiplier"`` how many of those errors it spans on each side
+      ([blue, red], streamobs's default [2, 2]).
     - ``{"type": "box", "color_range": (1.2, 1.5), "mag_range": (18.0, 24.5)}``
       -- `ColorBoxFilter`, a decoy at absolute colour and magnitude limits: the
       same selection at every trial distance and in every run.
@@ -520,8 +551,13 @@ def build_matched_filters(
                 )
             )
         if kind == "isochrone":
+            iso_config = dict(spec["reference_isochrone"])
+            if "error_multiplier" in spec:
+                iso_config["error_multiplier"] = list(spec["error_multiplier"])
             filters[name] = StreamobsSplineFilter(
-                iso_config=dict(spec["reference_isochrone"]), namespace=namespace
+                iso_config=iso_config,
+                namespace=namespace,
+                error_model=spec.get("error_model"),
             )
         elif kind == "box":
             filters[name] = ColorBoxFilter(
@@ -1095,3 +1131,178 @@ def stitch_windows_to_healpix(
         covered[chosen] = True
 
     return out, covered
+
+
+#### Fitting error model - used to define match filter error model ####
+#
+# The matched filter is an isochrone widened by the photometric error at each
+# magnitude (streamobs.match_filter.build_match_filter). Its error model is the
+# three-parameter exponential below. Without an explicit model, streamobs uses
+# one fitted on LSST DC2 (baseline 0.0048, pivot 28.42, scale 1.00), whose
+# errors are three to five times smaller than DES's at g = 22-24.5: on DES the
+# filter then keeps 72% of a stream's own stars at m-M 17, and 54% at 19.
+
+ERROR_MODEL_KEYS = ("baseline_error", "exp_pivot", "exp_scale")
+
+default_errors_des2018 = {
+    "baseline_error": 0.001,
+    "exp_pivot": 27.09,
+    "exp_scale": 1.09,
+}
+
+# DES Y6, fitted by `fit_survey_error_model("des", "yr6")`: the truth-based
+# scatter of streamobs's DES Y6 model (kind="sample", what stars actually do,
+# about 1.46 times the reported errors), in g, at the depth of the shallower
+# band's 16th percentile (r, 24.72). A test checks the fit still gives these.
+DES_YR6_ERROR_MODEL = {
+    "baseline_error": 0.0196,
+    "exp_pivot": 28.151,
+    "exp_scale": 1.552,
+}
+
+
+def check_error_model(params):
+    """The three error-model parameters as floats, or ValueError.
+
+    All three are required: streamobs fills a missing one with its LSST
+    default, so a partial dict would silently mix two surveys' errors.
+    """
+    params = dict(params)
+    missing = set(ERROR_MODEL_KEYS) - params.keys()
+    unexpected = params.keys() - set(ERROR_MODEL_KEYS)
+    if missing or unexpected:
+        raise ValueError(
+            f"an error model needs exactly {list(ERROR_MODEL_KEYS)}"
+            + (f"; missing {sorted(missing)}" if missing else "")
+            + (f"; unexpected {sorted(unexpected)}" if unexpected else "")
+        )
+    checked = {key: float(params[key]) for key in ERROR_MODEL_KEYS}
+    if checked["exp_scale"] <= 0 or checked["baseline_error"] < 0:
+        raise ValueError(
+            f"exp_scale must be positive and baseline_error non-negative, got {checked}"
+        )
+    return checked
+
+
+def error_model(
+    magnitude,
+    baseline_error=default_errors_des2018["baseline_error"],
+    exp_pivot=default_errors_des2018["exp_pivot"],
+    exp_scale=default_errors_des2018["exp_scale"],
+    verbose=False,
+):
+    """
+    Compute the median photometric error as a function of magnitude.
+
+    Uses an exponential error model calibrated for typical survey data. The
+    same form as `streamobs.match_filter.error_model`, which is what the
+    matched filter evaluates.
+
+    Parameters
+    ----------
+    magnitude : float or array-like
+        Apparent magnitude(s) for which to compute the error.
+
+    Returns
+    -------
+    error : float or array-like
+        Photometric error(s) corresponding to the input magnitude(s).
+    """
+    if verbose:
+        print(
+            "Using following parameters values:", baseline_error, exp_pivot, exp_scale
+        )
+    return baseline_error + np.exp((magnitude - exp_pivot) / exp_scale)
+
+
+def fit_error_model(magnitude, errors):
+    """
+    Fit the error model to the provided magnitude and error data.
+
+    Minimizes the squared relative residuals, so the faint end, where errors
+    are large, does not dominate the fit.
+
+    Parameters
+    ----------
+    magnitude : array-like
+        Array of magnitudes.
+    errors : array-like
+        Corresponding array of photometric errors.
+
+    Returns
+    -------
+    fit_params : dict
+        Fitted parameters of the error model.
+
+    Raises
+    ------
+    RuntimeError
+        If the minimizer does not converge: an unconverged fit would still
+        return numbers, and they would set the filter's width.
+    """
+    import iminuit
+
+    magnitude = np.asarray(magnitude, dtype=float)
+    errors = np.asarray(errors, dtype=float)
+
+    def chi2(baseline_error, exp_pivot, exp_scale):
+        model_errors = error_model(magnitude, baseline_error, exp_pivot, exp_scale)
+        return np.sum(((errors - model_errors) / errors) ** 2)
+
+    m = iminuit.Minuit(
+        chi2,
+        baseline_error=0.002,
+        exp_pivot=27.091072029215375 + 2.5,
+        exp_scale=1.0904624484538419,
+    )
+    m.errordef = iminuit.Minuit.LEAST_SQUARES
+    m.migrad()
+    if not m.valid:
+        raise RuntimeError(f"error-model fit did not converge: {m.fmin}")
+
+    fit_params = {
+        "baseline_error": m.values["baseline_error"],
+        "exp_pivot": m.values["exp_pivot"],
+        "exp_scale": m.values["exp_scale"],
+    }
+    return fit_params
+
+
+def fit_survey_error_model(
+    survey="des",
+    release="yr6",
+    band="g",
+    kind="sample",
+    depth_percentile=16.0,
+    depth_bands=("g", "r"),
+):
+    """Fit the error model to a streamobs survey's photometric errors.
+
+    The procedure `DES_YR6_ERROR_MODEL` came from, kept so it can be rerun:
+
+    - the depth is the `depth_percentile` of each band's magnitude-limit map,
+      and the shallowest of `depth_bands` is used, so the filter is wide
+      enough for the shallower parts of the footprint;
+    - the errors are streamobs's `get_photo_error` for `band` at that depth,
+      from 16 to two magnitudes past it. ``kind="sample"`` is the scatter of
+      observed around true magnitudes, which is what spreads stars around
+      the isochrone; ``kind="catalog"`` would be the reported errors, which
+      run about 1.46 times smaller in DES Y6.
+
+    Returns:
+        (params, depth): the fitted parameters, and the depth used.
+    """
+    import streamobs as so
+
+    loaded = so.surveys.Survey.load(survey, release=release)
+    depth = min(
+        float(
+            np.nanpercentile(
+                loaded.maglim_maps[b][loaded.maglim_maps[b] > 0], depth_percentile
+            )
+        )
+        for b in depth_bands
+    )
+    magnitudes = np.linspace(16.0, depth + 2.0, 100)
+    errors = loaded.get_photo_error(band, magnitude=magnitudes, maglim=depth, kind=kind)
+    return fit_error_model(magnitudes, errors), depth
