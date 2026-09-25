@@ -187,3 +187,41 @@ def test_the_background_mask_is_available_by_name():
     assert not (usable & ~footprint).any()
     kept = usable.sum() / footprint.sum()
     assert 0.65 < kept < 0.9, f"about 80% of DES is usable, got {100 * kept:.1f}%"
+
+
+# ---------------------------------------------------------------------------
+# Spatial folds
+# ---------------------------------------------------------------------------
+
+
+def test_folds_alternate_in_stripes_of_right_ascension():
+    from streamgoggles.objects_overlap import spatial_fold
+
+    ra = np.array([0.0, 19.9, 20.0, 39.9, 40.0, 359.9])
+    np.testing.assert_array_equal(spatial_fold(ra), [0, 0, 1, 1, 0, 1])
+
+
+def test_folds_wrap_and_partition_the_sky():
+    from streamgoggles.objects_overlap import spatial_fold
+
+    ra = np.linspace(-180, 540, 5000)
+    folds = spatial_fold(ra, stripe_deg=20.0, n_folds=2)
+    assert set(np.unique(folds)) == {0, 1}
+    # A position and the same position a full turn later are one fold.
+    np.testing.assert_array_equal(folds, spatial_fold(ra + 360.0))
+
+
+def test_both_folds_span_the_footprint_in_galactic_latitude():
+    """The point of stripes rather than one cut: each fold sees the dense and
+    the sparse sky, so neither trains on an easier background."""
+    from streamgoggles.objects_overlap import spatial_fold
+
+    _, pixels, _ = get_footprint("des_yr6_background", nside=64)
+    ra, dec = hp.pix2ang(64, pixels, lonlat=True)
+    _, b = hp.Rotator(coord=["C", "G"])(ra, dec, lonlat=True)
+    folds = spatial_fold(ra)
+    for fold in (0, 1):
+        latitudes = np.abs(b[folds == fold])
+        assert latitudes.min() < 35 and latitudes.max() > 70
+    share = (folds == 0).mean()
+    assert 0.35 < share < 0.65

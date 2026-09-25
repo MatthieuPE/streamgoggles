@@ -21,6 +21,7 @@ has not been varied yet and is a default rather than a result.
 | network | U-Net, depth 2, base width 12, sigmoid head | {doc}`hyperparameters` |
 | deployment | the six quick trainings averaged into one map: 13 of the 14 DES streams found in every injection, Wambelong in 92% (one training: 57%). The hyperparameter experiment found averaging did no better than one long training; its models each carried their own fitted normalization, where these standardize every window by itself | {doc}`stream_parameters` |
 | {doc}`matched_filter_errors` | Which photometric errors the matched filter is widened by on DES, and by how many sigma. | the filter had LSST errors, 4.7-7 times smaller than DES's, and kept 54-77% of a stream; DES errors at one sigma keep 77-93% at the same signal-to-noise within 5%, for mismatched populations and dense sky too — adopted for the real-data training |
+| {doc}`real_des` | Training on the real DES Y6 sky, with the known streams, clusters and dwarfs masked, in two spatial folds; then the network's output over the whole footprint with the streams put back. | set up and tested end to end; not run yet |
 | training population | age 9-13.5 Gyr and Z 0.0001-0.001 drawn, not fixed: +12 points on the hardest streams, and one training's DES recovery from 95.4% to 98.1% | {doc}`stream_parameters` |
 | matched-filter isochrone | 13 Gyr, Z = 0.0002, Marigo2017, following Shipp et al. (2018) | {doc}`stream_parameters` |
 | matched-filter width | DES Y6 error model (`DES_YR6_ERROR_MODEL`) at one sigma, not streamobs's LSST default at two: 77-93% of a stream kept instead of 54-77%, at the same signal-to-noise within 5% | {doc}`matched_filter_errors` |
@@ -191,4 +192,5 @@ hyperparameters
 two_streams
 stream_parameters
 matched_filter_errors
+real_des
 ```

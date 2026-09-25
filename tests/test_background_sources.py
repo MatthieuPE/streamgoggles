@@ -23,6 +23,7 @@ from astropy.coordinates import SkyCoord
 
 from streamgoggles.background_sources import (
     DataFileBackgroundSource,
+    PreparedCatalogBackgroundSource,
     StreamObsCatalogueBackgroundSource,
     StreamObsLightBackgroundSource,
     StudyRegion,
@@ -385,3 +386,91 @@ def test_streamobs_catalogue_source_applies_region_post_filter(synthetic_catalog
     )
 
     assert out["dec"].max() < 50.0  # the two far-away stars were filtered out
+
+
+# ---------------------------------------------------------------------------
+# PreparedCatalogBackgroundSource: a catalogue already in the pipeline's shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def catalogue(tmp_path):
+    rng = np.random.default_rng(0)
+    frame = pd.DataFrame(
+        {
+            "ra": rng.uniform(0, 360, 1000),
+            "dec": rng.uniform(-60, -30, 1000),
+            "des_yr6_g_obs": rng.uniform(16, 24.5, 1000),
+            "des_yr6_r_obs": rng.uniform(16, 24.5, 1000),
+        }
+    )
+    path = tmp_path / "catalogue.parquet"
+    frame.to_parquet(path, index=False)
+    return path, frame
+
+
+def test_reads_the_catalogue_unchanged(catalogue):
+    path, frame = catalogue
+    loaded = PreparedCatalogBackgroundSource().load("des", "yr6", None, {"path": path})
+    pd.testing.assert_frame_equal(loaded, frame)
+
+
+def test_folds_split_the_catalogue_without_overlap(catalogue):
+    path, frame = catalogue
+    source = PreparedCatalogBackgroundSource()
+    halves = [
+        source.load(
+            "des", "yr6", None, {"path": path, "fold": {"index": i, "n_folds": 2}}
+        )
+        for i in (0, 1)
+    ]
+    assert len(halves[0]) + len(halves[1]) == len(frame)
+    assert not set(halves[0].ra) & set(halves[1].ra)
+
+
+def test_missing_columns_are_named(catalogue, tmp_path):
+    _, frame = catalogue
+    bad = tmp_path / "bad.parquet"
+    frame.drop(columns=["des_yr6_g_obs", "des_yr6_r_obs"]).to_parquet(bad)
+    with pytest.raises(ValueError, match="des_yr6_<band>_obs"):
+        PreparedCatalogBackgroundSource().load("des", "yr6", None, {"path": bad})
+
+
+def test_a_missing_file_is_an_error(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        PreparedCatalogBackgroundSource().load(
+            "des", "yr6", None, {"path": tmp_path / "none.parquet"}
+        )
+
+
+def test_fold_boundaries_follow_pixels_not_stars(tmp_path):
+    """Stars on either side of a stripe edge but in one HEALPix pixel go to
+    the same fold -- the fold of the pixel's centre, as at inference."""
+    import healpy as hp
+
+    from streamgoggles.objects_overlap import spatial_fold
+
+    nside = 64
+    pixel = hp.ang2pix(nside, 20.0, -40.0, lonlat=True)  # a pixel on the RA 20 edge
+    corners = hp.boundaries(nside, pixel, step=4).T
+    ra, dec = hp.vec2ang(corners, lonlat=True)
+    inside = hp.ang2pix(nside, ra, dec, lonlat=True) == pixel
+    ra, dec = ra[inside], dec[inside]
+    assert len(set(spatial_fold(ra))) == 2, "the test needs stars on both sides"
+    path = tmp_path / "edge.parquet"
+    pd.DataFrame(
+        {"ra": ra, "dec": dec, "des_yr6_g_obs": 20.0, "des_yr6_r_obs": 19.5}
+    ).to_parquet(path)
+    source = PreparedCatalogBackgroundSource()
+    kept = [
+        len(
+            source.load(
+                "des",
+                "yr6",
+                None,
+                {"path": path, "fold": {"index": i, "n_folds": 2, "nside": nside}},
+            )
+        )
+        for i in (0, 1)
+    ]
+    assert sorted(kept) == [0, len(ra)]

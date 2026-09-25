@@ -265,6 +265,12 @@ Three products come out of this, all outside version control:
   available as `get_footprint("des_yr6_background")`, so training and
   evaluation read the same mask by name.
 
+A second catalogue comes out of the same script for **running** the trained
+models rather than training them: `des_yr6_inference.parquet`, with the same
+cuts and object mask but the known streams left in — only Sagittarius stays
+masked — since finding them is the point. 4,690 deg², 38,058,093 stars; its
+mask is `get_footprint("des_yr6_inference")`. See {doc}`../experiments/real_des`.
+
 ## What comes next
 
 The mask exists but is not yet used by the injector or the evaluator; that is

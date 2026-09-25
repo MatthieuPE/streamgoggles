@@ -1,4 +1,4 @@
-streamgoggles.background\_sources
+﻿streamgoggles.background\_sources
 =================================
 
 .. automodule:: streamgoggles.background_sources
@@ -16,6 +16,7 @@ streamgoggles.background\_sources
    
       BackgroundSource
       DataFileBackgroundSource
+      PreparedCatalogBackgroundSource
       StreamObsCatalogueBackgroundSource
       StreamObsLightBackgroundSource
       StudyRegion

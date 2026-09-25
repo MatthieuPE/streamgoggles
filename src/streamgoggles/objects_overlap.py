@@ -47,6 +47,10 @@ FOOTPRINTS = {
     # a stream can be injected into and a detection can count on. Built by
     # scripts/real_data/background.py.
     "des_yr6_background": DATA / "mask_des_yr6_background_nside512.fits.gz",
+    # The sky trained models are run on: the same, but with the known streams
+    # left in -- only Sagittarius stays masked -- since finding them is the
+    # point. Also built by scripts/real_data/background.py.
+    "des_yr6_inference": DATA / "mask_des_yr6_inference_nside512.fits.gz",
 }
 
 _GC_CACHE = None
@@ -422,3 +426,22 @@ def build_background_mask(
         "clusters": (clusters, clusters_in, cluster_radii),
         "dwarfs": (dwarfs, dwarfs_in, dwarf_radii),
     }
+
+
+def spatial_fold(ra, stripe_deg=20.0, n_folds=2):
+    """Which fold of a spatial cross-validation a sky position belongs to.
+
+    Stripes of `stripe_deg` in right ascension, dealt out in turn. On real
+    data there is one sky, and a model scored on the pixels it trained on
+    has already been taught what their background looks like, which flatters
+    its false-alarm rate; a model trained on one fold and run on another has
+    not. Stripes in right ascension rather than a single cut give every fold
+    the whole range of galactic latitudes DES spans. At 20 degrees a stripe
+    is about 13 degrees across at Dec -50, wider than an 11-degree window, so
+    most training windows sit inside one fold.
+
+    Returns:
+        integer array, the fold of each position.
+    """
+    stripe = np.floor(np.mod(np.asarray(ra, dtype=float), 360.0) / stripe_deg)
+    return stripe.astype(np.int64) % n_folds

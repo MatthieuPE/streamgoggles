@@ -1,4 +1,4 @@
-streamgoggles.objects\_overlap
+﻿streamgoggles.objects\_overlap
 ==============================
 
 .. automodule:: streamgoggles.objects_overlap
@@ -17,5 +17,6 @@ streamgoggles.objects\_overlap
       mask_objects
       mask_radius
       mask_streams
+      spatial_fold
       stream_tracks
    
