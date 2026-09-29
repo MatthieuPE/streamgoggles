@@ -9,6 +9,7 @@
    .. autosummary::
    
       build_background_mask
+      des2018_arc
       get_GC
       get_GC_within_footprint
       get_dwarf

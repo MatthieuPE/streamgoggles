@@ -249,6 +249,25 @@ DES2018_DISTANCE_MODULI = {
     "Turranburra": 17.2,
     "Wambelong": 15.9,
 }
+# Their populations, (age in Gyr, Z), fitted by the paper (Table 1) -- all
+# inside the age 9-13.5 Gyr, Z 1e-4-1e-3 range the population-trained models
+# are trained over.
+DES2018_POPULATIONS = {
+    "Tucana III": (13.5, 0.0001),
+    "ATLAS": (11.0, 0.0007),
+    "Molonglo": (13.5, 0.0010),
+    "Phoenix": (13.0, 0.0004),
+    "Indus": (13.0, 0.0007),
+    "Jhelum": (12.0, 0.0009),
+    "Ravi": (13.5, 0.0003),
+    "Chenab": (13.0, 0.0004),
+    "Elqui": (12.0, 0.0004),
+    "Aliqa Uma": (13.0, 0.0004),
+    "Turbio": (13.0, 0.0004),
+    "Willka Yaku": (11.0, 0.0006),
+    "Turranburra": (13.5, 0.0003),
+    "Wambelong": (11.0, 0.0001),
+}
 # Their tracks as the paper draws them (Table 1 and Fig. 4): the end points,
 # RA and Dec in degrees, joined by a great-circle arc -- except ATLAS and
 # Palca, which follow the second-order polynomials of its Eqs. 6 and 7. Palca

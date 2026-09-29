@@ -119,7 +119,12 @@ N_NULL_BANDS = 200
 EVAL_SEED = 2026
 
 # The DES streams of Shipp et al. (2018), Tables 1 and 2: width (deg), length
-# (deg), distance modulus, surface brightness (mag/arcsec^2). Palca has no
+# (deg), distance modulus, surface brightness (mag/arcsec^2). The surface
+# brightness is the paper's V-band mu_V, used as it stands; the pipeline reads
+# it as a g-band value, and g is about 0.3 mag fainter than V for these
+# populations, so each copy is about 0.35 mag brighter (1.5x the paper's stars)
+# than the stream it stands for. Flagged, not converted: compare on plots, or
+# widen the training range (docs: experiments/real_des/recovery). Palca has no
 # published width or surface brightness and is left out. An evaluation set
 # only -- training never sees these values (it draws from the ranges above),
 # so the model is not tuned to them. Their stellar populations are not

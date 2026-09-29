@@ -269,7 +269,7 @@ A second catalogue comes out of the same script for **running** the trained
 models rather than training them: `des_yr6_inference.parquet`, with the same
 cuts and object mask but the known streams left in — only Sagittarius stays
 masked — since finding them is the point. 4,690 deg², 38,058,093 stars; its
-mask is `get_footprint("des_yr6_inference")`. See {doc}`../experiments/real_des`.
+mask is `get_footprint("des_yr6_inference")`. See {doc}`../experiments/real_des/index`.
 
 ## What comes next
 
