@@ -201,6 +201,75 @@ class DataFileBackgroundSource(BackgroundSource):
         return harmonize_columns(df, namespace=namespace, bands=bands, source="dp2")
 
 
+class PreparedCatalogBackgroundSource(BackgroundSource):
+    """A catalogue already in the pipeline's shape, read as it is.
+
+    For catalogues a script has already cut, dereddened and renamed -- such as
+    the DES Y6 backgrounds `scripts/real_data/background.py` writes: ``ra``,
+    ``dec`` and ``<survey>_<release>_<band>_obs`` columns. Nothing is
+    corrected here, unlike `DataFileBackgroundSource`, which dereddens and
+    renames the raw LSST DP2 skim.
+
+    Configuration (``cfg``):
+
+    - ``path``: the parquet file.
+    - ``fold`` (optional): which fold of a spatial cross-validation to keep
+      (`objects_overlap.spatial_fold`), as a dict with ``index``, and
+      optionally ``n_folds`` (2), ``stripe_deg`` (20) and ``nside`` (512).
+      A star goes with the HEALPix pixel it falls in, and the pixel with its
+      centre: splitting the stars by their own positions would leave pixels
+      on a stripe edge half in each fold, seen in training by the model later
+      asked to predict them. The fold is part of the configuration, so each
+      fold's background maps are cached separately.
+    """
+
+    def load(
+        self, survey: str, release: str, region: StudyRegion | None, cfg: dict
+    ) -> pd.DataFrame:
+        """The catalogue, restricted to one fold if asked.
+
+        Raises:
+            FileNotFoundError if the file is missing.
+            ValueError if it lacks ``ra``, ``dec`` or a magnitude column.
+        """
+        from streamgoggles.objects_overlap import spatial_fold
+
+        path = Path(cfg["path"]).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(
+                f"PreparedCatalogBackgroundSource: no file at {path}"
+            )
+        catalogue = pd.read_parquet(path)
+        namespace = f"{survey}_{release}" if release else survey
+        if not {"ra", "dec"} <= set(catalogue.columns) or not any(
+            column.startswith(f"{namespace}_") and column.endswith("_obs")
+            for column in catalogue.columns
+        ):
+            raise ValueError(
+                f"{path} needs ra, dec and {namespace}_<band>_obs columns; "
+                f"it has {list(catalogue.columns)}"
+            )
+        fold = cfg.get("fold")
+        if fold is not None:
+            import healpy as hp
+
+            nside = int(fold.get("nside", 512))
+            pixel = hp.ang2pix(
+                nside,
+                catalogue["ra"].to_numpy(),
+                catalogue["dec"].to_numpy(),
+                lonlat=True,
+            )
+            pixel_ra, _ = hp.pix2ang(nside, pixel, lonlat=True)
+            keep = spatial_fold(
+                pixel_ra,
+                stripe_deg=float(fold.get("stripe_deg", 20.0)),
+                n_folds=int(fold.get("n_folds", 2)),
+            ) == int(fold["index"])
+            catalogue = catalogue[keep]
+        return catalogue.reset_index(drop=True)
+
+
 class StreamObsLightBackgroundSource(BackgroundSource):
     """Wrap streamobs's fast/light synthetic background generation.
 

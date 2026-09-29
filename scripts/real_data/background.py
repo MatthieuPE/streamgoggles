@@ -12,6 +12,12 @@ analysis cuts, masks known streams and catalogued objects with
                     plus the two tables it includes
   <data>/des_yr6_background.parquet and .json
                     the background itself, with --write
+  data/others/mask_des_yr6_inference_nside512.fits.gz
+  <data>/des_yr6_inference.parquet and .json (with --write)
+                    the sky the trained models are run on: the same cuts and
+                    object mask, but the known streams left in -- only
+                    Sagittarius stays masked -- since finding them is the
+                    point of running the models
 
 Run from the repository root:
   python scripts/real_data/background.py [--data ~/Documents/data/DES_yr6] [--write]
@@ -49,6 +55,7 @@ warnings.filterwarnings("ignore")
 REPO = Path(__file__).resolve().parents[2]
 FIGURES = REPO / "docs" / "source" / "narrative" / "figures" / "real_background"
 MASK_FILE = CATALOGUES / "mask_des_yr6_background_nside512.fits.gz"
+INFERENCE_MASK_FILE = CATALOGUES / "mask_des_yr6_inference_nside512.fits.gz"
 
 # The analysis cuts, on top of what the download already applied. SNR 5 is
 # where streamobs anchors its DES Y6 depth (the magnitude at which the
@@ -505,7 +512,42 @@ def main(data, write):
     )
     print(f"\nmask -> {MASK_FILE}")
 
+    # The inference sky: identical cuts and object mask, streams left in
+    # except Sagittarius, which no search is run inside.
+    inference_masks = build_background_mask(
+        nside=NSIDE, **{**MASK, "stream_widths": {"Sagittarius": SAGITTARIUS_WIDTH}}
+    )
+    inference_kept = inference_masks["usable"][pixels]
+    hp.write_map(
+        INFERENCE_MASK_FILE,
+        inference_masks["usable"].astype(np.uint8),
+        dtype=np.uint8,
+        overwrite=True,
+        coord="C",
+        column_names=["USABLE"],
+    )
+    print(
+        f"inference sky: {inference_masks['usable'].sum() * area:,.0f} deg^2, "
+        f"{inference_kept.sum():,} stars -> {INFERENCE_MASK_FILE}"
+    )
+
     if write:
+        write_catalogue(
+            Path(data) / "des_yr6_inference.parquet",
+            cut,
+            inference_kept,
+            {
+                "description": (
+                    "DES Y6 Gold sky the trained models are run on: the same "
+                    "cuts and globular-cluster and dwarf-galaxy mask as the "
+                    "training background, with the known streams left in "
+                    "except Sagittarius."
+                ),
+                "mask_file": str(INFERENCE_MASK_FILE.relative_to(REPO)),
+                "streams_masked": ["Sagittarius"],
+            },
+            data,
+        )
         out = Path(data) / "des_yr6_background.parquet"
         pd.DataFrame(
             {
@@ -548,6 +590,37 @@ def main(data, write):
             json.dumps(sidecar, indent=2) + "\n"
         )
         print(f"background -> {out} ({kept.sum():,} stars)")
+
+
+def write_catalogue(out, cut, kept, extra, data):
+    """Four columns of the stars `kept`, with a sidecar describing them."""
+    pd.DataFrame(
+        {
+            "ra": cut.ra.to_numpy()[kept],
+            "dec": cut.dec.to_numpy()[kept],
+            "des_yr6_g_obs": cut.g.to_numpy()[kept],
+            "des_yr6_r_obs": cut.r.to_numpy()[kept],
+        }
+    ).to_parquet(out, index=False)
+    manifest = json.loads((Path(data) / "manifest.json").read_text())
+    sidecar = {
+        **extra,
+        "built_by": "scripts/real_data/background.py",
+        "built_from": manifest["source"],
+        "inherited_selection": manifest["selection"],
+        "applied_here": {
+            "signal_to_noise": f"> {SNR_MIN:g} in both bands",
+            "magnitude_clip": list(CLIP),
+            "object_mask": {
+                key: MASK[key]
+                for key in ("object_radius_factor", "object_min_radius_deg")
+            },
+        },
+        "columns": ["ra", "dec", "des_yr6_g_obs", "des_yr6_r_obs"],
+        "rows": int(kept.sum()),
+    }
+    out.with_suffix(".json").write_text(json.dumps(sidecar, indent=2) + "\n")
+    print(f"catalogue -> {out} ({kept.sum():,} stars)")
 
 
 if __name__ == "__main__":
