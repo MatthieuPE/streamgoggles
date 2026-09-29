@@ -1,4 +1,4 @@
-streamgoggles.injector
+﻿streamgoggles.injector
 ======================
 
 .. automodule:: streamgoggles.injector
@@ -17,4 +17,10 @@ streamgoggles.injector
    .. autosummary::
    
       StreamInjector
+   
+   .. rubric:: Exceptions
+
+   .. autosummary::
+   
+      StreamInvisible
    

@@ -300,7 +300,7 @@ def build_sky(background_seed):
     return background, injector
 
 
-def train(seed, windows, background, injector, training_set="des"):
+def train(seed, windows, background, injector, training_set="des", normalizer=None):
     import numpy as np
     import torch
     from torch.utils.data import DataLoader
@@ -343,8 +343,9 @@ def train(seed, windows, background, injector, training_set="des"):
 
     train_dataset = dataset(seed, windows // TRAINING["epochs"])
     # Each window's maps are standardized from that window alone (see the
-    # docs page): nothing is fitted, so the same holds on real data.
-    normalizer = WindowNormalizer()
+    # docs page): nothing is fitted, so the same holds on real data. A caller
+    # may pass another per-window normalizer (e.g. DecoyNormalizer).
+    normalizer = normalizer or WindowNormalizer()
 
     def query_view(augment, rng_seed):
         return QueryDistanceTransform(

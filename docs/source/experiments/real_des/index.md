@@ -13,6 +13,7 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`results` | the output maps; the DES 2018 test: 5 of 14 | done, re-scored along the paper's tracks (2026-09-29) |
 | {doc}`des2018_reproduction` | the paper's own analysis on our data, without the network: which streams are in the data, and what our cuts cost | done (2026-09-29) |
 | {doc}`recovery` | each DES 2018 stream simulated and injected into the real sky 54 times; the fold imbalance traced to saturated false alarms | done (2026-09-29) |
+| {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -86,6 +87,12 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    stars; flagged, not converted), and for Indus, Turranburra and Molonglo by
    more than that.
 
+6. **The training label taught blobs**: a third of the first training's
+   labels, and more than half for streams nearer than m−M 17, were scattered
+   clumps. A band label removes them and makes the model's false alarms
+   elongated, but it is not better overall; the per-window normalization is
+   the best of three ({doc}`labels_normalization`).
+
 ## What comes next
 
 - **Mask known galaxy clusters and groups** in training and calibration,
@@ -133,4 +140,5 @@ first_training
 results
 des2018_reproduction
 recovery
+labels_normalization
 ```

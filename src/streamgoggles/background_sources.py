@@ -221,6 +221,15 @@ class PreparedCatalogBackgroundSource(BackgroundSource):
       on a stripe edge half in each fold, seen in training by the model later
       asked to predict them. The fold is part of the configuration, so each
       fold's background maps are cached separately.
+    - ``exclude`` (optional): path to a HEALPix mask (nside 512 unless
+      ``exclude_nside`` says otherwise, ring order); stars in pixels where it
+      is nonzero are dropped. Validity follows the stars, so those pixels
+      become invalid sky -- the way to mask regions the catalogue was built
+      without (e.g. nearby galaxies whose globular clusters pass the filter).
+
+    A `StudyRegion`, if given, keeps only the stars whose HEALPix pixel centre
+    (at the fold's nside, 512 by default) lies inside it: a patch of the real
+    sky, for quick experiments.
     """
 
     def load(
@@ -249,25 +258,55 @@ class PreparedCatalogBackgroundSource(BackgroundSource):
                 f"{path} needs ra, dec and {namespace}_<band>_obs columns; "
                 f"it has {list(catalogue.columns)}"
             )
-        fold = cfg.get("fold")
-        if fold is not None:
-            import healpy as hp
+        import healpy as hp
 
-            nside = int(fold.get("nside", 512))
-            pixel = hp.ang2pix(
-                nside,
-                catalogue["ra"].to_numpy(),
-                catalogue["dec"].to_numpy(),
-                lonlat=True,
+        fold = cfg.get("fold")
+        nside = int((fold or {}).get("nside", 512))
+        pixel = hp.ang2pix(
+            nside,
+            catalogue["ra"].to_numpy(),
+            catalogue["dec"].to_numpy(),
+            lonlat=True,
+        )
+        keep = np.ones(len(catalogue), dtype=bool)
+        if region is not None:
+            frame, (phi1_low, phi1_high), (phi2_low, phi2_high) = (
+                _study_region_to_phi_box(region)
             )
+            unique, inverse = np.unique(pixel, return_inverse=True)
+            centre_ra, centre_dec = hp.pix2ang(nside, unique, lonlat=True)
+            centres = SkyCoord(
+                ra=centre_ra * u.deg, dec=centre_dec * u.deg
+            ).transform_to(frame)
+            inside = (
+                (centres.phi1.deg >= phi1_low)
+                & (centres.phi1.deg <= phi1_high)
+                & (centres.phi2.deg >= phi2_low)
+                & (centres.phi2.deg <= phi2_high)
+            )
+            keep &= inside[inverse]
+        if cfg.get("exclude") is not None:
+            excluded = hp.read_map(str(Path(cfg["exclude"]).expanduser())) != 0
+            exclude_nside = hp.npix2nside(excluded.size)
+            star_pixel = (
+                pixel
+                if exclude_nside == nside
+                else hp.ang2pix(
+                    exclude_nside,
+                    catalogue["ra"].to_numpy(),
+                    catalogue["dec"].to_numpy(),
+                    lonlat=True,
+                )
+            )
+            keep &= ~excluded[star_pixel]
+        if fold is not None:
             pixel_ra, _ = hp.pix2ang(nside, pixel, lonlat=True)
-            keep = spatial_fold(
+            keep &= spatial_fold(
                 pixel_ra,
                 stripe_deg=float(fold.get("stripe_deg", 20.0)),
                 n_folds=int(fold.get("n_folds", 2)),
             ) == int(fold["index"])
-            catalogue = catalogue[keep]
-        return catalogue.reset_index(drop=True)
+        return catalogue[keep].reset_index(drop=True)
 
 
 class StreamObsLightBackgroundSource(BackgroundSource):

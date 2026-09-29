@@ -265,6 +265,12 @@ def place_stream_in_footprint(
     return out
 
 
+class StreamInvisible(RuntimeError):
+    """No window of a stream reached the band label's visibility criteria
+    (label_policy="stream_band"): the stream, at these parameters, is too
+    faint to be seen here. The caller draws another stream."""
+
+
 class StreamInjector:
     """Inject stream(s) into background, apply survey effects, build sample.
 
@@ -372,6 +378,8 @@ class StreamInjector:
         finalize_cfg: dict | None = None,
         count_threshold: float = 1.0,
         min_stream_length_deg: float = 5.0,
+        band_min_snr: float = 2.0,
+        band_min_length_deg: float = 4.0,
     ):
         """Initialize injector.
 
@@ -391,13 +399,20 @@ class StreamInjector:
                 `background`/`matched_filters`.
             bands: The two bands injected/selected on.
             richness_kind: Unit of params['richness'].
-            label_policy: "stream_count" (default), "stream_detection", or a
-                rasterize.py policy (see class docstring).
+            label_policy: "stream_count" (default), "stream_detection",
+                "stream_band" (the stream's band where it is visible as a
+                whole, see `_band_labels`), or a rasterize.py policy (see class
+                docstring).
             label_config: Extra rasterize.rasterize() kwargs (see class docstring).
             finalize_cfg: Finalization config, matching whatever
                 `background` was cached with.
             count_threshold: Only used when label_policy="stream_detection"
                 (see class docstring).
+            band_min_snr, band_min_length_deg: Only used when
+                label_policy="stream_band" (see `_band_labels`): the S/N the
+                stream's band must reach in a channel for that channel to be
+                labelled, and the length of band on valid sky the window must
+                hold.
         """
         self.background = background
         self.matched_filters = matched_filters
@@ -418,6 +433,8 @@ class StreamInjector:
         # 5 degrees by default); lower it when streams can be shorter than
         # that -- Tucana III is 4.8 degrees long.
         self.min_stream_length_deg = min_stream_length_deg
+        self.band_min_snr = band_min_snr
+        self.band_min_length_deg = band_min_length_deg
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
 
@@ -687,6 +704,80 @@ class StreamInjector:
             "placement": placements,
         }
 
+    def _band_labels(
+        self, window, placement, params, maps, raw_labels, valid, channels_meta
+    ):
+        """The "stream_band" label: the stream's band, where it is visible.
+
+        The band is every valid window pixel within one width of the stream's
+        track (``|phi2| <= width``) along its length (``|phi1| <= length / 2``),
+        in the frame it was placed with -- always an elongated band, never
+        the scatter of pixels a per-pixel star-count threshold gives a faint
+        stream. A channel is labelled with the band when the stream is
+        visible there as a whole: its selected stars in the band, S, against
+        the square root of the real background's stars in the same pixels,
+        B -- both counted in this window and channel, so the background is
+        the data itself -- give ``S / sqrt(B) >= band_min_snr``. Otherwise the
+        channel's label is empty.
+
+        Returns:
+            (labels, info): one label image per channel, and
+            ``{"snr": per-channel S/N, "length_deg": band length on valid sky,
+            "accepted": bool}``. A window is accepted when, at the channel
+            distance nearest the stream's, some filter's S/N reaches
+            ``band_min_snr`` and the band covers at least
+            ``min(band_min_length_deg, length)`` degrees of track on valid sky.
+        """
+        from streamgoggles.evaluation.footprint import stream_frame_coordinates
+        from streamgoggles.matched_filter import _tangent_plane_radec
+
+        window_pix = dataclasses.replace(
+            self.pix,
+            center_ra=window.center_ra,
+            center_dec=window.center_dec,
+            rotation_deg=window.rotation_deg,
+        )
+        ra, dec = _tangent_plane_radec(window_pix)
+        vectors = np.asarray(hp.ang2vec(ra.ravel(), dec.ravel(), lonlat=True)).reshape(
+            -1, 3
+        )
+        phi1, phi2 = stream_frame_coordinates(
+            vectors,
+            placement["center_ra"],
+            placement["center_dec"],
+            placement["rotation_deg"],
+        )
+        width = float(params["width"])
+        length = float(params["length"])
+        band = (
+            (np.abs(phi2) <= width)
+            & (np.abs(phi1) <= length / 2)
+            & np.asarray(valid).ravel()
+        ).reshape(np.shape(valid))
+        step = self.pix.pixel_scale_deg  # track covered, in steps of one window pixel
+        covered = np.unique(np.floor(phi1.reshape(np.shape(valid))[band] / step))
+        length_deg = step * covered.size
+
+        snr, labels = [], []
+        for combined, stream in zip(maps, raw_labels, strict=True):
+            signal = float(np.sum(stream[band]))
+            noise = float(np.sum((combined - stream)[band]))
+            value = signal / np.sqrt(max(noise, 1.0))
+            snr.append(value)
+            labels.append(
+                band.astype(float)
+                if value >= self.band_min_snr
+                else np.zeros(band.shape)
+            )
+        distances = np.array([c["distance_modulus"] for c in channels_meta], float)
+        nearest = distances[np.argmin(np.abs(distances - params["distance_modulus"]))]
+        at_distance = np.isclose(distances, nearest)
+        accepted = bool(
+            np.max(np.asarray(snr)[at_distance]) >= self.band_min_snr
+            and length_deg >= min(self.band_min_length_deg, length) - 1e-9
+        )
+        return labels, {"snr": snr, "length_deg": length_deg, "accepted": accepted}
+
     def inject_single_stream(
         self,
         params: dict,
@@ -742,9 +833,12 @@ class StreamInjector:
         if min_stream_length_deg is None:
             min_stream_length_deg = self.min_stream_length_deg
         size_deg = self.pix.image_size_pix[0] * self.pix.pixel_scale_deg
+        band_policy = self.label_policy == "stream_band"
+        if band_policy and self.finalize_cfg and self.finalize_cfg.get("enabled"):
+            raise ValueError('label_policy="stream_band" needs finalization disabled')
         failures = []
         for _ in range(max_placements):
-            detected, resolved_params, _ = self._realize_and_inject(params, rng)
+            detected, resolved_params, placement = self._realize_and_inject(params, rng)
             if detected.empty:
                 failures.append("no star of the stream was detected")
                 continue
@@ -760,13 +854,44 @@ class StreamInjector:
                     max_attempts=max_attempts,
                     rng=rng,
                 )
-                break
             except RuntimeError as error:
                 failures.append(str(error))
+                continue
+            if not band_policy:
+                break
+            band_channels = self._build_window_channels(detected, window)
+            band_labels, band_info = self._band_labels(
+                window, placement, resolved_params, *band_channels
+            )
+            if band_info["accepted"]:
+                break
+            failures.append(
+                f"band S/N {max(band_info['snr']):.2f} over "
+                f"{band_info['length_deg']:.1f} deg of valid sky"
+            )
         else:
-            raise RuntimeError(
+            error = StreamInvisible if band_policy else RuntimeError
+            raise error(
                 f"inject_single_stream: no valid window in {max_placements} "
                 f"placements of the stream; last failure: {failures[-1]}"
+            )
+
+        if band_policy:
+            map_channels, _, valid_mask, channels_meta = band_channels
+            return Sample(
+                map_stack=np.stack(map_channels, axis=0).astype(np.float32),
+                label_stack=np.stack(band_labels, axis=0).astype(np.float32),
+                valid_mask=valid_mask,
+                params=resolved_params,
+                metadata={
+                    "window": dataclasses.asdict(window),
+                    "distance_moduli": sorted(
+                        {c["distance_modulus"] for c in channels_meta}
+                    ),
+                    "channels": channels_meta,
+                    "band_snr": band_info["snr"],
+                    "band_length_deg": band_info["length_deg"],
+                },
             )
 
         use_channelwise_label = self.label_policy in (

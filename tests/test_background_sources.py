@@ -474,3 +474,41 @@ def test_fold_boundaries_follow_pixels_not_stars(tmp_path):
         for i in (0, 1)
     ]
     assert sorted(kept) == [0, len(ra)]
+
+
+def test_a_study_region_keeps_only_its_patch(catalogue):
+    """A StudyRegion keeps the stars whose pixel centre lies inside it."""
+    from streamgoggles.background_sources import StudyRegion
+
+    path, frame = catalogue
+    region = StudyRegion(
+        center_ra=60.0, center_dec=-45.0, width_deg=30.0, height_deg=20.0
+    )
+    kept = PreparedCatalogBackgroundSource().load("des", "yr6", region, {"path": path})
+    assert 0 < len(kept) < len(frame)
+    # a box of 30 x 20 deg around (60, -45): every kept star is close to it
+    assert kept.ra.between(35, 85).all()
+    assert kept.dec.between(-57, -33).all()
+
+
+def test_an_exclude_mask_drops_the_stars_it_covers(catalogue, tmp_path):
+    import healpy as hp
+
+    path, frame = catalogue
+    nside = 512
+    mask = np.zeros(hp.nside2npix(nside))
+    dropped = hp.query_disc(
+        nside, hp.ang2vec(100.0, -45.0, lonlat=True), np.radians(20)
+    )
+    mask[dropped] = 1
+    mask_path = tmp_path / "exclude.fits"
+    hp.write_map(mask_path, mask, dtype=np.float32)
+    kept = PreparedCatalogBackgroundSource().load(
+        "des", "yr6", None, {"path": path, "exclude": mask_path}
+    )
+    stars = hp.ang2pix(nside, frame.ra.to_numpy(), frame.dec.to_numpy(), lonlat=True)
+    assert len(kept) == (mask[stars] == 0).sum()
+    assert (
+        mask[hp.ang2pix(nside, kept.ra.to_numpy(), kept.dec.to_numpy(), lonlat=True)]
+        == 0
+    ).all()

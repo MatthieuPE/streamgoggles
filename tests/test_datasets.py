@@ -1244,3 +1244,46 @@ def test_window_normalizer_uses_only_the_window_itself():
     shifted = stack + 7.0
     shifted[:, 0, :] = 0.0
     np.testing.assert_allclose(WindowNormalizer()(shifted, valid), out, atol=1e-5)
+
+
+def test_decoy_normalizer_uses_the_decoy_statistics_for_every_channel():
+    """Every channel is standardized with the decoy's mean and spread: the
+    decoy comes out standardized, the other channels keep their level and
+    amplitude relative to it, and doubling every count changes nothing."""
+    from streamgoggles.datasets.transforms import DecoyNormalizer
+
+    rng = np.random.default_rng(0)
+    decoy = rng.poisson(10.0, (16, 16)).astype(float)
+    stream = np.zeros((16, 16))
+    stream[7:9, :] = 20.0
+    good = rng.poisson(25.0, (16, 16)) + stream
+    stack = np.stack([good, decoy])
+    valid = np.ones((16, 16), bool)
+    valid[0, 0] = False
+    out = DecoyNormalizer(decoy_index=1)(stack, valid)
+    mean, std = decoy[valid].mean(), decoy[valid].std()
+    np.testing.assert_allclose(out[1][valid].mean(), 0.0, atol=1e-6)
+    np.testing.assert_allclose(out[1][valid].std(), 1.0, atol=1e-6)
+    np.testing.assert_allclose(out[0][valid], (good[valid] - mean) / std, rtol=1e-5)
+    # the stream's excess keeps its size in decoy units, not in its own
+    assert out[0][7:9].mean() - out[0][:7].mean() > 15.0 / std
+    doubled = DecoyNormalizer(1)(2.0 * stack, valid)
+    np.testing.assert_allclose(doubled[:, valid], out[:, valid], atol=1e-5)
+    assert out[0][0, 0] == stack[0][0, 0]  # invalid pixels untouched
+
+
+def test_poisson_normalizer_gives_the_excess_in_units_of_counting_noise():
+    from streamgoggles.datasets.transforms import PoissonNormalizer
+
+    rng = np.random.default_rng(1)
+    counts = rng.poisson(16.0, (32, 32)).astype(float)
+    counts[15:17, :] += 8.0  # a stream: +8 stars on a background of 16
+    valid = np.ones((32, 32), bool)
+    out = PoissonNormalizer()(counts[None], valid)[0]
+    mean = counts.mean()
+    np.testing.assert_allclose(out, (counts - mean) / np.sqrt(mean), rtol=1e-5)
+    # the stream stands 2 sigma of counting noise above the background
+    assert 1.5 < out[15:17].mean() - out[:15].mean() < 2.5
+    # not scale-free: four times the stars, same contrast, twice the significance
+    quadrupled = PoissonNormalizer()(4 * counts[None], valid)[0]
+    np.testing.assert_allclose(quadrupled, 2 * out, rtol=1e-5)

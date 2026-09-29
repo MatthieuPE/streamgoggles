@@ -1323,3 +1323,104 @@ def test_window_channels_equal_the_full_sky_path(real_background, stream_params)
             raw_labels[index],
             crop_window(full_raw[index], bg.valid_mask_full, window, pix)[0],
         )
+
+
+# ---------------------------------------------------------------------------
+# label_policy="stream_band"
+# ---------------------------------------------------------------------------
+
+
+def _band_injector(real_background, **kwargs):
+    bg, filters, pix = real_background
+    return StreamInjector(
+        background=bg,
+        matched_filters=filters,
+        stream_source=StreamObsSource(),
+        cuts=[],
+        clipping=None,
+        pix=pix,
+        survey="lsst",
+        release="yr1",
+        label_policy="stream_band",
+        min_stream_length_deg=3.0,
+        **kwargs,
+    )
+
+
+@pytest.fixture
+def band_params(stream_params):
+    # one degree wide, so the band spans whole 1-degree test pixels, and rich
+    # enough to stand out of this dense test sky (3000 stars give a band S/N
+    # below 1 here -- invisible, correctly)
+    return {**stream_params, "width": 1.0, "nstars": 100_000}
+
+
+def test_band_label_is_one_elongated_band_shared_by_labelled_channels(
+    real_background, band_params
+):
+    """The label is the stream's band -- one connected, elongated region --
+    and every channel that sees the stream gets the same band."""
+    from scipy import ndimage
+
+    injector = _band_injector(real_background)
+    sample = injector.inject_single_stream(band_params, np.random.default_rng(3))
+    labels = sample.label_stack
+    assert set(np.unique(labels)) <= {0.0, 1.0}
+    labelled = [label for label in labels if label.any()]
+    assert labelled, "a bright stream must be labelled somewhere"
+    for label in labelled[1:]:
+        np.testing.assert_array_equal(label, labelled[0])
+    _, pieces = ndimage.label(labelled[0], structure=np.ones((3, 3)))
+    assert pieces == 1
+    rows, cols = np.nonzero(labelled[0])
+    assert max(np.ptp(rows), np.ptp(cols)) + 1 >= injector.band_min_length_deg
+
+
+def test_band_label_follows_visibility_per_channel(real_background, band_params):
+    """A channel is labelled only where the stream's band stands out from the
+    real background of that channel (S/N >= band_min_snr); the isochrone
+    filter at the stream's distance sees it better than the decoy box (which,
+    for a stream this rich, may still catch enough of it to label)."""
+    injector = _band_injector(real_background)
+    sample = injector.inject_single_stream(band_params, np.random.default_rng(3))
+    channels = sample.metadata["channels"]
+    snr = sample.metadata["band_snr"]
+    for label, channel, value in zip(sample.label_stack, channels, snr, strict=True):
+        assert bool(label.any()) == (value >= injector.band_min_snr)
+    good = next(
+        i
+        for i, c in enumerate(channels)
+        if c["filter"] == "good" and np.isclose(c["distance_modulus"], 16.8)
+    )
+    assert snr[good] >= injector.band_min_snr
+    assert sample.label_stack[good].any()
+    decoy = next(
+        i
+        for i, c in enumerate(channels)
+        if c["filter"] == "decoy" and np.isclose(c["distance_modulus"], 16.8)
+    )
+    assert snr[good] > snr[decoy]
+
+
+def test_band_label_raises_stream_invisible_for_a_stream_too_faint(
+    real_background, band_params
+):
+    from streamgoggles.injector import StreamInvisible
+
+    injector = _band_injector(real_background)
+    with pytest.raises(StreamInvisible):
+        injector.inject_single_stream(
+            {**band_params, "nstars": 300}, np.random.default_rng(3), max_placements=3
+        )
+
+
+def test_band_label_needs_the_minimum_length_on_valid_sky(real_background, band_params):
+    """A window must hold band_min_length_deg of the band: asking for more
+    than any window can hold leaves the stream unlabellable."""
+    from streamgoggles.injector import StreamInvisible
+
+    injector = _band_injector(real_background, band_min_length_deg=40.0)
+    with pytest.raises(StreamInvisible):
+        injector.inject_single_stream(
+            {**band_params, "length": 50.0}, np.random.default_rng(3), max_placements=2
+        )

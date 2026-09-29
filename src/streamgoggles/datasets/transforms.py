@@ -185,6 +185,86 @@ class WindowNormalizer:
         return out
 
 
+class DecoyNormalizer:
+    r"""Standardize every channel of a window with the decoy channel's statistics.
+
+    With ``d`` the decoy channel (a colour-magnitude box off the isochrone:
+    background stars only, no stream) and ``V`` the window's valid pixels:
+
+    .. math::
+
+        x'_c(p) = \frac{x_c(p) - \mu_d}{\sigma_d}, \qquad
+        \mu_d, \sigma_d = \text{mean and standard deviation of } x_d \text{ over } V.
+
+    One scale for all channels, taken from sky that holds no stream:
+    unlike `WindowNormalizer`, a stream in an isochrone channel neither raises
+    the spread it is divided by nor is centred away, and the isochrone
+    channels keep their level relative to the background. Still nothing
+    fitted, and still scale-free: doubling every count leaves the input
+    unchanged.
+
+    Attributes:
+        decoy_index: index of a decoy channel in ``map_stack`` (the decoy is
+            the same map at every distance, so any of its channels does).
+    """
+
+    def __init__(self, decoy_index: int):
+        self.decoy_index = int(decoy_index)
+
+    def __call__(self, map_stack: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+        """Normalized copy of ``map_stack`` (n_channels, ny, nx)."""
+        if valid_mask.shape != map_stack.shape[1:]:
+            raise ValueError(
+                f"valid_mask shape {valid_mask.shape} doesn't match map_stack "
+                f"spatial dims {map_stack.shape[1:]}"
+            )
+        out = map_stack.astype(np.float32, copy=True)
+        if not valid_mask.any():
+            return out
+        decoy = map_stack[self.decoy_index][valid_mask].astype(np.float64)
+        mean, std = decoy.mean(), decoy.std()
+        scale = std if std > 0 else 1.0
+        for c in range(map_stack.shape[0]):
+            out[c][valid_mask] = (map_stack[c][valid_mask] - mean) / scale
+        return out
+
+
+class PoissonNormalizer:
+    r"""Express every channel of a window in units of its own counting noise.
+
+    For one window and channel ``c``, with ``V`` its valid pixels and
+    ``\mu_c`` the channel's mean count per pixel over ``V``:
+
+    .. math::
+
+        x'_c(p) = \frac{x_c(p) - \mu_c}{\sqrt{\mu_c}}.
+
+    A count map's natural scale is its Poisson noise, so a pixel's value is
+    its excess over the window's background in standard deviations of that
+    background -- an absolute significance, which `WindowNormalizer` loses
+    by dividing by the channel's measured spread (which a stream raises) and
+    `DecoyNormalizer` distorts by borrowing another population's level. Not
+    scale-free, by design: twice the stars at the same contrast is a more
+    significant excess. Nothing fitted.
+    """
+
+    def __call__(self, map_stack: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+        """Normalized copy of ``map_stack`` (n_channels, ny, nx)."""
+        if valid_mask.shape != map_stack.shape[1:]:
+            raise ValueError(
+                f"valid_mask shape {valid_mask.shape} doesn't match map_stack "
+                f"spatial dims {map_stack.shape[1:]}"
+            )
+        out = map_stack.astype(np.float32, copy=True)
+        if not valid_mask.any():
+            return out
+        for c in range(map_stack.shape[0]):
+            values = map_stack[c][valid_mask].astype(np.float64)
+            mean = values.mean()
+            out[c][valid_mask] = (values - mean) / np.sqrt(mean if mean > 0 else 1.0)
+        return out
+
+
 class StreamMapTransform:
     """Torch-compatible transform: normalization + augmentation.
 

@@ -81,6 +81,51 @@ def get_dwarf(dwarfs_path=None, force_reload=False, **_):
     return _DWARF_CACHE
 
 
+# Nearby massive galaxies: 2MASS galaxies of Tully (2015, AJ 149, 171), from
+# VizieR J/AJ/149/171/table5 with Vls < 3500 km/s and log L_K > 10.3
+# (https://vizier.cds.unistra.fr/viz-bin/asu-tsv?-source=J/AJ/149/171/table5
+# &-out.max=unlimited&-out=PGC,Vls,Kmag,logLKi,MType,_RA.icrs,_DE.icrs
+# &Vls=<3500&logLKi=>10.3). The globular-cluster systems of the most massive
+# ones, closer than about 50 Mpc, are point sources in exactly the matched
+# filter's colours: the Fornax cluster and the Eridanus group saturate the
+# network (docs: experiments/real_des/recovery).
+NEARBY_GALAXIES = "nearby_galaxies_tully2015.csv"
+GALAXY_MIN_LOG_LK = 10.8
+GALAXY_RADIUS_DEG = 1.0
+# Survey artefacts: an excess equal in every colour and magnitude selection,
+# found as saturated false alarms of the first real-data models and in no
+# catalogue -- (ra, dec, radius) in degrees.
+SURVEY_ARTEFACTS = {
+    "artefact at (0.5, -4.2)": (0.5, -4.2, 1.0),
+    "artefact at (12.7, 2.2)": (12.7, 2.2, 0.75),
+}
+
+
+def get_nearby_galaxies(path=None):
+    """The nearby-galaxy catalogue (see NEARBY_GALAXIES), as a DataFrame."""
+    import pandas as pd
+
+    return pd.read_csv(path or DATA / NEARBY_GALAXIES, comment="#")
+
+
+def contaminant_mask(
+    nside=512, min_log_lk=GALAXY_MIN_LOG_LK, radius_deg=GALAXY_RADIUS_DEG
+):
+    """HEALPix mask (True = masked) of what fakes a stream but is not one:
+    nearby massive galaxies (log L_K > min_log_lk, to radius_deg) and the
+    SURVEY_ARTEFACTS."""
+    galaxies = get_nearby_galaxies()
+    galaxies = galaxies[galaxies["log_lk"] > min_log_lk]
+    mask = np.zeros(hp.nside2npix(nside), dtype=bool)
+    for ra, dec in zip(galaxies["ra"], galaxies["dec"], strict=True):
+        vector = hp.ang2vec(float(ra), float(dec), lonlat=True)
+        mask[hp.query_disc(nside, vector, np.radians(radius_deg))] = True
+    for ra, dec, radius in SURVEY_ARTEFACTS.values():
+        vector = hp.ang2vec(ra, dec, lonlat=True)
+        mask[hp.query_disc(nside, vector, np.radians(radius))] = True
+    return mask
+
+
 def get_footprint(footprint=None, nside=512, nest=False, **_):
     """The sky this search covers, as (mask, pixels, npix).
 
