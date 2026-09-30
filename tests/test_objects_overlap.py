@@ -252,3 +252,26 @@ def test_both_folds_span_the_footprint_in_galactic_latitude():
         assert latitudes.min() < 35 and latitudes.max() > 70
     share = (folds == 0).mean()
     assert 0.35 < share < 0.65
+
+
+def test_contaminant_mask_covers_the_saturating_galaxies_and_artefacts():
+    """The nearby-galaxy and artefact mask covers the Fornax core, the two
+    Eridanus galaxies and both artefacts -- and not Tucana III's eastern
+    excess, which stays unmasked (its mask follows DES 2018 only)."""
+    import healpy as hp
+
+    from streamgoggles.objects_overlap import DATA, NEARBY_GALAXIES, contaminant_mask
+
+    if not (DATA / NEARBY_GALAXIES).exists():
+        pytest.skip("nearby-galaxy catalogue not present")
+    mask = contaminant_mask(nside=512)
+    covered = {
+        "Fornax core (NGC 1399)": (54.62, -35.45),
+        "NGC 1407": (55.05, -18.58),
+        "NGC 1332": (51.6, -21.3),
+        "artefact (0.5, -4.2)": (0.5, -4.2),
+        "artefact (12.7, 2.2)": (12.7, 2.2),
+    }
+    for name, (ra, dec) in covered.items():
+        assert mask[hp.ang2pix(512, ra, dec, lonlat=True)], name
+    assert not mask[hp.ang2pix(512, 7.4, -58.7, lonlat=True)]

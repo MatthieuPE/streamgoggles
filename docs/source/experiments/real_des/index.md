@@ -13,6 +13,7 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`results` | the output maps; the DES 2018 test: 5 of 14 | done, re-scored along the paper's tracks (2026-09-29) |
 | {doc}`des2018_reproduction` | the paper's own analysis on our data, without the network: which streams are in the data, and what our cuts cost | done (2026-09-29) |
 | {doc}`recovery` | each DES 2018 stream simulated and injected into the real sky 54 times; the fold imbalance traced to saturated false alarms | done (2026-09-29) |
+| {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -86,6 +87,29 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    stars; flagged, not converted), and for Indus, Turranburra and Molonglo by
    more than that.
 
+6. **The training label taught blobs**: a third of the first training's
+   labels, and more than half for streams nearer than m−M 17, were scattered
+   clumps. A band label removes them and makes the model's false alarms
+   elongated, but it is not better overall; the per-window normalization is
+   the best of three ({doc}`labels_normalization`).
+7. **The network finds the real streams it can**: its 50% detection limit
+   is an input S/N of about 9 for distant streams and 20 for near ones, and
+   at their real input S/N the copies predict 4.5 of the 14 real streams to
+   be found; 5 are ({doc}`recovery`, "The detection limit"). Every missed
+   stream is below that limit.
+8. **Along a known track the network is half as sensitive as its input**:
+   the matched-filter counts along the band, against the same band placed
+   elsewhere, find half of the copies at an input S/N of 5; the network
+   needs 9-12, per pixel or averaged along the band. Four quick count-label
+   models with the per-window normalization are the best network
+   ({doc}`labels_normalization`).
+9. **No change of the network closes that gap**: a depth-4 U-Net, a
+   cross-entropy loss, the band label, training on streams down to 36
+   mag/arcsec², and summing logits rather than probabilities along the band
+   all leave the limit at 9-15. The network acts as a local detector; the
+   integration along the stream is what it lacks
+   ({doc}`labels_normalization`, "Why is the network half as sensitive?").
+
 ## What comes next
 
 - **Mask known galaxy clusters and groups** in training and calibration,
@@ -133,4 +157,5 @@ first_training
 results
 des2018_reproduction
 recovery
+labels_normalization
 ```

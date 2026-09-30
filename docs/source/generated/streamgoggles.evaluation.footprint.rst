@@ -15,11 +15,13 @@
    .. autosummary::
    
       background_only_sky
+      band_mean_statistics
       band_snr
       detection_at_false_alarm_rate
       detection_metrics
       evaluate_footprint_realizations
       false_alarm_map
+      null_band_placements
       plot_confusion_matrix
       plot_detection_metrics
       plot_detection_rates

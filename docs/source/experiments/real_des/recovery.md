@@ -182,6 +182,58 @@ explains part of the gap to the real streams, not all of it: for Indus,
 Turranburra and Molonglo the real input is still three to five times weaker
 than a corrected copy's would be.
 
+## The detection limit: the real streams are where the copies say
+
+The copies are stronger than the real streams, so their recovery rate does not
+say what to expect of the real ones. Measured instead: recovery against the
+S/N a copy actually has in the matched-filter input. Each stream's copies
+were made fainter by 0, 0.5, 1, 1.5 and 2 mag/arcsec² of surface brightness,
+20 random places each (1,400 copies), and scored by the same test, on the
+calibration sky without the saturated regions (the masks now adopted;
+`run.py detection-limit`). The real streams are placed on the same axis at
+their input S/N with our selection, from the DES 2018 reproduction's profile
+fit ({doc}`des2018_reproduction`).
+
+```{image} ../figures/real_des/detection_limit.png
+:alt: Recovery of dimmed copies against their input S/N, near and far, with the real streams
+:width: 100%
+```
+
+*Copies recovered against their input S/N, for streams nearer (light) and
+farther (dark) than m−M 16.5. Diamonds: the fourteen real streams at their
+input S/N, at the top if the first training detected them, at the bottom if
+not.*
+
+| input S/N | copies recovered, m−M ≥ 16.5 | copies recovered, m−M < 16.5 |
+|---|---|---|
+| 2-6 | 4-15% | 0-6% |
+| 6-8 | 23% | 7% |
+| 8-13 | 51-52% | 5-20% |
+| 13-22 | 88-89% | 27-69% |
+| 22-45 | 100% | 42-95% |
+
+- **The network's detection limit** — half the copies found — is an input
+  S/N of **about 9 for distant streams and about 20 for near ones**. Near
+  streams need twice the signal: the near-distance weakness, in the input's
+  own units.
+- **The real streams follow it.** The five detected are all distant and at
+  or above the limit (Willka Yaku 8.7, Tucana III 11.1, Chenab 11.7, Elqui
+  15.7, ATLAS 23.1). Every missed one is below it: Indus, Jhelum and Phoenix
+  are near, at 11-13, where copies are found 20% of the time; Aliqa Uma is
+  distant but at 7.9 (23%); Turranburra, Wambelong and Turbio are at 4-5;
+  Molonglo and Ravi at nothing. Summing each real stream's chance at its
+  input S/N gives **4.5 expected detections; 5 are found**.
+- **So the network does on real streams what it does on simulated ones.**
+  What separates the missed streams from the found ones is their strength in
+  the input, and for three of them their distance — not a failure on real
+  data. The gap between copies and real streams earlier on this page was the
+  copies' brightness (their V-band surface brightness read as g, and more).
+- **The bar to clear is sensitivity.** The DES 2018 paper reported its
+  streams at significances down to 5-7 with a targeted fit along a known
+  track; the network, searching blindly at a false-alarm rate of 10⁻³ per
+  pixel, needs about 9, and about 20 for near streams. Lowering that limit —
+  most of all at short distance — is what would find more streams.
+
 ## Caveats
 
 One realization of the stream's stars per place; 50 places give

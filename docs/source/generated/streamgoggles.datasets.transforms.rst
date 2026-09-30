@@ -8,6 +8,8 @@
 
    .. autosummary::
    
+      DecoyNormalizer
+      PoissonNormalizer
       QueryDistanceTransform
       RobustNormalizer
       StreamMapTransform

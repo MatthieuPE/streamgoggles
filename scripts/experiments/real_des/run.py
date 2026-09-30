@@ -1024,6 +1024,8 @@ def recovery(
     streams=None,
     per_model=False,
     without_false_alarms=False,
+    sb_offset=0.0,
+    output=None,
 ):
     """Recovery efficiency of each DES 2018 stream on the real inference sky.
 
@@ -1043,7 +1045,9 @@ def recovery(
     twelve models is scored alone instead, calibrated on its own sky map
     (`infer_models`), into RECOVERY_MODELS; the placements and injections are
     the same. With ``without_false_alarms``, the calibration sky loses
-    `false_alarm_regions` (a diagnostic), into RECOVERY_CLEANED.
+    `false_alarm_regions` (a diagnostic), into RECOVERY_CLEANED. With
+    ``sb_offset``, every copy is that many mag/arcsec^2 fainter, random
+    placements only, into ``output`` (`detection_limit`).
     """
     import healpy as hp
     import numpy as np
@@ -1171,11 +1175,12 @@ def recovery(
                 finite & (r <= TARGET_FALSE_ALARM_RATE),
             )
 
-    output = (
-        RECOVERY_MODELS
-        if per_model
-        else (RECOVERY_CLEANED if without_false_alarms else RECOVERY)
-    )
+    if output is None:
+        output = (
+            RECOVERY_MODELS
+            if per_model
+            else (RECOVERY_CLEANED if without_false_alarms else RECOVERY)
+        )
     done = pd.read_csv(output) if output.exists() else pd.DataFrame()
     rows = done.to_dict("records")
     names = streams or list(sp.DES_STREAMS)
@@ -1201,9 +1206,11 @@ def recovery(
         for number, (kind, offset, ra, dec, rotation, on_cal) in enumerate(
             recovery_placements(name, calibration, usable & valid, rng, n_random)
         ):
+            if sb_offset and kind != "random":
+                continue
             params = {
                 "morphology": "uniform",
-                "richness": sb,
+                "richness": sb + sb_offset,
                 "width": width,
                 "length": length,
                 "distance_modulus": distance,
@@ -1327,7 +1334,8 @@ def recovery(
                     "query": query,
                     "width": width,
                     "length": length,
-                    "surface_brightness": sb,
+                    "surface_brightness": sb + sb_offset,
+                    "sb_offset": sb_offset,
                     "nstars": sky["params"][0].get("nstars"),
                     "background_per_pixel": background_stars / max(band.sum(), 1),
                     "input_snr": stream_stars / np.sqrt(max(background_stars, 1.0)),
@@ -1457,6 +1465,150 @@ def fold_figure():
             f"{(regions & calibration & mine).sum() * area:.0f} deg2",
             flush=True,
         )
+
+
+DETECTION_LIMIT = OUT / "detection_limit"
+SB_OFFSETS = (0.0, 0.5, 1.0, 1.5, 2.0)
+
+
+def detection_limit(seeds, n_random=20):
+    """Recovery against input S/N: each DES 2018 stream's copies made fainter
+    by SB_OFFSETS mag/arcsec^2, on the calibration sky without the saturated
+    false-alarm regions (the masks now adopted)."""
+    DETECTION_LIMIT.mkdir(parents=True, exist_ok=True)
+    for offset in SB_OFFSETS:
+        recovery(
+            seeds,
+            n_random,
+            without_false_alarms=True,
+            sb_offset=offset,
+            output=DETECTION_LIMIT / f"offset_{offset:.1f}.csv",
+        )
+
+
+# The real streams' input S/N with our selection, at their own distance, from
+# the density profile across each (notebooks/des2018_reproduction.ipynb,
+# docs: real_des/des2018_reproduction) -- the same quantity as a copy's
+# input S/N: the stream's stars within one width over the square root of the
+# background's there.
+REAL_INPUT_SNR = {
+    "ATLAS": 23.1, "Elqui": 15.7, "Jhelum": 12.0, "Phoenix": 12.9,
+    "Tucana III": 11.1, "Indus": 11.0, "Chenab": 11.7, "Turranburra": 3.9,
+    "Aliqa Uma": 7.9, "Wambelong": 5.2, "Willka Yaku": 8.7, "Turbio": 5.1,
+    "Molonglo": 1.1, "Ravi": -0.2,
+}  # fmt: skip
+
+
+def detection_limit_figure():
+    """Recovery of dimmed copies against their input S/N, near and far, with
+    the real streams placed on the same axis."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    data = pd.concat(
+        [pd.read_csv(f) for f in sorted(DETECTION_LIMIT.glob("offset_*.csv"))],
+        ignore_index=True,
+    )
+    data = data[data.kind == "random"]
+    real = pd.read_csv(STREAM_SUMMARY).set_index("stream")
+    edges = np.array([0, 2, 4, 6, 8, 10, 13, 17, 22, 30, 45, 100])
+    fig, ax = plt.subplots(figsize=(9, 5))
+    groups = (
+        ("m−M < 16.5", data.distance_modulus < 16.5, "#8fb4e3"),
+        ("m−M ≥ 16.5", data.distance_modulus >= 16.5, "#1f3b73"),
+    )
+    summary = {}
+    for label, mask, colour in groups:
+        rows = data[mask]
+        bins = pd.cut(rows.input_snr, edges)
+        rate = rows.groupby(bins, observed=True).detected.agg(["mean", "size"])
+        rate = rate[rate["size"] >= 5]
+        centres = [np.sqrt(max(b.left, 1) * b.right) for b in rate.index]
+        ax.plot(
+            centres, rate["mean"], "o-", color=colour, lw=2, label=f"copies, {label}"
+        )
+        summary[label] = rate
+    for name, snr in REAL_INPUT_SNR.items():
+        found = bool(real.loc[name, "detected"])
+        near = real.loc[name, "distance_modulus"] < 16.5
+        y = 1.04 if found else -0.04
+        ax.plot(
+            max(snr, 0.6),
+            y,
+            "D",
+            ms=6,
+            color="#1f3b73" if not near else "#8fb4e3",
+            markeredgecolor="black" if found else "#b0b0b0",
+        )
+        ax.annotate(
+            name,
+            (max(snr, 0.6), y),
+            xytext=(0, 7 if found else -12),
+            textcoords="offset points",
+            fontsize=7,
+            ha="center",
+            rotation=35,
+        )
+    ax.set_xscale("log")
+    ax.set_xlabel("S/N of the stream in the matched-filter input")
+    ax.set_ylabel("fraction of copies recovered")
+    ax.set_ylim(-0.2, 1.25)
+    ax.axhline(0, color="#e6e6e6", lw=0.8)
+    ax.axhline(1, color="#e6e6e6", lw=0.8)
+    from matplotlib.lines import Line2D
+
+    handles, _ = ax.get_legend_handles_labels()
+    handles += [
+        Line2D(
+            [],
+            [],
+            marker="D",
+            ls="",
+            color="#1f3b73",
+            markeredgecolor="black",
+            label="real stream, found (top)",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="D",
+            ls="",
+            color="#1f3b73",
+            markeredgecolor="#b0b0b0",
+            label="real stream, missed (bottom)",
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, fontsize=8, loc="center right")
+    ax.spines[["top", "right"]].set_visible(False)
+    DOC_FIGURES.mkdir(parents=True, exist_ok=True)
+    fig.savefig(DOC_FIGURES / "detection_limit.png", dpi=120, bbox_inches="tight")
+    # what the copies predict for the real streams: each stream's chance of
+    # detection at its real input S/N, from copies at the same distance class
+    expected = 0.0
+    for name, snr in REAL_INPUT_SNR.items():
+        near = real.loc[name, "distance_modulus"] < 16.5
+        rate = summary["m−M < 16.5" if near else "m−M ≥ 16.5"]
+        chance = next(
+            (
+                r["mean"]
+                for b, r in rate.iterrows()
+                if b.left < max(snr, 0.1) <= b.right
+            ),
+            0.0,
+        )
+        expected += chance
+        print(
+            f"{name:12s} input S/N {snr:5.1f}  expected {chance:.2f}  found {bool(real.loc[name, 'detected'])}"
+        )
+    print(f"expected detections {expected:.1f}, found {int(real.detected.sum())}")
+    plt.close(fig)
+    for label, rate in summary.items():
+        print(label)
+        print(rate.round(2).to_string())
 
 
 def recovery_figures():
@@ -1590,6 +1742,8 @@ if __name__ == "__main__":
             "recovery-figures",
             "infer-models",
             "folds",
+            "detection-limit",
+            "detection-limit-figure",
         ],
     )
     parser.add_argument("--streams", nargs="+", help="recovery: only these streams")
@@ -1629,6 +1783,11 @@ if __name__ == "__main__":
         infer_models(arguments.seeds)
     elif arguments.step == "folds":
         fold_figure()
+    elif arguments.step == "detection-limit":
+        detection_limit(arguments.seeds)
+        detection_limit_figure()
+    elif arguments.step == "detection-limit-figure":
+        detection_limit_figure()
     elif arguments.step == "recovery-figures":
         recovery_figures()
     else:

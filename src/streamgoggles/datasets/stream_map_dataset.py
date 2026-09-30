@@ -21,10 +21,18 @@ import numpy as np
 
 from streamgoggles.background import Background
 from streamgoggles.config import EvalGrid, StreamConfig, build_eval_grid
-from streamgoggles.injector import StreamInjector, inject_background_only
+from streamgoggles.injector import (
+    StreamInjector,
+    StreamInvisible,
+    inject_background_only,
+)
 from streamgoggles.sample import Sample
 from streamgoggles.storage import SimulationStore
 from streamgoggles.windows import sample_random_window
+
+# How many stream draws a training sample may give up as invisible before the
+# training ranges are judged broken.
+MAX_STREAM_DRAWS = 50
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +358,7 @@ class StreamMapDataset:
         self.eval_mode = eval_mode
         self.steps_per_epoch = steps_per_epoch
         self.rng = rng if rng is not None else np.random.default_rng()
+        self.invisible_draws = 0
         # Set on first use inside a DataLoader worker; see
         # _ensure_worker_local_rng for why sharing one stream is unsafe.
         self._worker_id = None
@@ -463,10 +472,24 @@ class StreamMapDataset:
             )
             sample = inject_background_only(self.background, window, pix)
         else:
-            params = {
-                name: spec.sample(rng) for name, spec in self.config.params.items()
-            }
-            sample = self.injector.inject_single_stream(params, rng)
+            # A stream too faint to be seen anywhere it lands (the injector's
+            # "stream_band" label raises StreamInvisible) is replaced by a new
+            # draw: training shows the model only streams it could see. The
+            # draws given up are counted in `invisible_draws`.
+            for _ in range(MAX_STREAM_DRAWS):
+                params = {
+                    name: spec.sample(rng) for name, spec in self.config.params.items()
+                }
+                try:
+                    sample = self.injector.inject_single_stream(params, rng)
+                    break
+                except StreamInvisible:
+                    self.invisible_draws += 1
+            else:
+                raise RuntimeError(
+                    f"{MAX_STREAM_DRAWS} streams in a row were invisible; the "
+                    "training ranges hold almost no visible stream"
+                )
 
         # Background-only samples have params={} (inject_background_only) --
         # no natural identity to key a persisted cache entry on, so only

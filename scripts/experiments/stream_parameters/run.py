@@ -209,6 +209,13 @@ TRAINING_SETS = {
         "age": (9.0, 13.5),
         "z": (0.0001, 0.001, "log"),
     },
+    # the population set with streams down to 36 mag/arcsec2: the faint end,
+    # where the matched filter still finds streams and the network does not
+    "population faint": {
+        "age": (9.0, 13.5),
+        "z": (0.0001, 0.001, "log"),
+        "richness": (32.0, 36.0),
+    },
 }
 
 
@@ -300,7 +307,16 @@ def build_sky(background_seed):
     return background, injector
 
 
-def train(seed, windows, background, injector, training_set="des"):
+def train(
+    seed,
+    windows,
+    background,
+    injector,
+    training_set="des",
+    normalizer=None,
+    model_options=None,
+    loss_name=None,
+):
     import numpy as np
     import torch
     from torch.utils.data import DataLoader
@@ -343,8 +359,9 @@ def train(seed, windows, background, injector, training_set="des"):
 
     train_dataset = dataset(seed, windows // TRAINING["epochs"])
     # Each window's maps are standardized from that window alone (see the
-    # docs page): nothing is fitted, so the same holds on real data.
-    normalizer = WindowNormalizer()
+    # docs page): nothing is fitted, so the same holds on real data. A caller
+    # may pass another per-window normalizer (e.g. DecoyNormalizer).
+    normalizer = normalizer or WindowNormalizer()
 
     def query_view(augment, rng_seed):
         return QueryDistanceTransform(
@@ -372,10 +389,11 @@ def train(seed, windows, background, injector, training_set="des"):
     positive = float(np.clip(positive, 1e-3, 1 - 1e-3))
 
     torch.manual_seed(seed)
+    # A caller may change the architecture (e.g. depth) and the loss.
     model = UNet(
         in_channels=QueryDistanceTransform.n_channels,
         out_channels=1,
-        **MODEL,
+        **{**MODEL, **(model_options or {})},
     )
     with torch.no_grad():
         model.head_conv.bias.fill_(float(np.log(positive / (1 - positive))))
@@ -399,7 +417,7 @@ def train(seed, windows, background, injector, training_set="des"):
     trainer = PlainTrainer(
         model=model,
         optimizer=torch.optim.Adam(model.parameters(), lr=TRAINING["lr"]),
-        loss_fn=get_loss(TRAINING["loss_name"]),
+        loss_fn=get_loss(loss_name or TRAINING["loss_name"]),
         device="cpu",
     )
     result = trainer.train(
