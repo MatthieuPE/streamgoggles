@@ -1424,3 +1424,24 @@ def test_band_label_needs_the_minimum_length_on_valid_sky(real_background, band_
         injector.inject_single_stream(
             {**band_params, "length": 50.0}, np.random.default_rng(3), max_placements=2
         )
+
+
+def test_band_segments_keep_only_where_the_stream_stands_out(
+    real_background, band_params
+):
+    """Cut into segments, the band label lies inside the plain band label; a
+    bright stream stands out in every segment and keeps its whole band, while
+    an impossible local cut labels nothing."""
+    plain = _band_injector(real_background)
+    cut = _band_injector(real_background, band_segment_deg=2.0)
+    impossible = _band_injector(
+        real_background, band_segment_deg=2.0, band_segment_min_snr=1e9
+    )
+    samples = [
+        injector.inject_single_stream(band_params, np.random.default_rng(3))
+        for injector in (plain, cut, impossible)
+    ]
+    whole, segmented, empty = (s.label_stack for s in samples)
+    assert np.all(segmented <= whole)
+    assert segmented.sum() > 0.9 * whole.sum()
+    assert empty.sum() == 0

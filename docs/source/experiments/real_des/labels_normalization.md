@@ -187,8 +187,11 @@ saturated.*
 
 ## Round 2: trained on fold 0, scored on fold 1
 
-The same configurations — plus the Poisson normalization, and in a round 2b
-the band label with a stricter visibility cut, S/N ≥ 5 — trained on all of
+The same configurations — plus the Poisson normalization; in a round 2b the
+band label with a stricter visibility cut, S/N ≥ 5; and in a round 2c the
+**segmented band**: the band cut into 1° segments along the track, each
+labelled only where the stream stands out locally (S/N ≥ 1 in the segment,
+`band_segment_deg`) — trained on all of
 fold 0's training sky and scored on fold 1's calibration sky. Now the
 false-alarm cuts of the count-label models are no longer saturated, and the
 comparison measures the models.
@@ -215,7 +218,8 @@ connected groups shorter than 2°.*
 |---|---|---|---|---|---|
 | **count / window** | **82%** (83, 81) | 12 / **100** / **100** / 100 / 100% | **0.1%** | 100% | 1 of 9 |
 | band / window | 79% (71, 79) | **25** / 62 / 88 / 100 / 100% | 4.1% | **41%** | 9 of 9 |
-| band5 / window (S/N ≥ 5) | 80% (72, 80) | **25** / 62 / 88 / 100 / 100% | 3.7% | 45% | 9 of 9 |
+| band5 / window (S/N ≥ 5) | 80% (72, 80) | 25 / 62 / 88 / 100 / 100% | 3.7% | 45% | 9 of 9 |
+| segmented band / window | 73% (78, 72) | **50** / 62 / 100 / 100 / 100% | 2.4% | 46% | 7 of 9 |
 | count / poisson | 68% (72, 67) | 0 / 38 / 100 / 100 / 100% | 0.4% | 80% | 2 of 9 |
 | band / poisson | 62% (46, 62) | 25 / 38 / 75 / 100 / 100% | 3.5% | 36% | 9 of 9 |
 | band / decoy | 31% (0, 24) | 25 / 12 / 62 / 38 / 12% | 11% | 13% | 9 of 9 |
@@ -226,14 +230,15 @@ as a stream can be.*
 
 **Stream by stream** (ensemble), the two labels are complementary:
 
-| | count / window | band5 / window |
-|---|---|---|
-| Jhelum (1.16° wide, m−M 15.6) | 12% | **88%** |
-| Wambelong (m−M 15.9) | 12% | 25% |
-| Phoenix (0.16° wide) | **88%** | 38% |
-| Aliqa Uma (0.26° wide) | **75%** | 38% |
-| Willka Yaku (0.21° wide) | **100%** | 75% |
-| ATLAS, Chenab, Elqui, Indus, Molonglo, Ravi, Tucana III, Turbio, Turranburra | same (88-100%) | same |
+| | count / window | band5 / window | segmented band / window |
+|---|---|---|---|
+| Jhelum (1.16° wide, m−M 15.6) | 12% | **88%** | 75% |
+| Wambelong (m−M 15.9) | 12% | 25% | 12% |
+| Phoenix (0.16° wide) | **88%** | 38% | 50% |
+| Aliqa Uma (0.26° wide) | **75%** | 38% | 25% |
+| Willka Yaku (0.21° wide) | **100%** | 75% | 50% |
+| Tucana III (0.18° wide) | **100%** | 100% | 50% |
+| ATLAS, Chenab, Elqui, Indus, Molonglo, Ravi, Turbio, Turranburra | same (88-100%) | same | same |
 
 ### What this says
 
@@ -257,15 +262,20 @@ as a stream can be.*
    and near streams (Jhelum 88% against 12%, m−M 15 25% against 12%), behind
    for narrow ones (Phoenix, Aliqa Uma, Willka Yaku). Neither solves the
    nearest distances.
-4. **Train on a wide sky.** One patch of 600 deg² does not transfer (round
+4. **Labelling only where the stream stands out locally does not rescue the
+   band.** The segmented band keeps its labels elongated (1% with a largest
+   piece under 2°, one piece at the median) and halves the band's false
+   alarms (2.4% of empty sky), and it is the best at m−M 15 (50%) — but it
+   is the worst of the three overall (73%), losing the narrow streams
+   (Tucana III, Willka Yaku, Aliqa Uma), whose short segments rarely reach
+   S/N 1 on their own.
+5. **Train on a wide sky.** One patch of 600 deg² does not transfer (round
    1); fold 0 does, at the same cost.
 
 ### What to try next
 
-- **A label between the two**: the band's shape, narrowed to where the
-  stream's stars are (e.g. the band intersected with the count label dilated
-  along the track, or a band of half a width), to keep the elongation without
-  labelling empty stretches.
+- ~~A label between the two~~: tried as the segmented band (round 2c); it
+  keeps the elongation and fewer false alarms, but loses the narrow streams.
 - **Longer training** (the 19200-window tier) for the two labels, since the
   quick tier's seed spread is up to 8 points here.
 - **Both models together**: count-label models for narrow streams and

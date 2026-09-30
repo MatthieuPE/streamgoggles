@@ -69,6 +69,9 @@ CONFIGS = {
     "band/poisson": {"label": "band", "normalizer": "poisson"},
     # round 2b: the band label with a stricter visibility cut, S/N >= 5
     "band5/window": {"label": "band5", "normalizer": "window"},
+    # round 2c: the band cut into 1-degree segments along the track, each
+    # labelled only where the stream stands out locally (S/N >= 1)
+    "bandseg/window": {"label": "bandseg", "normalizer": "window"},
 }
 # Where models train and where they are scored. Round 1 trained on patch A and
 # was scored on patch B: one 600 deg2 patch proved too narrow a sky (the models
@@ -203,6 +206,13 @@ def build_sky(sky, label):
             "band_min_snr": 5.0,
             "band_min_length_deg": BAND_MIN_LENGTH_DEG,
         },
+        "bandseg": {
+            "label_policy": "stream_band",
+            "band_min_snr": BAND_MIN_SNR,
+            "band_min_length_deg": BAND_MIN_LENGTH_DEG,
+            "band_segment_deg": 1.0,
+            "band_segment_min_snr": 1.0,
+        },
     }
     injector = StreamInjector(
         background=background,
@@ -285,7 +295,7 @@ def train(config, seed, train_sky="A"):
     print(f"{stem.name}: trained in {time.time() - start:.0f}s", flush=True)
 
 
-def audit(n=300):
+def audit(n=300, labels=("count", "band")):
     """Label quality on the training patch: is the label one elongated band?"""
     import numpy as np
     from scipy import ndimage
@@ -301,7 +311,7 @@ def audit(n=300):
     rd = real_des()
     sp = rd.stream_parameters_module()
     rows = []
-    for label in ("count", "band"):
+    for label in labels:
         background, injector, pix = build_sky("A", label)
         config = StreamConfig(
             params=sp.training_parameters(rd.TRAINING_SET),
@@ -363,7 +373,12 @@ def audit(n=300):
             {"label": label, "invisible_draws": dataset.invisible_draws, "n": n}
         )
     OUT.mkdir(parents=True, exist_ok=True)
-    with open(OUT / "audit.pkl", "wb") as handle:
+    name = (
+        "audit.pkl"
+        if tuple(labels) == ("count", "band")
+        else f"audit_{'_'.join(labels)}.pkl"
+    )
+    with open(OUT / name, "wb") as handle:
         pickle.dump(rows, handle)
 
 
@@ -799,6 +814,7 @@ def figures(train_sky="A"):
         "count/poisson": "#d9a066",
         "band/poisson": "#b5651d",
         "band5/window": "#4a7fc1",
+        "bandseg/window": "#2e8b57",
     }
 
     fig, axes = plt.subplots(
@@ -901,6 +917,9 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=SEEDS[0])
     parser.add_argument("--n", type=int, default=300, help="audit: windows per label")
     parser.add_argument(
+        "--labels", nargs="+", default=["count", "band"], help="audit: labels"
+    )
+    parser.add_argument(
         "--train-sky",
         choices=list(EVALUATED_ON),
         default="fold0",
@@ -908,7 +927,7 @@ if __name__ == "__main__":
     )
     arguments = parser.parse_args()
     if arguments.step == "audit":
-        audit(arguments.n)
+        audit(arguments.n, tuple(arguments.labels))
     elif arguments.step == "train":
         train(arguments.config, arguments.seed, arguments.train_sky)
     elif arguments.step == "evaluate":

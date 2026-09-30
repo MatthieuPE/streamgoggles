@@ -380,6 +380,8 @@ class StreamInjector:
         min_stream_length_deg: float = 5.0,
         band_min_snr: float = 2.0,
         band_min_length_deg: float = 4.0,
+        band_segment_deg: float | None = None,
+        band_segment_min_snr: float = 1.0,
     ):
         """Initialize injector.
 
@@ -413,6 +415,13 @@ class StreamInjector:
                 stream's band must reach in a channel for that channel to be
                 labelled, and the length of band on valid sky the window must
                 hold.
+            band_segment_deg, band_segment_min_snr: Only used when
+                label_policy="stream_band": if a length is given, a labelled
+                channel's band is further cut into segments of that length
+                along the track, and only the segments where the stream
+                stands out locally (S / sqrt(B) >= band_segment_min_snr in the
+                segment) are labelled -- the band's shape, without the
+                stretches of track where the stream has no stars.
         """
         self.background = background
         self.matched_filters = matched_filters
@@ -435,6 +444,8 @@ class StreamInjector:
         self.min_stream_length_deg = min_stream_length_deg
         self.band_min_snr = band_min_snr
         self.band_min_length_deg = band_min_length_deg
+        self.band_segment_deg = band_segment_deg
+        self.band_segment_min_snr = band_segment_min_snr
         self.namespace = f"{survey}_{release}" if release else survey
         self._obs_injector = ObsStreamInjector(survey, release=release)
 
@@ -764,11 +775,21 @@ class StreamInjector:
             noise = float(np.sum((combined - stream)[band]))
             value = signal / np.sqrt(max(noise, 1.0))
             snr.append(value)
-            labels.append(
-                band.astype(float)
-                if value >= self.band_min_snr
-                else np.zeros(band.shape)
-            )
+            label = band.astype(float) if value >= self.band_min_snr else None
+            if label is not None and self.band_segment_deg:
+                label = np.zeros(band.shape)
+                segment = np.floor(
+                    phi1.reshape(np.shape(valid)) / self.band_segment_deg
+                )
+                background = combined - stream
+                for index in np.unique(segment[band]):
+                    here = band & (segment == index)
+                    local = float(np.sum(stream[here])) / np.sqrt(
+                        max(float(np.sum(background[here])), 1.0)
+                    )
+                    if local >= self.band_segment_min_snr:
+                        label[here] = 1.0
+            labels.append(label if label is not None else np.zeros(band.shape))
         distances = np.array([c["distance_modulus"] for c in channels_meta], float)
         nearest = distances[np.argmin(np.abs(distances - params["distance_modulus"]))]
         at_distance = np.isclose(distances, nearest)
