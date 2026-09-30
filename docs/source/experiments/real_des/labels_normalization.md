@@ -198,24 +198,6 @@ fold 0's training sky and scored on fold 1's calibration sky. Now the
 false-alarm cuts of the count-label models are no longer saturated, and the
 comparison measures the models.
 
-```{image} ../figures/real_des_patches/recovery_fold0.png
-:alt: Recovery of the DES 2018 copies per configuration, and against distance
-:width: 100%
-```
-
-*Left: DES 2018 copies recovered on fold 1 (bar: the two seeds' average;
-dots: each seed). Right: the distance scan (ensemble). The band/window line
-lies under the band5/window one: their scans are identical.*
-
-```{image} ../figures/real_des_patches/false_alarms_fold0.png
-:alt: How often each configuration fires on stream-free sky, and how blob-like those answers are
-:width: 100%
-```
-
-*On fold 1's stream-free calibration sky (medians over the queried
-distances): the share of pixels above 0.5, and the share of those in
-connected groups shorter than 2°.*
-
 | configuration | DES 2018 copies (seeds) | m−M 15 / 16 / 17 / 18 / 19 | empty sky > 0.5 | of which blobs | saturated cuts |
 |---|---|---|---|---|---|
 | **count / window** | **82%** (83, 81) | 12 / **100** / **100** / 100 / 100% | **0.1%** | 100% | 1 of 9 |
@@ -224,6 +206,7 @@ connected groups shorter than 2°.*
 | segmented band / window | 73% (78, 72) | **50** / 62 / 100 / 100 / 100% | 2.4% | 46% | 7 of 9 |
 | count + band / window (4 models) | 86% | 25 / 100 / 100 / 100 / 100% | 1.6% | 60% | 1 of 9 |
 | **count / window, 4 models** | **86%** | 38 / **100** / **100** / 100 / 100% | **0.2%** | 100% | 1 of 9 |
+| count / window, 128-pixel windows | 80% (79, 77) | 38 / 75 / 100 / 100 / 100% | 0.4% | 66% | 1 of 9 |
 | count / poisson | 68% (72, 67) | 0 / 38 / 100 / 100 / 100% | 0.4% | 80% | 2 of 9 |
 | band / poisson | 62% (46, 62) | 25 / 38 / 75 / 100 / 100% | 3.5% | 36% | 9 of 9 |
 | band / decoy | 31% (0, 24) | 25 / 12 / 62 / 38 / 12% | 11% | 13% | 9 of 9 |
@@ -231,6 +214,53 @@ connected groups shorter than 2°.*
 *"Saturated cuts": queried distances at which the output at a false-alarm
 rate of 10⁻³ is above 0.98 — where the model's false alarms are as confident
 as a stream can be.*
+
+*Each figure: left, the DES 2018 copies recovered on fold 1 (bar: the ensemble of the models, dots: each model); middle, the distance scan (ensemble); right, the share of fold 1's stream-free calibration sky where the ensemble's output is above 0.5 (median over the queried distances). The reference, the first training's configuration, is in dark grey.*
+
+### Normalization
+
+```{image} ../figures/real_des_patches/compare_normalization_fold0.png
+:alt: Window, Poisson and decoy normalizations compared
+:width: 100%
+```
+
+**Normalization: keep the window's own.** The decoy normalization fails
+on a wide sky too (a third of the copies, 11% of empty sky above 0.5): the
+decoy box counts red disk dwarfs, whose density follows Galactic latitude,
+so standardizing the isochrone channels by it gives them a level that
+changes across the sky. Normalizing by counting noise keeps an absolute
+significance but is 14-17 points worse, most at m−M 15-16.
+
+### Labels
+
+```{image} ../figures/real_des_patches/compare_labels_fold0.png
+:alt: Count, band, band with S/N 5, and segmented band labels compared
+:width: 100%
+```
+
+**The band label teaches elongation, and pays for it in specificity.** Its
+models' confident answers on empty sky are mostly elongated (blobs are
+36-45% of them, against 80-100% for the count label) — the blob problem is
+gone from the false alarms — but those answers are forty times more
+frequent, so its false-alarm cut is saturated at every distance.
+Tightening the visibility cut from S/N 2 to 5 changes nothing: the extra
+false alarms come from the label's geometry — it marks every pixel within
+one width, including stretches with no stream star in them — not from
+labelling faint streams.
+
+**Overall, the count label stays ahead** at a fixed false-alarm rate (82%
+against 79-80%), and ahead at m−M 16-17; the band label is ahead for wide
+and near streams (Jhelum 88% against 12%, m−M 15 25% against 12%), behind
+for narrow ones (Phoenix, Aliqa Uma, Willka Yaku). Neither solves the
+nearest distances.
+
+**Labelling only where the stream stands out locally does not rescue the
+band.** The segmented band keeps its labels elongated (1% with a largest
+piece under 2°, one piece at the median) and halves the band's false
+alarms (2.4% of empty sky), and it is the best at m−M 15 (50%) — but it
+is the worst of the three overall (73%), losing the narrow streams
+(Tucana III, Willka Yaku, Aliqa Uma), whose short segments rarely reach
+S/N 1 on their own.
 
 **Stream by stream** (ensemble), the two labels are complementary:
 
@@ -244,44 +274,42 @@ as a stream can be.*
 | Tucana III (0.18° wide) | **100%** | 100% | 50% |
 | ATLAS, Chenab, Elqui, Indus, Molonglo, Ravi, Turbio, Turranburra | same (88-100%) | same | same |
 
-### What this says
+### Number of models
 
-1. **Normalization: keep the window's own.** The decoy normalization fails
-   on a wide sky too (a third of the copies, 11% of empty sky above 0.5): the
-   decoy box counts red disk dwarfs, whose density follows Galactic latitude,
-   so standardizing the isochrone channels by it gives them a level that
-   changes across the sky. Normalizing by counting noise keeps an absolute
-   significance but is 14-17 points worse, most at m−M 15-16.
-2. **The band label teaches elongation, and pays for it in specificity.** Its
-   models' confident answers on empty sky are mostly elongated (blobs are
-   36-45% of them, against 80-100% for the count label) — the blob problem is
-   gone from the false alarms — but those answers are forty times more
-   frequent, so its false-alarm cut is saturated at every distance.
-   Tightening the visibility cut from S/N 2 to 5 changes nothing: the extra
-   false alarms come from the label's geometry — it marks every pixel within
-   one width, including stretches with no stream star in them — not from
-   labelling faint streams.
-3. **Overall, the count label stays ahead** at a fixed false-alarm rate (82%
-   against 79-80%), and ahead at m−M 16-17; the band label is ahead for wide
-   and near streams (Jhelum 88% against 12%, m−M 15 25% against 12%), behind
-   for narrow ones (Phoenix, Aliqa Uma, Willka Yaku). Neither solves the
-   nearest distances.
-4. **Labelling only where the stream stands out locally does not rescue the
-   band.** The segmented band keeps its labels elongated (1% with a largest
-   piece under 2°, one piece at the median) and halves the band's false
-   alarms (2.4% of empty sky), and it is the best at m−M 15 (50%) — but it
-   is the worst of the three overall (73%), losing the narrow streams
-   (Tucana III, Willka Yaku, Aliqa Uma), whose short segments rarely reach
-   S/N 1 on their own.
-5. **Combining the labels adds nothing that more models do not.** Averaging
-   the two count-label and the two band-label models recovers 86% of the
-   DES 2018 copies, and gains Jhelum (62%) without losing the narrow
-   streams — but four count-label models do exactly as well (86%, Jhelum
-   62%, 38% at m−M 15) with eight times fewer confident answers on empty sky
-   (0.2% against 1.6%). The gain was the number of models, as the simulated
-   experiments had found for the quick tier ({doc}`../stream_parameters`).
-6. **Train on a wide sky.** One patch of 600 deg² does not transfer (round
-   1); fold 0 does, at the same cost.
+```{image} ../figures/real_des_patches/compare_models_fold0.png
+:alt: Two and four count-label models, and the count and band mix
+:width: 100%
+```
+
+**Combining the labels adds nothing that more models do not.** Averaging
+the two count-label and the two band-label models recovers 86% of the
+DES 2018 copies, and gains Jhelum (62%) without losing the narrow
+streams — but four count-label models do exactly as well (86%, Jhelum
+62%, 38% at m−M 15) with eight times fewer confident answers on empty sky
+(0.2% against 1.6%). The gain was the number of models, as the simulated
+experiments had found for the quick tier ({doc}`../stream_parameters`).
+
+### Window size
+
+```{image} ../figures/real_des_patches/compare_window_size_fold0.png
+:alt: 96-pixel and 128-pixel windows compared
+:width: 100%
+```
+
+**Larger windows do not help, at this training length.** 128 × 128
+pixels (14.7°, `image_pix`) instead of 96 (11°), the same 4,800 windows:
+80% of the DES 2018 copies against 82%, a tie within the seeds' spread.
+Better on the nearest streams (38% against 12% at m−M 15, Wambelong 50%
+against 12%), worse at m−M 16 (75% against 100%), on Turranburra (62%
+against 100%) and Aliqa Uma (50% against 75%) — per-stream differences
+below about 15 points are within the noise of two seeds and eight
+placements. A larger window also means fewer windows' worth of sky per
+pixel for the same training length; it may need a longer training to pay.
+
+### The sky
+
+**Train on a wide sky.** One patch of 600 deg² does not transfer (round
+1); fold 0 does, at the same cost.
 
 ### What to try next
 

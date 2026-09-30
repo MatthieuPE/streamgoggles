@@ -79,6 +79,8 @@ CONFIGS = {
         "normalizer": "window",
         "parts": ["count/window", "band/window"],
     },
+    # larger windows: 128 x 128 pixels (14.7 deg) instead of 96 (11 deg)
+    "count/window 128px": {"label": "count", "normalizer": "window", "image_pix": 128},
     # its fair reference: as many count-label models (four seeds)
     "count/window x4": {
         "label": None,
@@ -160,7 +162,7 @@ def contaminants():
     return CONTAMINANTS
 
 
-def build_sky(sky, label):
+def build_sky(sky, label, image_pix=IMAGE_PIX):
     """Background and injector on a patch or a fold of the real training sky."""
     import numpy as np
 
@@ -176,7 +178,7 @@ def build_sky(sky, label):
 
     rd = real_des()
     sp = rd.stream_parameters_module()
-    pix = PixelizationSpec(nside=512, image_size_pix=(IMAGE_PIX, IMAGE_PIX))
+    pix = PixelizationSpec(nside=512, image_size_pix=(image_pix, image_pix))
     config = rd.filters_config()
     filters = build_matched_filters(config, namespace=rd.NAMESPACE)
     source_cfg = {"path": str(rd.TRAINING_CATALOGUE), "exclude": str(contaminants())}
@@ -283,7 +285,11 @@ def train(config, seed, train_sky="A"):
     if stem.with_suffix(".pt").exists():
         print(f"{stem.name}: already trained", flush=True)
         return
-    background, injector, _ = build_sky(train_sky, CONFIGS[config]["label"])
+    background, injector, _ = build_sky(
+        train_sky,
+        CONFIGS[config]["label"],
+        CONFIGS[config].get("image_pix", IMAGE_PIX),
+    )
     start = time.time()
     model, _, result = sp.train(
         seed,
@@ -496,7 +502,9 @@ def evaluate(config, seeds=SEEDS, train_sky="A"):
     sp = rd.stream_parameters_module()
     configure_torch_threads(num_workers=0)
     eval_sky = EVALUATED_ON[train_sky]
-    background, injector, pix = build_sky(eval_sky, "count")
+    background, injector, pix = build_sky(
+        eval_sky, "count", CONFIGS[config].get("image_pix", IMAGE_PIX)
+    )
     nside = pix.nside
     valid = background.valid_mask_full
     window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
@@ -812,6 +820,99 @@ def label_figures():
     plt.close(fig)
 
 
+# One figure per question, each against the reference configuration (the
+# first training's: count label, window normalization, two quick models).
+COMPARISONS = {
+    "labels": ["count/window", "band/window", "band5/window", "bandseg/window"],
+    "normalization": [
+        "count/window",
+        "count/poisson",
+        "band/window",
+        "band/poisson",
+        "band/decoy",
+    ],
+    "models": ["count/window", "count/window x4", "count+band/window"],
+    "window_size": ["count/window", "count/window 128px"],
+}
+# the reference in dark grey, the others in a fixed order
+COMPARISON_COLOURS = ["#4d4d4d", "#1f6fb4", "#e07b39", "#2e8b57", "#8e44ad"]
+
+
+def comparison_figures(train_sky="fold0"):
+    """For each question in COMPARISONS: DES 2018 copies recovered, recovery
+    against distance, and how often the ensemble fires on empty sky."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    folder = result_dir(train_sky)
+    data = pd.concat(
+        [pd.read_csv(p) for p in sorted(folder.glob("evaluation_*.csv"))],
+        ignore_index=True,
+    )
+    quiet = pd.concat(
+        [pd.read_csv(p) for p in sorted(folder.glob("quiet_*.csv"))], ignore_index=True
+    )
+    for question, configs in COMPARISONS.items():
+        configs = [c for c in configs if c in set(data.config)]
+        if len(configs) < 2:
+            continue
+        colours = dict(zip(configs, COMPARISON_COLOURS, strict=False))
+        fig, axes = plt.subplots(
+            1, 3, figsize=(15, 4.2), gridspec_kw={"width_ratios": [1, 1.2, 1]}
+        )
+        for i, config in enumerate(configs):
+            mine = data[(data.config == config) & (data.set == "DES 2018")]
+            ensemble = mine[mine.scorer == "ensemble"].detected.mean()
+            seeds = [
+                g.detected.mean()
+                for _, g in mine[mine.scorer != "ensemble"].groupby("scorer")
+            ]
+            axes[0].bar(i, ensemble, color=colours[config], width=0.6)
+            axes[0].plot([i] * len(seeds), seeds, "o", color="black", ms=4)
+            axes[0].text(i, ensemble + 0.02, f"{ensemble:.0%}", ha="center", fontsize=9)
+            scan = (
+                data[
+                    (data.config == config)
+                    & (data.set == "distance scan")
+                    & (data.scorer == "ensemble")
+                ]
+                .groupby("distance_modulus")
+                .detected.mean()
+            )
+            axes[1].plot(
+                scan.index, scan.values, "o-", color=colours[config], lw=2, label=config
+            )
+            empty = quiet[(quiet.config == config) & (quiet.scorer == "ensemble")]
+            axes[2].bar(
+                i, 100 * empty.above_half.median(), color=colours[config], width=0.6
+            )
+        for ax in (axes[0], axes[2]):
+            ax.set_xticks(range(len(configs)))
+            ax.set_xticklabels(configs, fontsize=8, rotation=25, ha="right")
+        axes[0].set_ylim(0, 1.08)
+        axes[0].set_ylabel("DES 2018 copies recovered")
+        axes[0].set_title("bar: ensemble, dots: single models", fontsize=9)
+        axes[1].set_ylim(-0.03, 1.05)
+        axes[1].set_xlabel("distance modulus (0.3 deg wide, 10 deg long, SB 33)")
+        axes[1].set_ylabel("recovered (ensemble)")
+        axes[1].legend(frameon=False, fontsize=8, loc="lower right")
+        axes[2].set_ylabel("% of empty sky above 0.5")
+        axes[2].set_title("false alarms", fontsize=9)
+        for ax in axes:
+            ax.spines[["top", "right"]].set_visible(False)
+        fig.suptitle(question.replace("_", " "), fontsize=11)
+        fig.tight_layout()
+        fig.savefig(
+            DOC_FIGURES / f"compare_{question}_{train_sky}.png",
+            dpi=120,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+
 def figures(train_sky="A"):
     """Recovery per configuration: DES 2018 streams, and against distance."""
     import matplotlib
@@ -837,6 +938,7 @@ def figures(train_sky="A"):
         "bandseg/window": "#2e8b57",
         "count+band/window": "#6a3d9a",
         "count/window x4": "#555555",
+        "count/window 128px": "#c0392b",
     }
 
     fig, axes = plt.subplots(
@@ -958,3 +1060,5 @@ if __name__ == "__main__":
         label_figures()
     else:
         figures(arguments.train_sky)
+        if arguments.train_sky != "A":
+            comparison_figures(arguments.train_sky)
