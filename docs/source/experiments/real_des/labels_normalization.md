@@ -22,6 +22,12 @@ near streams (Jhelum 88% against 12%) and loses on narrow ones (Phoenix 38%
 against 88%), and it fires on empty sky forty times more often. Train on a
 wide sky: one 600 deg² patch does not transfer.
 
+**But along a known track the matched filter alone is twice as sensitive as
+the network** (half of the copies found at an input S/N of 5, against 9-12
+for the network, whether its output is thresholded per pixel or averaged
+along the band): the network loses information, and adds none where the
+track is known.
+
 ## Why the label: an audit of the first training's windows
 
 The first training's label marks a pixel as "stream" when the stream's stars
@@ -344,6 +350,57 @@ distant streams no lever moves the limit below an input S/N of about 9**: the
 curves of two, four and six models lie on one another. The limit is not the
 models' spread; it is what this network, scored this way, can do.
 
+### Does the network add sensitivity? Three tests on the same copies
+
+The detection test asks for at least 20 pixels above the false-alarm cut
+within one width of the track — a test of the *map*, blind to the track. To
+see whether the network's limit is the network's or the test's, the same
+copies (four quick models, DES 2018 set and the fainter set) are scored three
+ways, all along the known track:
+
+- **network, per pixel**: the test above (at least 20 pixels at a false-alarm
+  rate of 10⁻³).
+- **network, integrated**: the mean of the network's output over the band
+  (± one width along the track) against the same band shape moved to 200
+  random places of the calibration sky (`null_band_placements`,
+  `band_mean_statistics`); found when the band beats all 200.
+- **matched filter alone**: the same integrated test on the network's
+  *input* — the isochrone channel's counts at the stream's distance, minus a
+  smooth local background (the mean over 1.8° pixels, nside 32, interpolated).
+  No network at all.
+
+The matched-filter test is honest: on 150 stream-free bands of the fold-1
+calibration sky, for a narrow distant track (0.25°, 10°, m−M 17) and a wide
+near one (0.8°, 15°, m−M 16), none is found, and the S/N of empty bands
+scatters by 0.9 — the null bands measure the noise correctly.
+
+```{image} ../figures/real_des_patches/detection_tests_fold0.png
+:alt: Fraction of copies found against their input S/N, by the network per pixel, the network integrated along the band, and the matched filter alone
+:width: 100%
+```
+
+| four quick models | half-recovery input S/N, near | far | copies found, near | far |
+|---|---|---|---|---|
+| network, per pixel (current test) | 12.1 | 8.9 | 41% | 50% |
+| network, integrated along the band | 10.4 | 8.0 | 48% | 55% |
+| **matched filter alone, integrated** | **5.2** | **5.0** | **72%** | **78%** |
+
+With two models the matched filter's limit is the same (5.2 / 5.0, it does
+not depend on the models) and the network's is 14.6 / 8.9 per pixel, 15.3 /
+8.2 integrated. At full brightness, per stream: the matched filter finds
+every stream at every place except Wambelong (88%); the network finds
+Jhelum at 62% and Wambelong at 12%.
+
+**Along a known track, the matched filter alone is about twice as sensitive
+as the network** (half-recovery S/N 5 against 9-12). Integrating the
+network's output along the band gains little (10.4 against 12.1 near): the
+information is lost *inside* the network, not by the per-pixel test. The
+network does not add sensitivity where the track is known; its use is to
+find tracks that are *not* known — where the matched-filter test cannot be
+run, since it needs the track. The fair comparison for discovery is
+therefore the matched filter searched over all tracks, with the look-elsewhere
+cost that brings; that has not been measured.
+
 ### The sky
 
 **Train on a wide sky.** One patch of 600 deg² does not transfer (round
@@ -359,6 +416,13 @@ models' spread; it is what this network, scored this way, can do.
   it with fewer false alarms.
 - ~~More count-label models, or longer ones~~: tried; four quick models are
   the best (86%, near limit 12.1); six and longer add nothing.
+- **Why the network loses half the input's sensitivity**: the per-window
+  normalization (a faint stream in a window with a bright feature is
+  compressed), the count label (near, faint streams get speckled labels), or
+  the loss. The matched-filter integrated test is the ceiling to aim for.
+- **A matched-filter search over tracks** (great circles through each
+  window, the same integrated test), with its look-elsewhere cost: the
+  baseline the network has to beat for discovery.
 
 ## Reproducing
 

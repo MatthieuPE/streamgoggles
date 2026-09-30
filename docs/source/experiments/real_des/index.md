@@ -97,6 +97,12 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    at their real input S/N the copies predict 4.5 of the 14 real streams to
    be found; 5 are ({doc}`recovery`, "The detection limit"). Every missed
    stream is below that limit.
+8. **Along a known track the network is half as sensitive as its input**:
+   the matched-filter counts along the band, against the same band placed
+   elsewhere, find half of the copies at an input S/N of 5; the network
+   needs 9-12, per pixel or averaged along the band. Four quick count-label
+   models with the per-window normalization are the best network
+   ({doc}`labels_normalization`).
 
 ## What comes next
 

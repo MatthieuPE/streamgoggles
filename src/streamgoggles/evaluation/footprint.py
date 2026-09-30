@@ -1492,6 +1492,77 @@ def _moved(vectors: np.ndarray, target: np.ndarray, roll: float) -> np.ndarray:
     return (Rotation.from_rotvec(target * roll) * align).apply(vectors)
 
 
+def null_band_placements(
+    band: np.ndarray,
+    usable: np.ndarray,
+    rng: np.random.Generator,
+    n_null_bands: int = 200,
+    min_band_coverage: float = 0.9,
+) -> list[np.ndarray]:
+    """The band's pixels moved rigidly onto random usable sky, as in
+    `real_track_statistics`: each placement's centroid on a random usable
+    pixel, turned by a random angle, kept when at least ``min_band_coverage``
+    of it lands on usable sky. Returns the usable pixels of each placement --
+    draw them once and score several maps on the same null bands with
+    `band_mean_statistics`."""
+    nside = hp.npix2nside(len(band))
+    vectors = np.array(hp.pix2vec(nside, np.flatnonzero(band))).T
+    targets = np.flatnonzero(usable)
+    placements, attempts = [], 0
+    while len(placements) < n_null_bands and attempts < 50 * n_null_bands:
+        attempts += 1
+        target = np.array(hp.pix2vec(nside, int(targets[rng.integers(targets.size)])))
+        moved = np.unique(
+            hp.vec2pix(nside, *_moved(vectors, target, rng.uniform(0, 2 * np.pi)).T)
+        )
+        inside = moved[usable[moved]]
+        if inside.size >= min_band_coverage * moved.size:
+            placements.append(inside)
+    return placements
+
+
+def band_mean_statistics(
+    values: np.ndarray,
+    band_pixels: np.ndarray,
+    null_values: np.ndarray,
+    placements: list[np.ndarray],
+) -> dict:
+    """A map's mean over a stream's band, against the same band shape on
+    stream-free sky: the integrated test, with no per-pixel threshold.
+
+    Parameters:
+        values: HEALPix map with the stream (network output, or counts).
+        band_pixels: the band's pixels to average (NaN values ignored).
+        null_values: the same kind of map without the stream.
+        placements: null bands, from `null_band_placements`.
+
+    Returns:
+        dict with ``band_mean``, ``null_mean``, ``null_std``, ``snr`` =
+        (band_mean - null_mean) / null_std, and ``p_value``: the fraction of
+        null bands whose mean is at least the band's, with a +1 correction
+        (1 / (n + 1) when the band beats every null band).
+    """
+    band_mean = float(np.nanmean(values[band_pixels]))
+    null = np.array([np.nanmean(null_values[pixels]) for pixels in placements])
+    null = null[np.isfinite(null)]
+    if null.size == 0:
+        return {
+            "band_mean": band_mean,
+            "null_mean": np.nan,
+            "null_std": np.nan,
+            "snr": np.nan,
+            "p_value": np.nan,
+        }
+    std = float(null.std())
+    return {
+        "band_mean": band_mean,
+        "null_mean": float(null.mean()),
+        "null_std": std,
+        "snr": float((band_mean - null.mean()) / std) if std > 0 else np.nan,
+        "p_value": float((1 + (null >= band_mean).sum()) / (null.size + 1)),
+    }
+
+
 def real_track_statistics(
     flagged: np.ndarray,
     scored: np.ndarray,

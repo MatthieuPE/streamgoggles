@@ -145,6 +145,7 @@ MIN_FLAGGED_PIXELS = 20
 MIN_SNR = 2.0
 N_NULL_BANDS = 200
 EVAL_SEED = 2028
+MF_BACKGROUND_NSIDE = 32  # the matched-filter test's local background: 1.8 deg pixels
 
 
 def real_des():
@@ -525,7 +526,12 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
         QueryDistanceTransform,
         StreamMapTransform,
     )
-    from streamgoggles.evaluation.footprint import real_track_statistics, track_band
+    from streamgoggles.evaluation.footprint import (
+        band_mean_statistics,
+        null_band_placements,
+        real_track_statistics,
+        track_band,
+    )
     from streamgoggles.matched_filter import (
         WindowProjection,
         stitch_windows_to_healpix,
@@ -655,6 +661,27 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
             )
     calibration &= np.isfinite(baseline[("ensemble", queries[0])])
 
+    # The matched filter's own search, as a classical analysis runs it: counts
+    # minus a smooth local background (the stream-free counts smoothed to
+    # about 2 degrees within the valid sky: the valid-weighted mean over
+    # nside-32 pixels, 1.8 degrees, interpolated back to every pixel -- not
+    # hp.smoothing, whose OpenMP runtime clashes with torch's in one process).
+    # The background model is taken from the
+    # stream-free map, which spares a wide stream the few tens of percent of
+    # its excess a smoothing of the injected map would absorb -- slightly in
+    # the matched filter's favour.
+    coarse_weight = hp.ud_grade(valid.astype(float), MF_BACKGROUND_NSIDE)
+    lon, lat = hp.pix2ang(nside, np.arange(valid.size), lonlat=True)
+    smooth_background = {}
+    for q in queries:
+        counts_q = np.where(valid, background.raw_map_full_dict["good"][q], 0.0)
+        # interpolate the coarse sums and the coarse valid fraction apart and
+        # divide: sky outside the footprint then weighs nothing
+        coarse = hp.ud_grade(counts_q, MF_BACKGROUND_NSIDE)
+        smooth_background[q] = hp.get_interp_val(
+            coarse, lon, lat, lonlat=True
+        ) / np.maximum(hp.get_interp_val(coarse_weight, lon, lat, lonlat=True), 1e-6)
+
     rows = []
     start = time.time()
     for index, (kind, name, stream) in enumerate(streams):
@@ -696,7 +723,31 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
             at = np.flatnonzero(band)
             stream_stars = sky["stream_raw_full"][good][band].sum()
             background_stars = background.raw_map_full_dict["good"][query][band].sum()
+            # The integrated test: the band's mean against the same shape on
+            # stream-free sky, one set of null bands for every map scored --
+            # the network's outputs and the matched filter's own counts.
+            usable = calibration & np.isfinite(baseline[("ensemble", query)])
+            placements = null_band_placements(
+                band,
+                usable,
+                np.random.default_rng([EVAL_SEED, index, placed, 99]),
+                N_NULL_BANDS,
+            )
+            exceeds_all = 1.0 / (len(placements) + 1) + 1e-12
+            counts = background.raw_map_full_dict["good"][query]
+            matched = band_mean_statistics(
+                sky["map_full"][good] - smooth_background[query],
+                at,
+                counts - smooth_background[query],
+                placements,
+            )
             for key, image in stitched.items():
+                integrated = band_mean_statistics(
+                    np.where(band, image, baseline[(key, query)]),
+                    at,
+                    baseline[(key, query)],
+                    placements,
+                )
                 values = image[at]
                 ref = reference[(key, query)]
                 ok = np.isfinite(values)
@@ -730,6 +781,16 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
                         "detected": bool(
                             stats["n_flagged"] >= MIN_FLAGGED_PIXELS
                             and stats["snr"] >= MIN_SNR
+                        ),
+                        "integrated_snr": integrated["snr"],
+                        "integrated_p": integrated["p_value"],
+                        "integrated_detected": bool(
+                            integrated["p_value"] <= exceeds_all
+                        ),
+                        "matched_filter_snr": matched["snr"],
+                        "matched_filter_p": matched["p_value"],
+                        "matched_filter_detected": bool(
+                            matched["p_value"] <= exceeds_all
                         ),
                     }
                 )
@@ -1072,6 +1133,99 @@ def sensitivity(train_sky="fold0"):
     )
 
 
+TESTS = {
+    "detected": "network, >= 20 pixels at FAR 1e-3 (current test)",
+    "integrated_detected": "network, mean output along the band",
+    "matched_filter_detected": "matched filter, background-subtracted counts along the band",
+}
+TEST_STYLES = {
+    "detected": {"color": "#1f6fb4", "ls": "-"},
+    "integrated_detected": {"color": "#e07b39", "ls": "-"},
+    "matched_filter_detected": {"color": "#4d4d4d", "ls": "--"},
+}
+
+
+def detection_tests(train_sky="fold0", config="count/window x4"):
+    """The same copies under three tests, at the same false-positive level
+    for the two integrated ones (the band beats all its null bands):
+    recovery against input S/N, near and far, and the half-recovery points."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    folder = result_dir(train_sky)
+    data = pd.concat(
+        [pd.read_csv(p) for p in sorted(folder.glob("evaluation_*.csv"))],
+        ignore_index=True,
+    )
+    if "integrated_detected" not in data:
+        return
+    data = data[
+        (data.scorer == "ensemble")
+        & data.set.isin(["DES 2018", "fainter"])
+        & data.integrated_detected.notna()
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.4), sharey=True)
+    rows = []
+    mine_all = data[data.config == config]
+    for ax, (label, near) in zip(
+        axes, (("m−M < 16.5", True), ("m−M ≥ 16.5", False)), strict=True
+    ):
+        mine = mine_all[(mine_all.distance_modulus < 16.5) == near]
+        for test, description in TESTS.items():
+            rate = mine.groupby(pd.cut(mine.input_snr, SNR_EDGES), observed=True)[
+                test
+            ].agg(["mean", "size"])
+            rate = rate[rate["size"] >= 4]
+            centres = [np.sqrt(max(b.left, 1) * b.right) for b in rate.index]
+            ax.plot(
+                centres, rate["mean"], "o", lw=2, label=description, **TEST_STYLES[test]
+            )
+            renamed = mine.assign(detected=mine[test].astype(bool))
+            rows.append(
+                {
+                    "config": config,
+                    "streams": label,
+                    "test": test,
+                    "half_recovery_snr": half_recovery_snr(renamed),
+                    "recovered": float(mine[test].mean()),
+                }
+            )
+        ax.set_xscale("log")
+        ax.set_xticks([2, 4, 6, 10, 20, 40])
+        ax.set_xticklabels(["2", "4", "6", "10", "20", "40"])
+        ax.minorticks_off()
+        ax.set_title(label, fontsize=10)
+        ax.set_xlabel("S/N of the copy in the matched-filter input")
+        ax.axhline(0.5, color="#b0b0b0", lw=0.8, ls=":")
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].set_ylabel("copies found")
+    axes[1].legend(frameon=False, fontsize=8, loc="lower right")
+    fig.suptitle(f"three tests on the same copies ({config})", fontsize=11)
+    fig.tight_layout()
+    fig.savefig(
+        DOC_FIGURES / f"detection_tests_{train_sky}.png", dpi=120, bbox_inches="tight"
+    )
+    plt.close(fig)
+    table = pd.DataFrame(rows)
+    table.to_csv(folder / "detection_tests.csv", index=False)
+    print(
+        table.pivot(index="test", columns="streams", values="half_recovery_snr")
+        .round(1)
+        .to_string()
+    )
+    print(
+        table.pivot(index="test", columns="streams", values="recovered")
+        .round(2)
+        .to_string()
+    )
+    full = mine_all[mine_all.set == "DES 2018"]
+    print(full.groupby("stream")[list(TESTS)].mean().round(2).to_string())
+
+
 def figures(train_sky="A"):
     """Recovery per configuration: DES 2018 streams, and against distance."""
     import matplotlib
@@ -1232,3 +1386,4 @@ if __name__ == "__main__":
         if arguments.train_sky != "A":
             comparison_figures(arguments.train_sky)
             sensitivity(arguments.train_sky)
+            detection_tests(arguments.train_sky)

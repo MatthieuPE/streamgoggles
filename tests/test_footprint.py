@@ -1082,3 +1082,35 @@ def test_a_line_of_flagged_pixels_is_detected_and_noise_is_not():
     alone = real_track_statistics(noise, sky, band, calibration, rng, 100)
     assert alone["snr"] < 2
     assert alone["null_density_mean"] == pytest.approx(0.01, rel=0.3)
+
+
+def test_band_mean_statistics_finds_a_faint_excess_along_a_band():
+    """A band raised by far less than one pixel's noise stands out when its
+    mean is compared with the same shape elsewhere; without the excess, it
+    does not."""
+    import healpy as hp
+
+    from streamgoggles.evaluation.footprint import (
+        band_mean_statistics,
+        null_band_placements,
+        track_band,
+    )
+
+    nside = 128
+    rng = np.random.default_rng(0)
+    sky = np.zeros(hp.nside2npix(nside), bool)
+    sky[hp.query_disc(nside, hp.ang2vec(0.0, -45.0, lonlat=True), np.radians(20))] = (
+        True
+    )
+    noise = np.where(sky, rng.normal(0.0, 1.0, sky.size), np.nan)
+    ra = np.linspace(-5, 5, 100)
+    band = track_band([(np.mod(ra, 360), np.full(100, -45.0))], 0.5, nside) & sky
+    placements = null_band_placements(band, sky, np.random.default_rng(1), 100)
+    assert len(placements) == 100
+    raised = noise.copy()
+    raised[band] += 0.3  # 0.3 sigma per pixel, over ~100 pixels
+    found = band_mean_statistics(raised, np.flatnonzero(band), noise, placements)
+    quiet = band_mean_statistics(noise, np.flatnonzero(band), noise, placements)
+    assert found["p_value"] == pytest.approx(1 / 101)
+    assert found["snr"] > 2.0
+    assert quiet["p_value"] > 0.05
