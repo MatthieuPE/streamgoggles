@@ -96,6 +96,34 @@ CONFIGS = {
         "parts": ["count/window"],
         "seeds": [42, 43, 44, 45],
     },
+    # why the network is half as sensitive as its input: the depth-2 U-Net
+    # draws 90% of its input from within 1.5 deg, so it sums a stream over a
+    # few degrees of track. Depth 4: a field of the whole window.
+    "count/window deep": {
+        "label": "count",
+        "normalizer": "window",
+        "model": {"depth": 4},
+    },
+    # training streams down to 36 mag/arcsec2 instead of 34.5: half the copies
+    # at input S/N 4-7 are fainter than anything the reference trained on
+    "count/window faint": {
+        "label": "count",
+        "normalizer": "window",
+        "training_set": "population faint",
+    },
+    "band/window faint": {
+        "label": "band",
+        "normalizer": "window",
+        "training_set": "population faint",
+    },
+    # batch Dice weights bright streams' many pixels over faint ones' few;
+    # per-pixel cross-entropy weights every pixel alike (logits head)
+    "count/window bce": {
+        "label": "count",
+        "normalizer": "window",
+        "model": {"head": "identity"},
+        "loss": "bce",
+    },
 }
 # Where models train and where they are scored. Round 1 trained on patch A and
 # was scored on patch B: one 600 deg2 patch proved too narrow a sky (the models
@@ -306,8 +334,10 @@ def train(config, seed, train_sky="A"):
         windows,
         background,
         injector,
-        training_set=rd.TRAINING_SET,
+        training_set=CONFIGS[config].get("training_set", rd.TRAINING_SET),
         normalizer=normalizer(CONFIGS[config]["normalizer"], channels()),
+        model_options=CONFIGS[config].get("model"),
+        loss_name=CONFIGS[config].get("loss"),
     )
     torch.save(model.state_dict(), stem.with_suffix(".pt"))
     stem.with_suffix(".json").write_text(
@@ -561,14 +591,17 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
     seeds = CONFIGS[config].get("seeds", seeds)
     for part in parts:
         for seed in seeds:
+            options = {**sp.MODEL, **CONFIGS[part].get("model", {})}
             model = UNet(
                 in_channels=QueryDistanceTransform.n_channels,
                 out_channels=1,
-                **sp.MODEL,
+                **options,
             )
             model.load_state_dict(
                 torch.load(model_stem(part, seed, train_sky).with_suffix(".pt"))
             )
+            if options["head"] == "identity":  # logits: scored as probabilities
+                model = torch.nn.Sequential(model, torch.nn.Sigmoid())
             model.eval()
             key = f"{part} seed{seed}" if len(parts) > 1 else f"seed{seed}"
             models[key] = model
@@ -588,6 +621,10 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
         )
         for q in queries
     }
+
+    def logit(p):
+        p = np.clip(p, 1e-6, 1 - 1e-6)
+        return np.log(p / (1 - p))
 
     def predict(maps_full, tile_ids, query):
         """{scorer: stitched map} for these tiles: each model, and their mean."""
@@ -748,6 +785,16 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
                     baseline[(key, query)],
                     placements,
                 )
+                # The same test on the logits: a mean of probabilities is ruled
+                # by the few noisy peaks, a sum of logits adds up the local
+                # evidence (for a calibrated output, the local log-likelihood
+                # ratio) as the matched filter adds up counts.
+                integrated_logit = band_mean_statistics(
+                    logit(np.where(band, image, baseline[(key, query)])),
+                    at,
+                    logit(baseline[(key, query)]),
+                    placements,
+                )
                 values = image[at]
                 ref = reference[(key, query)]
                 ok = np.isfinite(values)
@@ -786,6 +833,10 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
                         "integrated_p": integrated["p_value"],
                         "integrated_detected": bool(
                             integrated["p_value"] <= exceeds_all
+                        ),
+                        "integrated_logit_snr": integrated_logit["snr"],
+                        "integrated_logit_detected": bool(
+                            integrated_logit["p_value"] <= exceeds_all
                         ),
                         "matched_filter_snr": matched["snr"],
                         "matched_filter_p": matched["p_value"],
@@ -1133,14 +1184,120 @@ def sensitivity(train_sky="fold0"):
     )
 
 
+# Why the network is half as sensitive as its input: one lever per figure,
+# each against the reference (two count/window models) and the matched filter
+# (the ceiling: the same copies, the band's background-subtracted counts).
+LEVERS = {
+    "depth": ("count/window deep", "depth 4 (field: the window)"),
+    "loss": ("count/window bce", "cross-entropy loss"),
+    "label": ("band/window", "band label"),
+    "faint_count": ("count/window faint", "training down to 36 mag/arcsec²"),
+    "faint_band": ("band/window faint", "band label, training down to 36"),
+}
+
+
+def levers(train_sky="fold0"):
+    """compare_lever_{name}_{sky}.png and levers.csv: half-recovery input S/N
+    of the reference, the lever and the matched filter, near and far."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    folder = result_dir(train_sky)
+    data = pd.concat(
+        [pd.read_csv(p) for p in sorted(folder.glob("evaluation_*.csv"))],
+        ignore_index=True,
+    )
+    data = data[(data.scorer == "ensemble") & data.set.isin(["DES 2018", "fainter"])]
+    reference = "count/window"
+    rows = []
+    for lever, (config, name) in LEVERS.items():
+        mine = data[data.config == config]
+        if not (mine.set == "fainter").any() or "matched_filter_detected" not in mine:
+            continue
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.4), sharey=True)
+        for ax, (label, near) in zip(
+            axes, (("m−M < 16.5", True), ("m−M ≥ 16.5", False)), strict=True
+        ):
+            curves = (
+                (
+                    reference,
+                    "detected",
+                    "reference (count label, depth 2, Dice)",
+                    {"color": "#4d4d4d", "ls": "-"},
+                ),
+                (config, "detected", name, {"color": "#1f6fb4", "ls": "-"}),
+                (
+                    config,
+                    "matched_filter_detected",
+                    "matched filter alone",
+                    {"color": "#9e9e9e", "ls": "--"},
+                ),
+            )
+            for which, test, legend, style in curves:
+                part = data[
+                    (data.config == which) & ((data.distance_modulus < 16.5) == near)
+                ].dropna(subset=[test])
+                rate = part.groupby(pd.cut(part.input_snr, SNR_EDGES), observed=True)[
+                    test
+                ].agg(["mean", "size"])
+                rate = rate[rate["size"] >= 4]
+                centres = [np.sqrt(max(b.left, 1) * b.right) for b in rate.index]
+                ax.plot(
+                    centres,
+                    rate["mean"].astype(float),
+                    "o-",
+                    lw=2,
+                    label=legend,
+                    **style,
+                )
+                rows.append(
+                    {
+                        "lever": lever,
+                        "curve": legend,
+                        "streams": label,
+                        "half_recovery_snr": half_recovery_snr(
+                            part.assign(detected=part[test].astype(float))
+                        ),
+                        "recovered": part[test].astype(float).mean(),
+                    }
+                )
+            ax.set_xscale("log")
+            ax.set_xticks([2, 4, 6, 10, 20, 40])
+            ax.set_xticklabels(["2", "4", "6", "10", "20", "40"])
+            ax.minorticks_off()
+            ax.set_title(label, fontsize=10)
+            ax.set_xlabel("S/N of the copy in the matched-filter input")
+            ax.axhline(0.5, color="#b0b0b0", lw=0.8, ls=":")
+            ax.spines[["top", "right"]].set_visible(False)
+        axes[0].set_ylabel("copies found (two models)")
+        axes[1].legend(frameon=False, fontsize=8, loc="lower right")
+        fig.suptitle(f"{name} against the reference", fontsize=11)
+        fig.tight_layout()
+        fig.savefig(
+            DOC_FIGURES / f"compare_lever_{lever}_{train_sky}.png",
+            dpi=120,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+    table = pd.DataFrame(rows).drop_duplicates(subset=["curve", "streams"])
+    table.to_csv(folder / "levers.csv", index=False)
+    print(table.round(2).to_string(index=False))
+
+
 TESTS = {
     "detected": "network, >= 20 pixels at FAR 1e-3 (current test)",
     "integrated_detected": "network, mean output along the band",
+    "integrated_logit_detected": "network, mean logit along the band",
     "matched_filter_detected": "matched filter, background-subtracted counts along the band",
 }
 TEST_STYLES = {
     "detected": {"color": "#1f6fb4", "ls": "-"},
     "integrated_detected": {"color": "#e07b39", "ls": "-"},
+    "integrated_logit_detected": {"color": "#2e8b57", "ls": "-"},
     "matched_filter_detected": {"color": "#4d4d4d", "ls": "--"},
 }
 
@@ -1176,6 +1333,8 @@ def detection_tests(train_sky="fold0", config="count/window x4"):
     ):
         mine = mine_all[(mine_all.distance_modulus < 16.5) == near]
         for test, description in TESTS.items():
+            if test not in mine or mine[test].isna().all():
+                continue
             rate = mine.groupby(pd.cut(mine.input_snr, SNR_EDGES), observed=True)[
                 test
             ].agg(["mean", "size"])
@@ -1387,3 +1546,4 @@ if __name__ == "__main__":
             comparison_figures(arguments.train_sky)
             sensitivity(arguments.train_sky)
             detection_tests(arguments.train_sky)
+            levers(arguments.train_sky)

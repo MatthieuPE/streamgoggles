@@ -103,6 +103,12 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    needs 9-12, per pixel or averaged along the band. Four quick count-label
    models with the per-window normalization are the best network
    ({doc}`labels_normalization`).
+9. **No change of the network closes that gap**: a depth-4 U-Net, a
+   cross-entropy loss, the band label, training on streams down to 36
+   mag/arcsec², and summing logits rather than probabilities along the band
+   all leave the limit at 9-15. The network acts as a local detector; the
+   integration along the stream is what it lacks
+   ({doc}`labels_normalization`, "Why is the network half as sensitive?").
 
 ## What comes next
 

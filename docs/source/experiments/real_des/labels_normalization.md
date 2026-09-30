@@ -27,6 +27,9 @@ the network** (half of the copies found at an input S/N of 5, against 9-12
 for the network, whether its output is thresholded per pixel or averaged
 along the band): the network loses information, and adds none where the
 track is known.
+No change tried here closes that gap — depth 4, cross-entropy, the band
+label, training on fainter streams, or summing logits along the band: the
+network acts as a local detector.
 
 ## Why the label: an audit of the first training's windows
 
@@ -401,6 +404,100 @@ run, since it needs the track. The fair comparison for discovery is
 therefore the matched filter searched over all tracks, with the look-elsewhere
 cost that brings; that has not been measured.
 
+### Why is the network half as sensitive? Five levers, none closes the gap
+
+The three tests above say the faint stream is lost *inside* the network. Each
+suspect was changed alone, on two quick models, trained on fold 0 and scored
+on fold 1 like the reference (two count-label, depth-2, batch-Dice models),
+on the DES 2018 copies at full and reduced brightness:
+
+- **Receptive field.** Probed by the gradient of one output pixel with
+  respect to the input, the trained depth-2 network draws half of it from
+  within 0.6° and 90% within 1.5°: it sums a stream over a few degrees of
+  track, the matched-filter test over its whole 5-15°. That alone would cost
+  about √(3/10) ≈ 0.55 — the gap. Lever: a **depth-4 U-Net**, whose field is
+  the whole window (`count/window deep`).
+- **Loss.** Batch Dice pools pixels over the batch, so a bright stream's many
+  pixels outweigh a faint one's few. Lever: **per-pixel cross-entropy**
+  (`count/window bce`, logits head).
+- **Label.** The count label leaves faint streams empty or speckled. Lever:
+  the **band label**, which labels any stream whose band stands at S/N ≥ 2
+  (`band/window`, already trained).
+- **Training range.** Training streams are drawn at 32-34.5 mag/arcsec²; at
+  input S/N 4-7, half of the copies are fainter than anything the network
+  saw (17% at S/N 7-10). Lever: **training down to 36 mag/arcsec²**, with
+  either label (`count/window faint`, `band/window faint`, the
+  `population faint` training set).
+- **How the output is summed.** A mean of probabilities is ruled by a few
+  noisy peaks; a sum of logits adds the local evidence as the matched filter
+  adds counts. Lever: the integrated test on the **logits** (no training).
+
+```{image} ../figures/real_des_patches/compare_lever_depth_fold0.png
+:alt: Depth 4 against the reference and the matched filter
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/compare_lever_loss_fold0.png
+:alt: Cross-entropy loss against the reference and the matched filter
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/compare_lever_label_fold0.png
+:alt: Band label against the reference and the matched filter
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/compare_lever_faint_count_fold0.png
+:alt: Training down to 36 mag/arcsec2 against the reference and the matched filter
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/compare_lever_faint_band_fold0.png
+:alt: Band label with training down to 36 mag/arcsec2 against the reference and the matched filter
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/detection_tests_fold0.png
+:alt: Four models under four tests: per pixel, mean output, mean logit along the band, and the matched filter alone
+:width: 100%
+```
+
+*One lever per figure: the reference (dark grey), the lever (blue) and the
+matched filter alone on the same copies (dashed). Last figure: the four
+reference models under the per-pixel test, the mean output and the mean
+logit along the band, and the matched filter. `patches.py figures`.*
+
+| two quick models unless stated | half-recovery input S/N, near | far | DES 2018 copies | m−M 15 | empty sky > 0.5 |
+|---|---|---|---|---|---|
+| reference (count, depth 2, Dice) | 14.6 | 8.9 | 82% | 12% | 0.1% |
+| depth 4 | 12.3 | 10.9 | **87%** | **50%** | 1.7% |
+| cross-entropy | 13.5 | 11.5 | 83% | 25% | 0.0% |
+| band label | 14.8 | 11.7 | 79% | 25% | 4.1% |
+| training to 36 mag/arcsec² | 19.6 | 9.4 | 81% | 0% | 0.0% |
+| band label, training to 36 | 15.6 | 10.8 | 81% | 25% | 5.5% |
+| four reference models, per pixel | 12.1 | 8.9 | 86% | 38% | 0.2% |
+| four reference models, mean logit along the band | 9.4 | 7.9 | | | |
+| **matched filter alone** | **5.2** | **5.0** | | | |
+
+**No lever moves the limit toward the matched filter's.** Every network
+needs an input S/N of 9-15 to find half of the copies; the matched filter
+needs 5. Differences between levers (±2) are of the order of the spread
+between seeds. Summing logits instead of probabilities gains 1 near and
+nothing far, so the faint stream is not in the output to be summed.
+Depth 4 is the only lever that helps anywhere — on bright, near streams
+(m−M 15: 50% against 12%; DES 2018 copies 87%) — at the cost of more false
+alarms on empty sky, not on the limit. Training on fainter streams does not
+teach the network to find them.
+
+What remains: the network, as trained here — 4,800 windows, a per-pixel
+label — acts as a *local* detector, flagging a stream where a few degrees of
+it stand out, and no change of label, loss, depth or training range makes it
+integrate a faint stream along its whole length. The matched filter does that
+integration explicitly, along a known track. Two ways follow: give the
+integration to the network's task (a window-level "stream here" output, or
+a track), or keep the network as a local detector and do the integration
+outside it — which, for discovery, is a search over tracks.
+
 ### The sky
 
 **Train on a wide sky.** One patch of 600 deg² does not transfer (round
@@ -416,10 +513,12 @@ cost that brings; that has not been measured.
   it with fewer false alarms.
 - ~~More count-label models, or longer ones~~: tried; four quick models are
   the best (86%, near limit 12.1); six and longer add nothing.
-- **Why the network loses half the input's sensitivity**: the per-window
-  normalization (a faint stream in a window with a bright feature is
-  compressed), the count label (near, faint streams get speckled labels), or
-  the loss. The matched-filter integrated test is the ceiling to aim for.
+- ~~Why the network loses half the input's sensitivity~~: tried — depth,
+  loss, label, training range and summing logits; none moves the limit
+  (above). Normalization was tested before (decoy and Poisson are worse).
+- **A task that asks for integration**: a window-level output ("is there a
+  stream in this window, and where is its track"), so the loss rewards
+  finding a faint stream as a whole rather than its pixels one by one.
 - **A matched-filter search over tracks** (great circles through each
   window, the same integrated test), with its look-elsewhere cost: the
   baseline the network has to beat for discovery.
@@ -433,5 +532,8 @@ python scripts/experiments/real_des/patches.py label-figures    # its two figure
 python scripts/experiments/real_des/patches.py train --config band/window --seed 42   # ~15-20 min each
 python scripts/experiments/real_des/patches.py evaluate --config band/window          # ~8 min
 python scripts/experiments/real_des/patches.py figures
+# the sensitivity levers: count/window deep, count/window bce,
+# count/window faint, band/window faint (train seeds 42 and 43, then
+# evaluate with and without --sets fainter)
 # round 1: add --train-sky A (train on patch A, score on patch B)
 ```
