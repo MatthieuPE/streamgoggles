@@ -1559,10 +1559,52 @@ def detection_limit_figure():
     ax.set_ylim(-0.2, 1.25)
     ax.axhline(0, color="#e6e6e6", lw=0.8)
     ax.axhline(1, color="#e6e6e6", lw=0.8)
-    ax.legend(frameon=False, fontsize=8, loc="center right")
+    from matplotlib.lines import Line2D
+
+    handles, _ = ax.get_legend_handles_labels()
+    handles += [
+        Line2D(
+            [],
+            [],
+            marker="D",
+            ls="",
+            color="#1f3b73",
+            markeredgecolor="black",
+            label="real stream, found (top)",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="D",
+            ls="",
+            color="#1f3b73",
+            markeredgecolor="#b0b0b0",
+            label="real stream, missed (bottom)",
+        ),
+    ]
+    ax.legend(handles=handles, frameon=False, fontsize=8, loc="center right")
     ax.spines[["top", "right"]].set_visible(False)
     DOC_FIGURES.mkdir(parents=True, exist_ok=True)
     fig.savefig(DOC_FIGURES / "detection_limit.png", dpi=120, bbox_inches="tight")
+    # what the copies predict for the real streams: each stream's chance of
+    # detection at its real input S/N, from copies at the same distance class
+    expected = 0.0
+    for name, snr in REAL_INPUT_SNR.items():
+        near = real.loc[name, "distance_modulus"] < 16.5
+        rate = summary["m−M < 16.5" if near else "m−M ≥ 16.5"]
+        chance = next(
+            (
+                r["mean"]
+                for b, r in rate.iterrows()
+                if b.left < max(snr, 0.1) <= b.right
+            ),
+            0.0,
+        )
+        expected += chance
+        print(
+            f"{name:12s} input S/N {snr:5.1f}  expected {chance:.2f}  found {bool(real.loc[name, 'detected'])}"
+        )
+    print(f"expected detections {expected:.1f}, found {int(real.detected.sum())}")
     plt.close(fig)
     for label, rate in summary.items():
         print(label)
