@@ -855,7 +855,7 @@ def figures(train_sky="A"):
         ax.plot([i] * len(seeds), seeds, "o", color="black", ms=4)
         ax.text(i, ensemble + 0.02, f"{ensemble:.0%}", ha="center", fontsize=9)
     ax.set_xticks(range(len(order)))
-    ax.set_xticklabels([c.replace("/", "\n") for c in order], fontsize=9)
+    ax.set_xticklabels(order, fontsize=8, rotation=35, ha="right")
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("fraction of copies recovered")
     ax.set_title(
@@ -874,7 +874,7 @@ def figures(train_sky="A"):
     ax.set_xlabel("distance modulus (width 0.3 deg, 10 deg long, SB 33)")
     ax.set_ylabel("fraction recovered (ensemble)")
     ax.set_ylim(-0.03, 1.05)
-    ax.legend(frameon=False, fontsize=9)
+    ax.legend(frameon=False, fontsize=8, loc="center left", bbox_to_anchor=(1.0, 0.5))
     ax.set_title("recovery against distance", fontsize=10)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
@@ -902,7 +902,7 @@ def figures(train_sky="A"):
         axes[1].set_ylabel("% of those in blobs shorter than 2 deg")
         for ax in axes:
             ax.set_xticks(range(len(order)))
-            ax.set_xticklabels([c.replace("/", "\n") for c in order], fontsize=9)
+            ax.set_xticklabels(order, fontsize=8, rotation=35, ha="right")
             ax.spines[["top", "right"]].set_visible(False)
         axes[0].set_title("how often the ensemble fires on empty sky", fontsize=10)
         axes[1].set_title("how blob-like those answers are", fontsize=10)
