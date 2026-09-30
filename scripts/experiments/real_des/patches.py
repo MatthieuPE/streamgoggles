@@ -116,6 +116,18 @@ CONFIGS = {
         "normalizer": "window",
         "training_set": "population faint",
     },
+    # the answer is a line: U-Net features and the input summed along every
+    # line through the window (Hough), then a small network over the lines
+    # (`streamgoggles.models.hough`); trained on the band label turned into
+    # its line, with cross-entropy, and more stream-free windows (30%) since
+    # a window may now answer "no line"
+    "hough/band": {
+        "label": "band",
+        "normalizer": "window",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+    },
     # batch Dice weights bright streams' many pixels over faint ones' few;
     # per-pixel cross-entropy weights every pixel alike (logits head)
     "count/window bce": {
@@ -312,6 +324,36 @@ def model_stem(config, seed, train_sky="A"):
     return result_dir(train_sky) / "models" / f"{config.replace('/', '_')}_seed{seed}"
 
 
+def hough_parts(config):
+    """(model factory, view wrapper) for a Hough configuration."""
+    from streamgoggles.models.hough import HoughLines, HoughTargetTransform, HoughUNet
+
+    sp = real_des().stream_parameters_module()
+    options = CONFIGS[config]["hough"]
+    image_pix = CONFIGS[config].get("image_pix", IMAGE_PIX)
+    grid = HoughLines(
+        image_pix,
+        image_pix,
+        options["n_theta"],
+        options["rho_step"],
+        options["min_pixels"],
+    )
+
+    def factory(in_channels):
+        return HoughUNet(
+            in_channels,
+            image_pix,
+            depth=sp.MODEL["depth"],
+            base_width=sp.MODEL["base_width"],
+            **options,
+        )
+
+    def wrapper(view):
+        return HoughTargetTransform(view, grid)
+
+    return factory, wrapper
+
+
 def train(config, seed, train_sky="A"):
     import torch
 
@@ -329,6 +371,9 @@ def train(config, seed, train_sky="A"):
     )
     start = time.time()
     windows = CONFIGS[config].get("windows", WINDOWS)
+    factory, wrapper = None, None
+    if "hough" in CONFIGS[config]:
+        factory, wrapper = hough_parts(config)
     model, _, result = sp.train(
         seed,
         windows,
@@ -338,6 +383,9 @@ def train(config, seed, train_sky="A"):
         normalizer=normalizer(CONFIGS[config]["normalizer"], channels()),
         model_options=CONFIGS[config].get("model"),
         loss_name=CONFIGS[config].get("loss"),
+        training_options=CONFIGS[config].get("training"),
+        model_factory=factory,
+        view_wrapper=wrapper,
     )
     torch.save(model.state_dict(), stem.with_suffix(".pt"))
     stem.with_suffix(".json").write_text(
