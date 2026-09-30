@@ -81,6 +81,14 @@ CONFIGS = {
     },
     # larger windows: 128 x 128 pixels (14.7 deg) instead of 96 (11 deg)
     "count/window 128px": {"label": "count", "normalizer": "window", "image_pix": 128},
+    # sensitivity levers: six quick models; two models trained four times longer
+    "count/window x6": {
+        "label": None,
+        "normalizer": "window",
+        "parts": ["count/window"],
+        "seeds": [42, 43, 44, 45, 46, 47],
+    },
+    "count/window long": {"label": "count", "normalizer": "window", "windows": 19200},
     # its fair reference: as many count-label models (four seeds)
     "count/window x4": {
         "label": None,
@@ -291,9 +299,10 @@ def train(config, seed, train_sky="A"):
         CONFIGS[config].get("image_pix", IMAGE_PIX),
     )
     start = time.time()
+    windows = CONFIGS[config].get("windows", WINDOWS)
     model, _, result = sp.train(
         seed,
-        WINDOWS,
+        windows,
         background,
         injector,
         training_set=rd.TRAINING_SET,
@@ -305,7 +314,7 @@ def train(config, seed, train_sky="A"):
             {
                 "config": config,
                 "seed": seed,
-                "windows": WINDOWS,
+                "windows": windows,
                 "train_s": time.time() - start,
                 "train_losses": result["train_losses"],
                 "val_losses": result["val_losses"],
@@ -402,8 +411,18 @@ def audit(n=300, labels=("count", "band")):
         pickle.dump(rows, handle)
 
 
-def evaluation_streams():
-    """(set, name, params) injected on patch B."""
+FAINTER_BY = (
+    1.0,
+    1.5,
+)  # mag/arcsec^2: the "fainter" set, near the real streams' strength
+
+
+def evaluation_streams(sets=("DES 2018", "distance scan")):
+    """(set, name, params) injected on the evaluation sky. Sets: "DES 2018"
+    (Table 1 parameters), "distance scan", and "fainter" (the DES 2018
+    streams made FAINTER_BY mag/arcsec^2 fainter -- the copies are brighter
+    than the real streams, so this set reaches their strength and measures
+    the detection limit)."""
     from streamgoggles.objects_overlap import DES2018_POPULATIONS
 
     sp = real_des().stream_parameters_module()
@@ -424,6 +443,23 @@ def evaluation_streams():
                 },
             )
         )
+    for name, (width, length, distance, sb) in sp.DES_STREAMS.items():
+        age, z = DES2018_POPULATIONS[name]
+        for fainter in FAINTER_BY:
+            streams.append(
+                (
+                    "fainter",
+                    f"{name} +{fainter:g}",
+                    {
+                        "width": width,
+                        "length": min(length, MAX_LENGTH),
+                        "distance_modulus": distance,
+                        "richness": sb + fainter,
+                        "age": age,
+                        "z": z,
+                    },
+                )
+            )
     for distance in SCAN["distances"]:
         streams.append(
             (
@@ -439,7 +475,7 @@ def evaluation_streams():
                 },
             )
         )
-    return streams
+    return [s for s in streams if s[0] in sets]
 
 
 def shapes(mask, nside):
@@ -477,7 +513,7 @@ def shapes(mask, nside):
     return {"groups": int(n_groups), "blob_share": float(short / pixels.size)}
 
 
-def evaluate(config, seeds=SEEDS, train_sky="A"):
+def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance scan")):
     """Score each seed's model, and their average, on patch B."""
     import healpy as hp
     import numpy as np
@@ -530,7 +566,7 @@ def evaluate(config, seeds=SEEDS, train_sky="A"):
             model.eval()
             key = f"{part} seed{seed}" if len(parts) > 1 else f"seed{seed}"
             models[key] = model
-    streams = evaluation_streams()
+    streams = evaluation_streams(sets)
     queries = sorted(
         {
             min(sp.QUERY_GRID, key=lambda q: abs(q - p["distance_modulus"]))
@@ -705,8 +741,12 @@ def evaluate(config, seeds=SEEDS, train_sky="A"):
     out = result_dir(train_sky)
     out.mkdir(parents=True, exist_ok=True)
     name = config.replace("/", "_")
-    pd.DataFrame(rows).to_csv(out / f"evaluation_{name}.csv", index=False)
-    pd.DataFrame(quiet).to_csv(out / f"quiet_{name}.csv", index=False)
+    if tuple(sets) == ("DES 2018", "distance scan"):
+        pd.DataFrame(rows).to_csv(out / f"evaluation_{name}.csv", index=False)
+        pd.DataFrame(quiet).to_csv(out / f"quiet_{name}.csv", index=False)
+    else:  # an extra set: its own file, read with the others by set
+        suffix = "_".join(x.replace(" ", "-") for x in sets)
+        pd.DataFrame(rows).to_csv(out / f"evaluation_{name}__{suffix}.csv", index=False)
 
 
 def label_figures():
@@ -833,6 +873,12 @@ COMPARISONS = {
     ],
     "models": ["count/window", "count/window x4", "count+band/window"],
     "window_size": ["count/window", "count/window 128px"],
+    "models_and_length": [
+        "count/window",
+        "count/window x4",
+        "count/window x6",
+        "count/window long",
+    ],
 }
 # the reference in dark grey, the others in a fixed order
 COMPARISON_COLOURS = ["#4d4d4d", "#1f6fb4", "#e07b39", "#2e8b57", "#8e44ad"]
@@ -913,6 +959,119 @@ def comparison_figures(train_sky="fold0"):
         plt.close(fig)
 
 
+SENSITIVITY_CONFIGS = [
+    "count/window",
+    "count/window x4",
+    "count/window x6",
+    "count/window long",
+    "count/window 128px",
+]
+SNR_EDGES = [0, 4, 6, 8, 10, 13, 17, 22, 30, 60]
+
+
+def half_recovery_snr(rows):
+    """Input S/N at which half the copies are found: binned recovery,
+    interpolated where it crosses 0.5 (NaN if it never does)."""
+    import numpy as np
+    import pandas as pd
+
+    rate = rows.groupby(pd.cut(rows.input_snr, SNR_EDGES), observed=True).detected.agg(
+        ["mean", "size"]
+    )
+    rate = rate[rate["size"] >= 4]
+    centres = np.array([np.sqrt(max(b.left, 1) * b.right) for b in rate.index])
+    values = rate["mean"].to_numpy()
+    for i in range(1, len(values)):
+        if values[i - 1] < 0.5 <= values[i]:
+            f = (0.5 - values[i - 1]) / (values[i] - values[i - 1])
+            return float(
+                np.exp(np.log(centres[i - 1]) + f * np.log(centres[i] / centres[i - 1]))
+            )
+    return float("nan") if values.size == 0 or values[0] < 0.5 else float(centres[0])
+
+
+def sensitivity(train_sky="fold0"):
+    """Recovery against input S/N for each sensitivity configuration, near and
+    far, from the DES 2018 and fainter copies (ensembles), and its 50% point."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    folder = result_dir(train_sky)
+    data = pd.concat(
+        [pd.read_csv(p) for p in sorted(folder.glob("evaluation_*.csv"))],
+        ignore_index=True,
+    )
+    data = data[(data.scorer == "ensemble") & data.set.isin(["DES 2018", "fainter"])]
+    configs = [
+        c
+        for c in SENSITIVITY_CONFIGS
+        if c in set(data.config) and (data[data.config == c].set == "fainter").any()
+    ]
+    colours = dict(zip(configs, COMPARISON_COLOURS, strict=False))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.4), sharey=True)
+    rows = []
+    for ax, (label, near) in zip(
+        axes, (("m−M < 16.5", True), ("m−M ≥ 16.5", False)), strict=True
+    ):
+        for config in configs:
+            mine = data[
+                (data.config == config) & ((data.distance_modulus < 16.5) == near)
+            ]
+            rate = mine.groupby(
+                pd.cut(mine.input_snr, SNR_EDGES), observed=True
+            ).detected.agg(["mean", "size"])
+            rate = rate[rate["size"] >= 4]
+            centres = [np.sqrt(max(b.left, 1) * b.right) for b in rate.index]
+            ax.plot(
+                centres, rate["mean"], "o-", color=colours[config], lw=2, label=config
+            )
+            rows.append(
+                {
+                    "config": config,
+                    "streams": label,
+                    "half_recovery_snr": half_recovery_snr(mine),
+                    "recovered": mine.detected.mean(),
+                    "copies": len(mine),
+                }
+            )
+        ax.set_xscale("log")
+        ax.set_xticks([2, 4, 6, 10, 20, 40])
+        ax.set_xticklabels(["2", "4", "6", "10", "20", "40"])
+        ax.minorticks_off()
+        ax.set_title(label, fontsize=10)
+        ax.set_xlabel("S/N of the copy in the matched-filter input")
+        ax.axhline(0.5, color="#b0b0b0", lw=0.8, ls=":")
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].set_ylabel("copies recovered (ensemble)")
+    axes[1].legend(frameon=False, fontsize=8, loc="lower right")
+    fig.suptitle(
+        "sensitivity: DES 2018 copies at full and reduced brightness", fontsize=11
+    )
+    fig.tight_layout()
+    fig.savefig(
+        DOC_FIGURES / f"compare_sensitivity_{train_sky}.png",
+        dpi=120,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+    table = pd.DataFrame(rows)
+    table.to_csv(folder / "sensitivity.csv", index=False)
+    print(
+        table.pivot(index="config", columns="streams", values="half_recovery_snr")
+        .round(1)
+        .to_string()
+    )
+    print(
+        table.pivot(index="config", columns="streams", values="recovered")
+        .round(2)
+        .to_string()
+    )
+
+
 def figures(train_sky="A"):
     """Recovery per configuration: DES 2018 streams, and against distance."""
     import matplotlib
@@ -939,6 +1098,8 @@ def figures(train_sky="A"):
         "count+band/window": "#6a3d9a",
         "count/window x4": "#555555",
         "count/window 128px": "#c0392b",
+        "count/window x6": "#1b1b1b",
+        "count/window long": "#16a085",
     }
 
     fig, axes = plt.subplots(
@@ -1044,6 +1205,12 @@ if __name__ == "__main__":
         "--labels", nargs="+", default=["count", "band"], help="audit: labels"
     )
     parser.add_argument(
+        "--sets",
+        nargs="+",
+        default=["DES 2018", "distance scan"],
+        help="evaluate: which stream sets (DES 2018, distance scan, fainter)",
+    )
+    parser.add_argument(
         "--train-sky",
         choices=list(EVALUATED_ON),
         default="fold0",
@@ -1055,10 +1222,13 @@ if __name__ == "__main__":
     elif arguments.step == "train":
         train(arguments.config, arguments.seed, arguments.train_sky)
     elif arguments.step == "evaluate":
-        evaluate(arguments.config, train_sky=arguments.train_sky)
+        evaluate(
+            arguments.config, train_sky=arguments.train_sky, sets=tuple(arguments.sets)
+        )
     elif arguments.step == "label-figures":
         label_figures()
     else:
         figures(arguments.train_sky)
         if arguments.train_sky != "A":
             comparison_figures(arguments.train_sky)
+            sensitivity(arguments.train_sky)

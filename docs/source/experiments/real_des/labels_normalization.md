@@ -9,8 +9,10 @@ teaches the model blobs, and whether normalizing by the decoy channel helps.
 **Status: done (2026-09-29, branch `des-clean-training`).**
 
 **In short.** Keep the count label and the per-window normalization, and use
-more models: four quick count-label models recover 86% of the DES 2018 copies
-on sky they never saw. Keep the per-window normalization: normalizing by the decoy
+four models: four quick count-label models recover 86% of the DES 2018 copies
+on sky they never saw; six, longer training or larger windows add nothing,
+and none lowers the detection limit for distant streams below an input S/N
+of about 9. Keep the per-window normalization: normalizing by the decoy
 fails (the decoy's density follows Galactic latitude, the isochrone channels'
 does not), and by counting noise is 14-17 points worse. The band label does
 what it was designed to — every label one elongated band, and the model's own
@@ -306,6 +308,42 @@ below about 15 points are within the noise of two seeds and eight
 placements. A larger window also means fewer windows' worth of sky per
 pixel for the same training length; it may need a longer training to pay.
 
+### Sensitivity: more models, longer training
+
+The detection limit ({doc}`recovery`) is the bar to clear, so the scoring
+also measures it: a **fainter** set, the DES 2018 copies made 1 and 1.5
+mag/arcsec² fainter (near the real streams' strength), and from it and the
+full-brightness copies, the input S/N at which half the copies are found, for
+near and distant streams (`sensitivity`). Two levers, with the count label and
+the per-window normalization: more quick models (4 and 6 instead of 2), and
+two models trained four times longer (19,200 windows).
+
+```{image} ../figures/real_des_patches/compare_sensitivity_fold0.png
+:alt: Recovery of DES 2018 copies against their input S/N, per configuration, near and distant streams
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/compare_models_and_length_fold0.png
+:alt: Two, four and six quick models, and two long ones
+:width: 100%
+```
+
+| | DES 2018 copies | m−M 15 | half-recovery input S/N, near | far |
+|---|---|---|---|---|
+| 2 quick models (reference) | 82% | 12% | 14.6 | 8.9 |
+| **4 quick models** | **86%** | 38% | **12.1** | 8.9 |
+| 6 quick models | 86% | 38% | 12.3 | 8.9 |
+| 2 long models (19,200 windows) | 80% | **62%** | 13.9 | 11.3 |
+| 128-pixel windows (2 quick models) | 80% | 38% | 15.2 | 12.7 |
+
+**Averaging helps up to four models, then stops**: four lower the limit for
+near streams from 14.6 to 12.1 and recover 86% of the copies; six add
+nothing. **Training four times longer does not help**: better on the bright
+m−M 15 scan (62%), worse on faint distant streams (limit 11.3). And **for
+distant streams no lever moves the limit below an input S/N of about 9**: the
+curves of two, four and six models lie on one another. The limit is not the
+models' spread; it is what this network, scored this way, can do.
+
 ### The sky
 
 **Train on a wide sky.** One patch of 600 deg² does not transfer (round
@@ -319,9 +357,8 @@ pixel for the same training length; it may need a longer training to pay.
   quick tier's seed spread is up to 8 points here.
 - ~~Both models together~~: tried (round 2d); four count-label models match
   it with fewer false alarms.
-- **More count-label models, or longer ones**: going from two to four quick
-  models gained 4 points and the nearest distance; six, and the 19200-window
-  tier, are the next steps for the real-data training.
+- ~~More count-label models, or longer ones~~: tried; four quick models are
+  the best (86%, near limit 12.1); six and longer add nothing.
 
 ## Reproducing
 
