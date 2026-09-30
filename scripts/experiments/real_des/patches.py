@@ -72,6 +72,20 @@ CONFIGS = {
     # round 2c: the band cut into 1-degree segments along the track, each
     # labelled only where the stream stands out locally (S/N >= 1)
     "bandseg/window": {"label": "bandseg", "normalizer": "window"},
+    # round 2d: no new training -- the count-label and band-label models,
+    # which are complementary stream by stream, averaged into one ensemble
+    "count+band/window": {
+        "label": None,
+        "normalizer": "window",
+        "parts": ["count/window", "band/window"],
+    },
+    # its fair reference: as many count-label models (four seeds)
+    "count/window x4": {
+        "label": None,
+        "normalizer": "window",
+        "parts": ["count/window"],
+        "seeds": [42, 43, 44, 45],
+    },
 }
 # Where models train and where they are scored. Round 1 trained on patch A and
 # was scored on patch B: one 600 deg2 patch proved too narrow a sky (the models
@@ -493,15 +507,21 @@ def evaluate(config, seeds=SEEDS, train_sky="A"):
     chans = channels()
     norm = normalizer(CONFIGS[config]["normalizer"], chans)
     models = {}
-    for seed in seeds:
-        model = UNet(
-            in_channels=QueryDistanceTransform.n_channels, out_channels=1, **sp.MODEL
-        )
-        model.load_state_dict(
-            torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
-        )
-        model.eval()
-        models[f"seed{seed}"] = model
+    parts = CONFIGS[config].get("parts", [config])
+    seeds = CONFIGS[config].get("seeds", seeds)
+    for part in parts:
+        for seed in seeds:
+            model = UNet(
+                in_channels=QueryDistanceTransform.n_channels,
+                out_channels=1,
+                **sp.MODEL,
+            )
+            model.load_state_dict(
+                torch.load(model_stem(part, seed, train_sky).with_suffix(".pt"))
+            )
+            model.eval()
+            key = f"{part} seed{seed}" if len(parts) > 1 else f"seed{seed}"
+            models[key] = model
     streams = evaluation_streams()
     queries = sorted(
         {
@@ -815,6 +835,8 @@ def figures(train_sky="A"):
         "band/poisson": "#b5651d",
         "band5/window": "#4a7fc1",
         "bandseg/window": "#2e8b57",
+        "count+band/window": "#6a3d9a",
+        "count/window x4": "#555555",
     }
 
     fig, axes = plt.subplots(

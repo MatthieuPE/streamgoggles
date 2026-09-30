@@ -8,7 +8,9 @@ teaches the model blobs, and whether normalizing by the decoy channel helps.
 
 **Status: done (2026-09-29, branch `des-clean-training`).**
 
-**In short.** Keep the per-window normalization: normalizing by the decoy
+**In short.** Keep the count label and the per-window normalization, and use
+more models: four quick count-label models recover 86% of the DES 2018 copies
+on sky they never saw. Keep the per-window normalization: normalizing by the decoy
 fails (the decoy's density follows Galactic latitude, the isochrone channels'
 does not), and by counting noise is 14-17 points worse. The band label does
 what it was designed to — every label one elongated band, and the model's own
@@ -220,6 +222,8 @@ connected groups shorter than 2°.*
 | band / window | 79% (71, 79) | **25** / 62 / 88 / 100 / 100% | 4.1% | **41%** | 9 of 9 |
 | band5 / window (S/N ≥ 5) | 80% (72, 80) | 25 / 62 / 88 / 100 / 100% | 3.7% | 45% | 9 of 9 |
 | segmented band / window | 73% (78, 72) | **50** / 62 / 100 / 100 / 100% | 2.4% | 46% | 7 of 9 |
+| count + band / window (4 models) | 86% | 25 / 100 / 100 / 100 / 100% | 1.6% | 60% | 1 of 9 |
+| **count / window, 4 models** | **86%** | 38 / **100** / **100** / 100 / 100% | **0.2%** | 100% | 1 of 9 |
 | count / poisson | 68% (72, 67) | 0 / 38 / 100 / 100 / 100% | 0.4% | 80% | 2 of 9 |
 | band / poisson | 62% (46, 62) | 25 / 38 / 75 / 100 / 100% | 3.5% | 36% | 9 of 9 |
 | band / decoy | 31% (0, 24) | 25 / 12 / 62 / 38 / 12% | 11% | 13% | 9 of 9 |
@@ -269,7 +273,14 @@ as a stream can be.*
    is the worst of the three overall (73%), losing the narrow streams
    (Tucana III, Willka Yaku, Aliqa Uma), whose short segments rarely reach
    S/N 1 on their own.
-5. **Train on a wide sky.** One patch of 600 deg² does not transfer (round
+5. **Combining the labels adds nothing that more models do not.** Averaging
+   the two count-label and the two band-label models recovers 86% of the
+   DES 2018 copies, and gains Jhelum (62%) without losing the narrow
+   streams — but four count-label models do exactly as well (86%, Jhelum
+   62%, 38% at m−M 15) with eight times fewer confident answers on empty sky
+   (0.2% against 1.6%). The gain was the number of models, as the simulated
+   experiments had found for the quick tier ({doc}`../stream_parameters`).
+6. **Train on a wide sky.** One patch of 600 deg² does not transfer (round
    1); fold 0 does, at the same cost.
 
 ### What to try next
@@ -278,8 +289,11 @@ as a stream can be.*
   keeps the elongation and fewer false alarms, but loses the narrow streams.
 - **Longer training** (the 19200-window tier) for the two labels, since the
   quick tier's seed spread is up to 8 points here.
-- **Both models together**: count-label models for narrow streams and
-  band-label models for wide ones are complementary on these fourteen.
+- ~~Both models together~~: tried (round 2d); four count-label models match
+  it with fewer false alarms.
+- **More count-label models, or longer ones**: going from two to four quick
+  models gained 4 points and the nearest distance; six, and the 19200-window
+  tier, are the next steps for the real-data training.
 
 ## Reproducing
 
