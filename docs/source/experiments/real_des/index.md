@@ -87,16 +87,16 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    stars; flagged, not converted), and for Indus, Turranburra and Molonglo by
    more than that.
 
-7. **The network finds the real streams it can**: its 50% detection limit
-   is an input S/N of about 9 for distant streams and 20 for near ones, and
-   at their real input S/N the copies predict 4.5 of the 14 real streams to
-   be found; 5 are ({doc}`recovery`, "The detection limit"). Every missed
-   stream is below that limit.
 6. **The training label taught blobs**: a third of the first training's
    labels, and more than half for streams nearer than m−M 17, were scattered
    clumps. A band label removes them and makes the model's false alarms
    elongated, but it is not better overall; the per-window normalization is
    the best of three ({doc}`labels_normalization`).
+7. **The network finds the real streams it can**: its 50% detection limit
+   is an input S/N of about 9 for distant streams and 20 for near ones, and
+   at their real input S/N the copies predict 4.5 of the 14 real streams to
+   be found; 5 are ({doc}`recovery`, "The detection limit"). Every missed
+   stream is below that limit.
 
 ## What comes next
 
