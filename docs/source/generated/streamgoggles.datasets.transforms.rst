@@ -11,6 +11,7 @@
       DecoyNormalizer
       PoissonNormalizer
       QueryDistanceTransform
+      ResidualNormalizer
       RobustNormalizer
       StreamMapTransform
       WindowNormalizer

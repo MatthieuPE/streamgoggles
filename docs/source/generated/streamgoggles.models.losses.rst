@@ -1,4 +1,4 @@
-﻿streamgoggles.models.losses
+streamgoggles.models.losses
 ===========================
 
 .. automodule:: streamgoggles.models.losses

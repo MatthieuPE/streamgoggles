@@ -29,6 +29,10 @@ one false line per hundred stream-free windows.
 
 ## The model
 
+How the line model works — the Hough transform, how each network is
+plugged, their inputs and outputs, and worked examples — is explained in
+the guide, {doc}`../../narrative/line_model`. In brief:
+
 ```text
 window (7 channels) ─► U-Net backbone ─► 8 feature maps ─┐
         └──────────────────── the 7 input channels ───────┤

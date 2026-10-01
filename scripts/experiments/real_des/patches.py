@@ -963,6 +963,89 @@ HOUGH_NULL_CALIBRATION = 0.95
 HOUGH_GRID = {"n_theta": 90, "rho_step": 2.0, "min_pixels": 20}
 
 
+def window_level_sky(eval_sky, image_pix=IMAGE_PIX, label="count"):
+    """The evaluation sky as the window-level scoring sees it.
+
+    A namespace: background, injector, pix, nside, valid (the valid sky),
+    window_deg, tiles (the half-overlapping windows a search would use) with
+    their tile_pixels and projections, and calibration -- the calibration
+    sky exactly as `evaluate` has it (valid, calibration mask, and seen by
+    the window most central to it), so copies land on the same places and
+    the evaluations compare copy by copy.
+    """
+    import types
+
+    import healpy as hp
+    import numpy as np
+
+    from streamgoggles.matched_filter import (
+        WindowProjection,
+        stitch_windows_to_healpix,
+        window_to_healpix_indices,
+    )
+    from streamgoggles.windows import tile_footprint
+
+    rd = real_des()
+    background, injector, pix = build_sky(eval_sky, label, image_pix)
+    nside = pix.nside
+    valid = background.valid_mask_full
+    window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
+    tiles = tile_footprint(
+        valid, nside, tile_size_deg=window_deg, stride_deg=window_deg / 2
+    )
+    projections = [WindowProjection.for_window(t, pix, valid) for t in tiles]
+    calibration = valid.copy()
+    if "fold" in SKIES[eval_sky]:
+        calibration &= hp.read_map(rd.CALIBRATION_MASK).astype(bool)
+    seen = stitch_windows_to_healpix(
+        [np.where(p.valid, 1.0, np.nan) for p in projections], tiles, pix, nside
+    )[0]
+    calibration &= valid & np.isfinite(seen)
+    return types.SimpleNamespace(
+        background=background,
+        injector=injector,
+        pix=pix,
+        nside=nside,
+        valid=valid,
+        window_deg=window_deg,
+        tiles=tiles,
+        tile_pixels=[window_to_healpix_indices(t, pix, nside)[0] for t in tiles],
+        projections=projections,
+        calibration=calibration,
+    )
+
+
+def copy_places(index, stream, sky):
+    """The places of the evaluation's copy number ``index`` (its position in
+    `evaluation_streams`), drawn as `evaluate` draws them: a random
+    calibration pixel and position angle, kept if at least 90% of the copy's
+    band is on calibration sky. Yields (placement, ra, dec, rotation, band)
+    for at most N_PLACEMENTS places, the band cut to calibration sky."""
+    import healpy as hp
+    import numpy as np
+
+    from streamgoggles.evaluation.footprint import track_band
+
+    rd = real_des()
+    rng = np.random.default_rng([EVAL_SEED, index])
+    candidates = np.flatnonzero(sky.calibration)
+    placed = 0
+    tries = 0
+    while placed < N_PLACEMENTS and tries < 50 * N_PLACEMENTS:
+        tries += 1
+        ra, dec = hp.pix2ang(sky.nside, int(rng.choice(candidates)), lonlat=True)
+        rotation = float(rng.uniform(0, 360))
+        band = track_band(
+            [rd.great_circle(float(ra), float(dec), rotation, stream["length"])],
+            stream["width"],
+            sky.nside,
+        )
+        if band.sum() == 0 or (band & sky.calibration).sum() / band.sum() < 0.9:
+            continue
+        yield placed, float(ra), float(dec), rotation, band & sky.calibration
+        placed += 1
+
+
 def evaluate_hough(
     config, seeds=SEEDS, train_sky="fold0", sets=("DES 2018", "distance scan")
 ):
@@ -1005,29 +1088,19 @@ def evaluate_hough(
         QueryDistanceTransform,
         StreamMapTransform,
     )
-    from streamgoggles.evaluation.footprint import track_band
-    from streamgoggles.matched_filter import (
-        WindowProjection,
-        stitch_windows_to_healpix,
-        window_to_healpix_indices,
-    )
+    from streamgoggles.matched_filter import WindowProjection
     from streamgoggles.models.hough import hough_target, line_counts
-    from streamgoggles.windows import Window, tile_footprint
+    from streamgoggles.windows import Window
 
     configure_torch_threads(num_workers=0)
     rd = real_des()
     sp = rd.stream_parameters_module()
-    eval_sky = EVALUATED_ON[train_sky]
     image_pix = CONFIGS[config].get("image_pix", IMAGE_PIX)
-    background, injector, pix = build_sky(eval_sky, "count", image_pix)
-    nside = pix.nside
-    valid = background.valid_mask_full
-    window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
-    tiles = tile_footprint(
-        valid, nside, tile_size_deg=window_deg, stride_deg=window_deg / 2
-    )
-    tile_pixels = [window_to_healpix_indices(t, pix, nside)[0] for t in tiles]
-    projections = [WindowProjection.for_window(t, pix, valid) for t in tiles]
+    sky = window_level_sky(EVALUATED_ON[train_sky], image_pix)
+    background, injector, pix = sky.background, sky.injector, sky.pix
+    nside, valid, window_deg = sky.nside, sky.valid, sky.window_deg
+    tile_pixels, projections = sky.tile_pixels, sky.projections
+    calibration = sky.calibration
     chans = channels()
     norm = normalizer(CONFIGS[config]["normalizer"], chans)
     models = []
@@ -1080,16 +1153,6 @@ def evaluate_hough(
         )
         for q in queries
     }
-    # The calibration sky exactly as `evaluate` has it -- valid, calibration
-    # mask, and seen by the window most central to it -- so the copies land
-    # on the same places and the two evaluations compare copy by copy.
-    calibration = valid.copy()
-    if "fold" in SKIES[eval_sky]:
-        calibration &= hp.read_map(rd.CALIBRATION_MASK).astype(bool)
-    seen = stitch_windows_to_healpix(
-        [np.where(p.valid, 1.0, np.nan) for p in projections], tiles, pix, nside
-    )[0]
-    calibration &= valid & np.isfinite(seen)
     smooth_background = smooth_backgrounds(background, queries)
 
     def scores(maps_full, windows, query):
@@ -1186,35 +1249,23 @@ def evaluate_hough(
     rows = []
     for index, (kind, name, stream) in enumerate(streams):
         start = time.time()
-        rng = np.random.default_rng([EVAL_SEED, index])
         query = min(sp.QUERY_GRID, key=lambda q: abs(q - stream["distance_modulus"]))
         good = good_at[query]
-        placed = 0
-        tries = 0
-        while placed < N_PLACEMENTS and tries < 50 * N_PLACEMENTS:
-            tries += 1
-            ra, dec = hp.pix2ang(nside, int(rng.choice(candidates)), lonlat=True)
-            rotation = float(rng.uniform(0, 360))
-            band = track_band(
-                [rd.great_circle(float(ra), float(dec), rotation, stream["length"])],
-                stream["width"],
-                nside,
-            )
-            if band.sum() == 0 or (band & calibration).sum() / band.sum() < 0.9:
-                continue
-            band &= calibration
+        n_placed = 0
+        for placed, ra, dec, rotation, band in copy_places(index, stream, sky):
+            n_placed += 1
             params = {
                 "morphology": "uniform",
                 "isochrone_model": sp.ISOCHRONE_FAMILY,
                 "orientation": rotation,
                 **stream,
             }
-            sky = injector.inject_streams_full_sky(
+            injected = injector.inject_streams_full_sky(
                 [params],
                 np.random.default_rng([EVAL_SEED, index, placed]),
-                centers=[(float(ra), float(dec))],
+                centers=[(ra, dec)],
             )
-            stream_stars = sky["stream_raw_full"][good][band].sum()
+            stream_stars = injected["stream_raw_full"][good][band].sum()
             background_stars = background.raw_map_full_dict["good"][query][band].sum()
             # the windows holding enough of the copy, and its lines in each
             scored, regions, lengths = [], [], []
@@ -1239,7 +1290,7 @@ def evaluate_hough(
                 "n_windows": len(scored),
             }
             if scored:
-                answers = scores(sky["map_full"], scored, query)
+                answers = scores(injected["map_full"], scored, query)
                 longest = int(np.argmax(lengths))
                 for scorer, values in answers.items():
                     along = [
@@ -1265,9 +1316,8 @@ def evaluate_hough(
                 for scorer in ("network", "matched filter"):
                     row.update({f"{scorer} blind": False, f"{scorer} known": False})
             rows.append(row)
-            placed += 1
         print(
-            f"{config} {name}: {placed} placements, {time.time() - start:.0f}s",
+            f"{config} {name}: {n_placed} placements, {time.time() - start:.0f}s",
             flush=True,
         )
 
@@ -1454,6 +1504,432 @@ def hough_null_figure(train_sky="fold0", config="hough/band", query=17.0):
         bbox_inches="tight",
     )
     plt.close(fig)
+
+
+LINE_MODEL_FIGURES = REPO / "docs" / "source" / "narrative" / "figures" / "line_model"
+# The worked examples of the guide page, each the evaluation's copy at its
+# first place: the widest stream (found by the S/N-input line model at 7 of 8
+# places), the faintest (6 of 8; the per-pixel network 1 of 8), and the
+# shortest (0 of 8, where every other method finds it).
+LINE_MODEL_EXAMPLES = [("Jhelum", 0), ("Wambelong", 0), ("Tucana III", 0)]
+
+
+def line_model_figures(train_sky="fold0"):
+    """The figures of the guide page `narrative/line_model.md`: the Hough
+    transform on toy windows, the networks' plumbing, and worked examples on
+    the real sky."""
+    LINE_MODEL_FIGURES.mkdir(parents=True, exist_ok=True)
+    line_model_toy()
+    line_model_architecture()
+    for name, placement in LINE_MODEL_EXAMPLES:
+        line_model_example(name, placement, train_sky)
+
+
+def line_model_toy():
+    """hough_toy.png: four windows and their line sums -- a line, a point, a
+    short segment, and a faint line invisible pixel by pixel."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from streamgoggles.models.hough import HoughLines
+
+    size = 96
+    grid = HoughLines(size, size)
+    yy, xx = np.mgrid[0:size, 0:size] - (size - 1) / 2
+
+    def band(theta_deg, rho, along=None):
+        theta = np.deg2rad(theta_deg)
+        on = np.abs(xx * np.cos(theta) + yy * np.sin(theta) - rho) < 1.0
+        if along is not None:  # a segment: (centre, half-length) along the line
+            position = -xx * np.sin(theta) + yy * np.cos(theta)
+            on &= np.abs(position - along[0]) < along[1]
+        return on.astype(float)
+
+    point = (np.hypot(xx - 20, yy + 10) < 2).astype(float)
+    level = 20.0
+    rng = np.random.default_rng(3)
+    counts = rng.poisson(level + 2.0 * band(60, 10)).astype(float)
+    cases = [
+        ("a line", band(30, 15), (30, 15)),
+        ("a point (or a compact blob)", point, None),
+        ("a short segment", band(120, -20, along=(10, 12)), (120, -20)),
+        (
+            "a faint line in noise, as an S/N map",
+            (counts - level) / np.sqrt(level),
+            (60, 10),
+        ),
+    ]
+    extent = [grid.rhos[0], grid.rhos[-1], 0, 180]
+    fig, axes = plt.subplots(2, 4, figsize=(16, 7.6))
+    for column, (title, image, truth) in enumerate(cases):
+        top, bottom = axes[0, column], axes[1, column]
+        top.imshow(image, origin="lower", cmap="gray_r")
+        top.set_title(title, fontsize=9)
+        top.set_xticks([])
+        top.set_yticks([])
+        sums = np.where(grid.valid, grid(image), np.nan)
+        bottom.imshow(
+            sums, origin="lower", aspect="auto", extent=extent, cmap="viridis"
+        )
+        bottom.set_xlabel("ρ (pixels from the centre)", fontsize=8)
+        if column == 0:
+            bottom.set_ylabel("θ (degrees)", fontsize=8)
+        if truth is not None:
+            bottom.plot(
+                truth[1], truth[0], "o", mfc="none", mec="#e07b39", ms=14, mew=1.5
+            )
+        if column == 3:
+            t = round(truth[0] / 2) % grid.shape[0]
+            r = int(np.argmin(np.abs(grid.rhos - truth[1])))
+            noise = np.nanstd(sums)
+            bottom.set_title(
+                f"line sums: the line at {sums[t, r] / noise:.1f}σ\n"
+                f"(one pixel: {2.0 / np.sqrt(level):.2f}σ)",
+                fontsize=9,
+            )
+        elif column == 1:
+            bottom.set_title(
+                "line sums: every line through it,\na sinusoid", fontsize=9
+            )
+        elif column == 2:
+            bottom.set_title("line sums: a peak spread in θ", fontsize=9)
+        else:
+            bottom.set_title("line sums: one peak, at its (θ, ρ)", fontsize=9)
+        bottom.tick_params(labelsize=7)
+    fig.tight_layout()
+    fig.savefig(LINE_MODEL_FIGURES / "hough_toy.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
+def line_model_architecture():
+    """architecture.png: how each scorer is plugged, from window to answer,
+    with the shapes in between."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch
+
+    colours = {
+        "data": ("#eeeeee", "the window's maps"),
+        "net": ("#cfe0f3", "trained"),
+        "fixed": ("#fbe3cf", "fixed operation"),
+        "out": ("#d5ecd9", "the answer"),
+    }
+    rows = [
+        (
+            'per-pixel U-Net\nbuild_model(kind="unet")',
+            [
+                ("input\n7 × 96 × 96", "data"),
+                ("U-Net\n(depth 2)", "net"),
+                ("probability\nper pixel\n1 × 96 × 96", "out"),
+            ],
+        ),
+        (
+            'line model\nbuild_model(kind="hough")',
+            [
+                ("input\n7 × 96 × 96", "data"),
+                ("U-Net backbone\n8 features, + the\ninput: 15 × 96 × 96", "net"),
+                ("Hough: sums along\nevery line, / √n\n15 × 90 × 69", "fixed"),
+                ("2 convolutions\nover (θ, ρ)", "net"),
+                ("probability\nper line\n1 × 90 × 69", "out"),
+            ],
+        ),
+        (
+            "per-pixel U-Net\n+ line search\n(config with lines)",
+            [
+                ("input\n7 × 96 × 96", "data"),
+                ("U-Net (as above)\nlogit − its median\n1 × 96 × 96", "net"),
+                ("Hough: sums along\nevery line, / √n", "fixed"),
+                ("score\nper line\n90 × 69", "out"),
+            ],
+        ),
+        (
+            "matched-filter\nline search\n(no network)",
+            [
+                ("counts at the\nqueried distance\n96 × 96", "data"),
+                ("(counts − background)\n/ √background", "fixed"),
+                ("Hough: sums along\nevery line, / √n", "fixed"),
+                ("S/N\nper line\n90 × 69", "out"),
+            ],
+        ),
+    ]
+    width, height, step = 1.75, 0.95, 2.15
+    fig, ax = plt.subplots(figsize=(15, 8.2))
+    for row, (label, boxes) in enumerate(rows):
+        y = -1.55 * row
+        ax.text(-0.35, y, label, ha="right", va="center", fontsize=9, weight="bold")
+        for i, (text, kind) in enumerate(boxes):
+            x = i * step
+            ax.add_patch(
+                FancyBboxPatch(
+                    (x, y - height / 2),
+                    width,
+                    height,
+                    boxstyle="round,pad=0.03,rounding_size=0.08",
+                    fc=colours[kind][0],
+                    ec="#7a7a7a",
+                    lw=0.8,
+                )
+            )
+            ax.text(x + width / 2, y, text, ha="center", va="center", fontsize=8)
+            if i:
+                ax.annotate(
+                    "",
+                    xy=(x - 0.02, y),
+                    xytext=(x - step + width + 0.02, y),
+                    arrowprops={"arrowstyle": "->", "color": "#4d4d4d", "lw": 1.0},
+                )
+    for i, (colour, legend) in enumerate(colours.values()):
+        ax.add_patch(
+            FancyBboxPatch(
+                (i * 2.6, 1.05),
+                0.35,
+                0.3,
+                boxstyle="round,pad=0.02",
+                fc=colour,
+                ec="#7a7a7a",
+                lw=0.8,
+            )
+        )
+        ax.text(i * 2.6 + 0.45, 1.2, legend, va="center", fontsize=8)
+    ax.text(
+        0,
+        -1.55 * len(rows) + 0.35,
+        "input channels: 0-2 the isochrone filter at the queried distance − 0.5, at it, "
+        "+ 0.5; 3 the decoy box; 4-6 constant maps of those three distances",
+        fontsize=8,
+        color="#4d4d4d",
+    )
+    ax.set_xlim(-3.2, 4 * step + width + 0.2)
+    ax.set_ylim(-1.55 * len(rows) + 0.1, 1.6)
+    ax.axis("off")
+    fig.savefig(LINE_MODEL_FIGURES / "architecture.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+
+def line_model_example(
+    name, placement=0, train_sky="fold0", config="hough/band residual"
+):
+    """example_<name>.png: one copy of the evaluation -- a DES 2018 stream at
+    its Table 1 parameters, at its ``placement``-th place on the evaluation
+    sky -- in the search tile holding the longest stretch of it (the window
+    the known-track test reads), followed through both networks: its counts,
+    the S/N input, the per-pixel network's answer, the line network's best
+    line back on the sky; the input's own line sums (the matched-filter line
+    search), the lines along the track, the line network's answer over
+    lines, and how it is read."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import torch
+    from scipy import ndimage
+
+    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
+    from streamgoggles.datasets.transforms import (
+        QueryDistanceTransform,
+        StreamMapTransform,
+    )
+    from streamgoggles.models import build_model
+    from streamgoggles.models.hough import hough_target, line_counts
+
+    configure_torch_threads(num_workers=0)
+    sp = real_des().stream_parameters_module()
+    sky = window_level_sky(EVALUATED_ON[train_sky])
+    pix = sky.pix
+    streams = evaluation_streams(("DES 2018", "distance scan"))
+    index = next(
+        i for i, (kind, n, _) in enumerate(streams) if kind == "DES 2018" and n == name
+    )
+    stream = streams[index][2]
+    query = min(sp.QUERY_GRID, key=lambda q: abs(q - stream["distance_modulus"]))
+    chans = channels()
+    good = next(
+        i
+        for i, c in enumerate(chans)
+        if c["filter"] == "good" and c["distance_modulus"] == query
+    )
+    places = copy_places(index, stream, sky)
+    for placed, ra, dec, rotation, band in places:
+        if placed == placement:
+            break
+    injected = sky.injector.inject_streams_full_sky(
+        [
+            {
+                "morphology": "uniform",
+                "isochrone_model": sp.ISOCHRONE_FAMILY,
+                "orientation": rotation,
+                **stream,
+            }
+        ],
+        np.random.default_rng([EVAL_SEED, index, placed]),
+        centers=[(ra, dec)],
+    )
+
+    factory, _ = hough_parts(config)
+    line_models = []
+    for s in CONFIGS[config].get("seeds", SEEDS):
+        model = factory(QueryDistanceTransform.n_channels)
+        model.load_state_dict(
+            torch.load(model_stem(config, s, train_sky).with_suffix(".pt"))
+        )
+        line_models.append(model.eval())
+    grid = line_models[0].hough.grid
+    pixel_models = []
+    for s in CONFIGS["count/window x4"]["seeds"]:
+        model = build_model(QueryDistanceTransform.n_channels, **sp.MODEL)
+        model.load_state_dict(
+            torch.load(model_stem("count/window", s, train_sky).with_suffix(".pt"))
+        )
+        pixel_models.append(model.eval())
+
+    # the tile holding the longest straight stretch of the copy
+    best, best_length = None, 0.0
+    for i, px in enumerate(sky.tile_pixels):
+        if band[px].any():
+            projection = sky.projections[i]
+            inside = projection.image(band[projection.pixnums].astype(float)) > 0.5
+            length = line_counts(inside, grid).max()
+            if length > best_length:
+                best, best_length, track = projection, length, inside
+    valid_at = sky.valid[best.pixnums]
+    stack = np.stack(
+        [
+            best.image(np.where(valid_at, m[best.pixnums], 0.0))
+            for m in injected["map_full"]
+        ]
+    ).astype(np.float32)
+    sample = {
+        "map_stack": stack,
+        "label_stack": np.zeros_like(stack),
+        "valid_mask": best.valid,
+        "params": {},
+        "metadata": {"channels": chans},
+    }
+
+    def view(normalization):
+        return QueryDistanceTransform(
+            StreamMapTransform(
+                normalizer=normalizer(normalization, chans), augment=False
+            ),
+            query_grid=sp.QUERY_GRID,
+            step=sp.STEP,
+            query=query,
+        )(dict(sample))["map_stack"]
+
+    snr, standardized = view("residual"), view("window")
+    with torch.no_grad():
+        x = torch.as_tensor(snr)[None]
+        lines = np.mean([torch.sigmoid(m(x))[0, 0].numpy() for m in line_models], 0)
+        x = torch.as_tensor(standardized)[None]
+        pixels = np.mean([m(x)[0, 0].numpy() for m in pixel_models], 0)
+    lines[~grid.valid] = np.nan
+    target = hough_target(track, grid)
+    along = np.nanmax(np.where(target > 0, lines, np.nan))
+    matched = np.where(grid.valid, grid(snr[1]), np.nan)
+    t, r = np.unravel_index(np.nanargmax(lines), lines.shape)
+    size = pix.image_size_pix[0]
+    yy, xx = np.mgrid[0:size, 0:size] - (size - 1) / 2
+    theta, rho = grid.thetas[t], grid.rhos[r]
+    best_line = np.abs(xx * np.cos(theta) + yy * np.sin(theta) - rho) < 1.0
+    thresholds = pd.read_csv(
+        result_dir(train_sky) / f"hough_null_{config.replace('/', '_')}.csv"
+    )
+    level = float(
+        thresholds[
+            (thresholds.scorer == "network") & np.isclose(thresholds["query"], query)
+        ].threshold.iloc[0]
+    )
+    valid = best.valid
+    extent = [grid.rhos[0], grid.rhos[-1], 0, 180]
+
+    def on_sky(ax, image, title, cmap="gray_r", vmin=None, vmax=None):
+        ax.imshow(
+            np.where(valid, image, np.nan),
+            origin="lower",
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+        )
+        ax.contour(
+            track, levels=[0.5], colors="#e07b39", linewidths=0.7, linestyles="--"
+        )
+        ax.set_title(title, fontsize=9)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    def over_lines(ax, values, title):
+        ax.imshow(values, origin="lower", aspect="auto", extent=extent, cmap="viridis")
+        ax.contour(
+            target, levels=[0.5], colors="#e07b39", linewidths=0.8, extent=extent
+        )
+        ax.set_title(title, fontsize=9)
+        ax.set_xlabel("ρ (pixels)", fontsize=8)
+        ax.set_ylabel("θ (degrees)", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+    fig, axes = plt.subplots(2, 4, figsize=(17, 8.4))
+    on_sky(
+        axes[0, 0],
+        ndimage.gaussian_filter(stack[good], 1.5),
+        f"counts at m−M {query:g} (smoothed for the eye)",
+    )
+    snr_image = ndimage.gaussian_filter(snr[1], 1.5)
+    on_sky(axes[0, 1], snr_image, "S/N input", cmap="RdBu_r", vmin=-1, vmax=1)
+    on_sky(
+        axes[0, 2],
+        pixels,
+        f"per-pixel network (4 models): max {pixels[valid].max():.2f}",
+        cmap="magma",
+        vmin=0,
+        vmax=1,
+    )
+    on_sky(axes[0, 3], snr_image, "", cmap="RdBu_r", vmin=-1, vmax=1)
+    axes[0, 3].contour(best_line, levels=[0.5], colors="#1f6fb4", linewidths=1.2)
+    axes[0, 3].set_title(
+        f"the line network's best line (blue): p = {np.nanmax(lines):.2f}", fontsize=9
+    )
+    over_lines(axes[1, 0], matched, "the S/N input's own line sums")
+    over_lines(axes[1, 1], target, "the lines along the copy's track")
+    over_lines(axes[1, 2], lines, "the line network: probability per line")
+    axes[1, 2].plot(rho, np.rad2deg(theta), "x", color="white", ms=8, mew=1.5)
+    axes[1, 3].axis("off")
+    verdict = "found" if along >= level else "missed"
+    axes[1, 3].text(
+        0.0,
+        0.97,
+        f"{name}, DES 2018 parameters: m−M {stream['distance_modulus']:g},\n"
+        f"width {stream['width']:g}°, length {stream['length']:g}°, "
+        f"{stream['richness']:g} mag/arcsec²;\n"
+        f"its place {placement + 1} on fold 1; queried at m−M {query:g}\n\n"
+        f"best line along the track: p = {along:.2f}\n"
+        f"1% level of stream-free windows: {level:.2f}\n"
+        f"→ {verdict} without the track, in this window\n\n"
+        "orange, dashed: the copy's band\n"
+        "orange contour over (θ, ρ): its lines\n"
+        "white cross: the line network's best line",
+        va="top",
+        fontsize=9,
+        transform=axes[1, 3].transAxes,
+    )
+    fig.tight_layout()
+    stem = name.lower().replace(" ", "_")
+    fig.savefig(
+        LINE_MODEL_FIGURES / f"example_{stem}.png", dpi=100, bbox_inches="tight"
+    )
+    plt.close(fig)
+    print(
+        f"{name}: along the track p = {along:.2f} (level {level:.2f}, {verdict}); "
+        f"best line p = {np.nanmax(lines):.2f}, on the track: {bool(target[t, r])}; "
+        f"per-pixel max {pixels[valid].max():.2f}",
+        flush=True,
+    )
 
 
 def hough_figures(train_sky="fold0"):
@@ -2249,3 +2725,4 @@ if __name__ == "__main__":
             if (result_dir(arguments.train_sky) / "hough_hough_band.csv").exists():
                 hough_figures(arguments.train_sky)
                 hough_null_figure(arguments.train_sky)
+                line_model_figures(arguments.train_sky)  # the guide's figures
