@@ -232,9 +232,8 @@ cost is that of the line network plus about 3 minutes for the normalizer
   found by either, at half the false-line rate each — since they fail on
   different streams. Both are configurations; the combination is one more.
 - **The long tier** (19,200 windows) for the S/N-input model.
-- **The real streams**: the line network over the DES inference sky, where
-  the fourteen DES 2018 streams are, with the per-pixel results of
-  {doc}`results` for comparison.
+- ~~The real streams~~: done in {doc}`line_sky` — the line network over the
+  DES sky with the fourteen DES 2018 streams in it, mapped.
 
 ## Reproducing
 
