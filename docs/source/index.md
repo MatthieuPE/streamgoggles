@@ -41,6 +41,7 @@ narrative/ml_concepts
 narrative/data_generation
 narrative/real_des_background
 narrative/datasets_and_models
+narrative/line_model
 narrative/training_and_evaluation
 narrative/notebooks
 narrative/tutorial

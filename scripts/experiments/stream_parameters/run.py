@@ -316,6 +316,9 @@ def train(
     normalizer=None,
     model_options=None,
     loss_name=None,
+    training_options=None,
+    model_factory=None,
+    view_wrapper=None,
 ):
     import numpy as np
     import torch
@@ -339,9 +342,19 @@ def train(
     from streamgoggles.storage import SimulationStore
     from streamgoggles.training.plain_runner import PlainTrainer
 
+    # A caller may change the training settings (e.g. background_fraction),
+    # build another model (model_factory(in_channels) -> module with a
+    # head_conv), and wrap the query view (view_wrapper(view) -> view, e.g.
+    # a Hough target).
+    settings = {**TRAINING, **(training_options or {})}
+    # Cap torch's threads before any torch work (model construction included:
+    # a sparse tensor's coalesce starts OpenMP workers, which crash with the
+    # duplicate libomp of this environment -- see configure_torch_threads).
+    num_workers = default_num_workers()
+    configure_torch_threads(num_workers=num_workers)
     config = StreamConfig(
         params=training_parameters(training_set),
-        background_fraction=TRAINING["background_fraction"],
+        background_fraction=settings["background_fraction"],
         persist=False,
         richness_kind="surface_brightness",
     )
@@ -357,13 +370,17 @@ def train(
             rng=np.random.default_rng(rng_seed),
         )
 
-    train_dataset = dataset(seed, windows // TRAINING["epochs"])
+    train_dataset = dataset(seed, windows // settings["epochs"])
     # Each window's maps are standardized from that window alone (see the
     # docs page): nothing is fitted, so the same holds on real data. A caller
     # may pass another per-window normalizer (e.g. DecoyNormalizer).
     normalizer = normalizer or WindowNormalizer()
 
     def query_view(augment, rng_seed):
+        view = plain_query_view(augment, rng_seed)
+        return view_wrapper(view) if view_wrapper else view
+
+    def plain_query_view(augment, rng_seed):
         return QueryDistanceTransform(
             StreamMapTransform(
                 normalizer=normalizer,
@@ -383,47 +400,49 @@ def train(
     # Head bias at the class prior of the queried label.
     fit = [train_dataset[i] for i in range(8)]
     fit_view = query_view(False, seed + 3000)
+    viewed = [fit_view(s) for s in fit]
     positive = np.mean(
-        [fit_view(s)["label_stack"][0][s["valid_mask"]].mean() for s in fit]
+        [v["label_stack"][0][np.asarray(v["valid_mask"], bool)].mean() for v in viewed]
     )
     positive = float(np.clip(positive, 1e-3, 1 - 1e-3))
 
     torch.manual_seed(seed)
     # A caller may change the architecture (e.g. depth) and the loss.
-    model = UNet(
-        in_channels=QueryDistanceTransform.n_channels,
-        out_channels=1,
-        **{**MODEL, **(model_options or {})},
-    )
+    if model_factory is not None:
+        model = model_factory(QueryDistanceTransform.n_channels)
+    else:
+        model = UNet(
+            in_channels=QueryDistanceTransform.n_channels,
+            out_channels=1,
+            **{**MODEL, **(model_options or {})},
+        )
     with torch.no_grad():
         model.head_conv.bias.fill_(float(np.log(positive / (1 - positive))))
         model.head_conv.weight.zero_()
 
-    num_workers = default_num_workers()
-    configure_torch_threads(num_workers=num_workers)
     loader = {"collate_fn": stream_map_collate_fn, "num_workers": num_workers}
     if num_workers > 0:
         loader["persistent_workers"] = True
     train_dl = DataLoader(
         TransformedDataset(train_dataset, query_view(True, seed + 1)),
-        batch_size=TRAINING["batch_size"],
+        batch_size=settings["batch_size"],
         **loader,
     )
     val_dl = DataLoader(
         validation,
-        batch_size=TRAINING["batch_size"],
+        batch_size=settings["batch_size"],
         collate_fn=stream_map_collate_fn,
     )
     trainer = PlainTrainer(
         model=model,
-        optimizer=torch.optim.Adam(model.parameters(), lr=TRAINING["lr"]),
-        loss_fn=get_loss(loss_name or TRAINING["loss_name"]),
+        optimizer=torch.optim.Adam(model.parameters(), lr=settings["lr"]),
+        loss_fn=get_loss(loss_name or settings["loss_name"]),
         device="cpu",
     )
     result = trainer.train(
         train_dl,
         val_dl=val_dl,
-        epochs=TRAINING["epochs"],
+        epochs=settings["epochs"],
     )
     return model, normalizer, result
 

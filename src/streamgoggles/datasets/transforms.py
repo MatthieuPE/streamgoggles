@@ -265,6 +265,108 @@ class PoissonNormalizer:
         return out
 
 
+class ResidualNormalizer:
+    r"""Express every channel as its excess over a smooth local background, in
+    units of that background's counting noise: the matched filter's own
+    statistic, pixel by pixel.
+
+    For one window and channel ``c``, with ``v`` its valid-pixel mask, the
+    local background ``b_c(p)`` is a plane fitted to the counts around ``p``,
+    over valid pixels alone, weighted by a Gaussian of ``sigma_pix`` pixels
+    (a local linear regression), and
+
+    .. math::
+
+        x'_c(p) = \frac{x_c(p) - b_c(p)}{\sqrt{\max(b_c(p), f)}}.
+
+    Unlike `PoissonNormalizer`, whose background is the window's mean, this
+    one follows density gradients across the window; and being a plane rather
+    than a weighted mean, it follows them up to the window's edges and the
+    edges of masks too, where a weighted mean would leave a band of residual
+    along every edge -- a straight feature a line search would find. So a sum
+    of ``x'`` along a line, over the square root of its length, is that line's
+    matched-filter S/N whatever the window: what a line model's input should
+    hold. The fit includes any stream in the window, so a wide one gives part
+    of its excess to the background: at ``sigma_pix = 16`` a stream of
+    Gaussian width 10 pixels keeps about half its peak, one of 2 pixels about
+    90%. Invalid pixels are 0. Nothing fitted across windows.
+    """
+
+    def __init__(self, sigma_pix: float = 16.0, floor: float = 0.5):
+        self.sigma_pix = float(sigma_pix)
+        self.floor = float(floor)
+
+    def _moments(self):
+        """moment(f, i, j): sum_q w(q - p) dx^i dy^j f(q) at every p, with dx,
+        dy the offsets of q from p (columns, rows) and w the Gaussian -- a
+        1-d correlation along each axis with d^i g(d)."""
+        from scipy import ndimage
+
+        radius = int(np.ceil(4 * self.sigma_pix))
+        d = np.arange(-radius, radius + 1, dtype=np.float64)
+        g = np.exp(-0.5 * (d / self.sigma_pix) ** 2)
+        kernels = [g, d * g, d * d * g]
+
+        def moment(f, i, j):
+            along_x = ndimage.correlate1d(f, kernels[i], axis=1, mode="constant")
+            return ndimage.correlate1d(along_x, kernels[j], axis=0, mode="constant")
+
+        return moment
+
+    def plane_weights(self, valid_mask: np.ndarray):
+        """(moment, (c0, c1, c2)): the local plane's value at each pixel is
+        ``c0 * T0 + c1 * T1 + c2 * T2``, with ``T0, T1, T2`` the counts'
+        moments (1, dx, dy). The normal equations' matrix depends on the valid
+        mask alone, so its inverse's first row is computed once per window."""
+        moment = self._moments()
+        v = valid_mask.astype(np.float64)
+        m00, m10, m01 = moment(v, 0, 0), moment(v, 1, 0), moment(v, 0, 1)
+        m20, m11, m02 = moment(v, 2, 0), moment(v, 1, 1), moment(v, 0, 2)
+        # a little ridge on the slopes, so a sliver of valid sky (too narrow to
+        # fix a plane) falls back to a weighted mean instead of a wild slope
+        ridge = 1e-3 * self.sigma_pix**2 * np.maximum(m00, 1e-12)
+        m20 = m20 + ridge
+        m02 = m02 + ridge
+        m00 = m00 + 1e-12
+        # first row of the inverse of the symmetric 3 x 3 matrix, by cofactors
+        c0 = m20 * m02 - m11 * m11
+        c1 = m01 * m11 - m10 * m02
+        c2 = m10 * m11 - m01 * m20
+        determinant = m00 * c0 + m10 * c1 + m01 * c2
+        determinant = np.where(np.abs(determinant) > 0, determinant, 1e-300)
+        return moment, (c0 / determinant, c1 / determinant, c2 / determinant)
+
+    def background(self, counts: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+        """The local plane's value at each pixel, (ny, nx)."""
+        moment, (c0, c1, c2) = self.plane_weights(valid_mask)
+        f = np.where(valid_mask, counts, 0.0).astype(np.float64)
+        return c0 * moment(f, 0, 0) + c1 * moment(f, 1, 0) + c2 * moment(f, 0, 1)
+
+    def __call__(self, map_stack: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+        """Normalized copy of ``map_stack`` (n_channels, ny, nx)."""
+        if valid_mask.shape != map_stack.shape[1:]:
+            raise ValueError(
+                f"valid_mask shape {valid_mask.shape} doesn't match map_stack "
+                f"spatial dims {map_stack.shape[1:]}"
+            )
+        out = map_stack.astype(np.float32, copy=True)
+        if not valid_mask.any():
+            return out
+        moment, (c0, c1, c2) = self.plane_weights(valid_mask)
+        for c in range(map_stack.shape[0]):
+            counts = np.where(valid_mask, map_stack[c], 0.0).astype(np.float64)
+            background = (
+                c0 * moment(counts, 0, 0)
+                + c1 * moment(counts, 1, 0)
+                + c2 * moment(counts, 0, 1)
+            )
+            residual = (counts - background) / np.sqrt(
+                np.maximum(background, self.floor)
+            )
+            out[c] = np.where(valid_mask, residual, 0.0)
+        return out
+
+
 class StreamMapTransform:
     """Torch-compatible transform: normalization + augmentation.
 

@@ -1,8 +1,14 @@
-streamgoggles.models
+﻿streamgoggles.models
 ====================
 
 .. automodule:: streamgoggles.models
 
+   
+   .. rubric:: Functions
+
+   .. autosummary::
+   
+      build_model
    
 .. rubric:: Modules
 
@@ -10,5 +16,6 @@ streamgoggles.models
    :toctree:
    :recursive:
 
+   hough
    losses
    unet
