@@ -15,6 +15,7 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`recovery` | each DES 2018 stream simulated and injected into the real sky 54 times; the fold imbalance traced to saturated false alarms | done (2026-09-29) |
 | {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
 | {doc}`window_level` | a network that answers with lines (a Hough transform built in), scored without the track; the matched filter's own line search alongside | done, quick models (2026-10-01, branch `hough-window-model`) |
+| {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks | done (2026-10-01, branch `line-model-sky`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -118,6 +119,15 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
     misses the two brightest short streams, and for distant ones the
     matched filter's line search stays ahead (10.0 against 12.8)
     ({doc}`window_level`).
+11. **On the real sky, the line searches find nine of the fourteen DES 2018
+    streams beyond chance**, without knowing any track: the line network six
+    (ATLAS, Phoenix, Indus, Jhelum, Chenab, Elqui — the near, wide ones the
+    per-pixel network missed), the matched filter's line search four
+    (Tucana III, Elqui, Willka Yaku, Aliqa Uma — the short, bright ones),
+    against five for the per-pixel network. The line network's map is clean
+    (152 lines, five in six along a stream or the Magellanic Clouds); the
+    matched filter's is dominated by bursts around the bright dwarfs (1,003
+    lines) ({doc}`line_sky`).
 
 ## What comes next
 
@@ -168,4 +178,5 @@ des2018_reproduction
 recovery
 labels_normalization
 window_level
+line_sky
 ```
