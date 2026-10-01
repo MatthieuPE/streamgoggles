@@ -325,8 +325,11 @@ def model_stem(config, seed, train_sky="A"):
 
 
 def hough_parts(config):
-    """(model factory, view wrapper) for a Hough configuration."""
-    from streamgoggles.models.hough import HoughLines, HoughTargetTransform, HoughUNet
+    """(model factory, view wrapper) for a Hough configuration: the model from
+    `build_model(kind="hough")` with the configuration's options (backbone
+    as the per-pixel models'), and the view turning the label into lines."""
+    from streamgoggles.models import build_model
+    from streamgoggles.models.hough import HoughLines, HoughTargetTransform
 
     sp = real_des().stream_parameters_module()
     options = CONFIGS[config]["hough"]
@@ -340,9 +343,10 @@ def hough_parts(config):
     )
 
     def factory(in_channels):
-        return HoughUNet(
+        return build_model(
             in_channels,
             image_pix,
+            kind="hough",
             depth=sp.MODEL["depth"],
             base_width=sp.MODEL["base_width"],
             **options,
@@ -592,6 +596,28 @@ def shapes(mask, nside):
     return {"groups": int(n_groups), "blob_share": float(short / pixels.size)}
 
 
+def smooth_backgrounds(background, queries):
+    """{query: the stream-free matched-filter counts smoothed to ~2 degrees}:
+    the valid-weighted mean over nside-32 pixels (1.8 deg), interpolated back
+    to every pixel. The coarse sums and the coarse valid fraction are
+    interpolated apart and divided, so sky outside the footprint weighs
+    nothing (not hp.smoothing, whose OpenMP runtime clashes with torch's)."""
+    import healpy as hp
+    import numpy as np
+
+    valid = background.valid_mask_full
+    nside = hp.npix2nside(valid.size)
+    coarse_weight = hp.ud_grade(valid.astype(float), MF_BACKGROUND_NSIDE)
+    lon, lat = hp.pix2ang(nside, np.arange(valid.size), lonlat=True)
+    weight = np.maximum(hp.get_interp_val(coarse_weight, lon, lat, lonlat=True), 1e-6)
+    smooth = {}
+    for q in queries:
+        counts = np.where(valid, background.raw_map_full_dict["good"][q], 0.0)
+        coarse = hp.ud_grade(counts, MF_BACKGROUND_NSIDE)
+        smooth[q] = hp.get_interp_val(coarse, lon, lat, lonlat=True) / weight
+    return smooth
+
+
 def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance scan")):
     """Score each seed's model, and their average, on patch B."""
     import healpy as hp
@@ -755,17 +781,7 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
     # stream-free map, which spares a wide stream the few tens of percent of
     # its excess a smoothing of the injected map would absorb -- slightly in
     # the matched filter's favour.
-    coarse_weight = hp.ud_grade(valid.astype(float), MF_BACKGROUND_NSIDE)
-    lon, lat = hp.pix2ang(nside, np.arange(valid.size), lonlat=True)
-    smooth_background = {}
-    for q in queries:
-        counts_q = np.where(valid, background.raw_map_full_dict["good"][q], 0.0)
-        # interpolate the coarse sums and the coarse valid fraction apart and
-        # divide: sky outside the footprint then weighs nothing
-        coarse = hp.ud_grade(counts_q, MF_BACKGROUND_NSIDE)
-        smooth_background[q] = hp.get_interp_val(
-            coarse, lon, lat, lonlat=True
-        ) / np.maximum(hp.get_interp_val(coarse_weight, lon, lat, lonlat=True), 1e-6)
+    smooth_background = smooth_backgrounds(background, queries)
 
     rows = []
     start = time.time()
@@ -907,6 +923,414 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
     else:  # an extra set: its own file, read with the others by set
         suffix = "_".join(x.replace(" ", "-") for x in sets)
         pd.DataFrame(rows).to_csv(out / f"evaluation_{name}__{suffix}.csv", index=False)
+
+
+HOUGH_NULL_WINDOWS = 600  # stream-free windows per queried distance
+HOUGH_FALSE_ALARM = 0.01  # blind test: share of stream-free windows with a line found
+HOUGH_MIN_LENGTH_DEG = 4.0  # a window scores a copy if it holds this much of it
+
+
+def evaluate_hough(
+    config, seeds=SEEDS, train_sky="fold0", sets=("DES 2018", "distance scan")
+):
+    """Window-level scoring of a line model, and of the matched filter's own
+    line sums (a classical line search), on the same copies as `evaluate`.
+
+    Each window answers with one score per line through it: the model's
+    probability (the mean over its seeds), or, for the matched filter, the
+    counts at the queried distance minus the smooth local background, over
+    the background's square root, summed along the line (`HoughLines`). The
+    lines "along the track" of a copy, in a window, are those `hough_target`
+    makes of the copy's band there; a window scores a copy if it holds at
+    least HOUGH_MIN_LENGTH_DEG of it.
+
+    Two tests, against HOUGH_NULL_WINDOWS stream-free windows centred on
+    random points of the calibration sky, at the same queried distance:
+
+    - blind: found if, in a window, a line along the track scores above the
+      level that the best line of a stream-free window exceeds in
+      HOUGH_FALSE_ALARM of them -- a search that does not know the track,
+      with that rate of false lines per window;
+    - known track: in the window holding the longest stretch of the copy, the
+      best line along the track against the same lines in the null windows;
+      found when at most a fraction 1 / (N_NULL_BANDS + 1) of them score as
+      high (the level of `evaluate`'s band tests).
+    """
+    import healpy as hp
+    import numpy as np
+    import pandas as pd
+    import torch
+
+    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
+    from streamgoggles.datasets.transforms import (
+        QueryDistanceTransform,
+        StreamMapTransform,
+    )
+    from streamgoggles.evaluation.footprint import track_band
+    from streamgoggles.matched_filter import (
+        WindowProjection,
+        stitch_windows_to_healpix,
+        window_to_healpix_indices,
+    )
+    from streamgoggles.models.hough import hough_target, line_counts
+    from streamgoggles.windows import Window, tile_footprint
+
+    configure_torch_threads(num_workers=0)
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    eval_sky = EVALUATED_ON[train_sky]
+    image_pix = CONFIGS[config].get("image_pix", IMAGE_PIX)
+    background, injector, pix = build_sky(eval_sky, "count", image_pix)
+    nside = pix.nside
+    valid = background.valid_mask_full
+    window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
+    tiles = tile_footprint(
+        valid, nside, tile_size_deg=window_deg, stride_deg=window_deg / 2
+    )
+    tile_pixels = [window_to_healpix_indices(t, pix, nside)[0] for t in tiles]
+    projections = [WindowProjection.for_window(t, pix, valid) for t in tiles]
+    chans = channels()
+    norm = normalizer(CONFIGS[config]["normalizer"], chans)
+    factory, _ = hough_parts(config)
+    models = []
+    for seed in CONFIGS[config].get("seeds", seeds):
+        model = factory(QueryDistanceTransform.n_channels)
+        model.load_state_dict(
+            torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
+        )
+        models.append(model.eval())
+    grid = models[0].hough.grid
+    min_length_pix = HOUGH_MIN_LENGTH_DEG / pix.pixel_scale_deg
+    streams = evaluation_streams(sets)
+    queries = sorted(
+        {
+            min(sp.QUERY_GRID, key=lambda q: abs(q - p["distance_modulus"]))
+            for *_, p in streams
+        }
+    )
+    transforms = {
+        q: QueryDistanceTransform(
+            StreamMapTransform(normalizer=norm, augment=False),
+            query_grid=sp.QUERY_GRID,
+            step=sp.STEP,
+            query=q,
+        )
+        for q in queries
+    }
+    good_at = {
+        q: next(
+            i
+            for i, c in enumerate(chans)
+            if c["filter"] == "good" and c["distance_modulus"] == q
+        )
+        for q in queries
+    }
+    # The calibration sky exactly as `evaluate` has it -- valid, calibration
+    # mask, and seen by the window most central to it -- so the copies land
+    # on the same places and the two evaluations compare copy by copy.
+    calibration = valid.copy()
+    if "fold" in SKIES[eval_sky]:
+        calibration &= hp.read_map(rd.CALIBRATION_MASK).astype(bool)
+    seen = stitch_windows_to_healpix(
+        [np.where(p.valid, 1.0, np.nan) for p in projections], tiles, pix, nside
+    )[0]
+    calibration &= valid & np.isfinite(seen)
+    smooth_background = smooth_backgrounds(background, queries)
+
+    def scores(maps_full, windows, query):
+        """Line scores of the model and of the matched filter, (n, n_theta,
+        n_rho) each, NaN on lines too short to count."""
+        inputs, matched = [], []
+        for projection in windows:
+            valid_at = valid[projection.pixnums]
+            stack = np.stack(
+                [
+                    projection.image(np.where(valid_at, m[projection.pixnums], 0.0))
+                    for m in maps_full
+                ]
+            ).astype(np.float32)
+            sample = {
+                "map_stack": stack,
+                "label_stack": np.zeros_like(stack),
+                "valid_mask": projection.valid,
+                "params": {},
+                "metadata": {"channels": chans},
+            }
+            inputs.append(transforms[query](sample)["map_stack"])
+            smooth = projection.image(
+                np.where(valid_at, smooth_background[query][projection.pixnums], 0.0)
+            )
+            residual = (stack[good_at[query]] - smooth) / np.sqrt(
+                np.maximum(smooth, 0.5)
+            )
+            matched.append(grid(np.where(projection.valid, residual, 0.0)))
+        network = []
+        with torch.no_grad():
+            for start in range(0, len(inputs), 32):
+                x = torch.as_tensor(np.stack(inputs[start : start + 32]))
+                network.append(
+                    np.mean([torch.sigmoid(m(x))[:, 0].numpy() for m in models], 0)
+                )
+        network = np.concatenate(network).astype(np.float32)
+        matched = np.stack(matched).astype(np.float32)
+        network[:, ~grid.valid] = np.nan
+        matched[:, ~grid.valid] = np.nan
+        return {"network": network, "matched filter": matched}
+
+    # Stream-free windows: centred on random calibration pixels, at least
+    # half valid, unrotated like the tiles.
+    rng = np.random.default_rng([EVAL_SEED, 7])
+    candidates = np.flatnonzero(calibration)
+    null_windows = []
+    while len(null_windows) < HOUGH_NULL_WINDOWS:
+        ra, dec = hp.pix2ang(nside, int(rng.choice(candidates)), lonlat=True)
+        window = Window(
+            center_ra=float(ra),
+            center_dec=float(dec),
+            width_deg=window_deg,
+            height_deg=window_deg,
+        )
+        projection = WindowProjection.for_window(window, pix, valid)
+        if projection.valid.mean() >= 0.5:
+            null_windows.append(projection)
+    background_maps = [
+        background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
+    ]
+    null, thresholds, null_rows = {}, {}, []
+    start = time.time()
+    for q in queries:
+        null[q] = scores(background_maps, null_windows, q)
+        for scorer, values in null[q].items():
+            best = np.nanmax(values.reshape(len(values), -1), axis=1)
+            thresholds[(scorer, q)] = float(np.quantile(best, 1 - HOUGH_FALSE_ALARM))
+            null_rows.append(
+                {
+                    "config": config,
+                    "scorer": scorer,
+                    "query": q,
+                    "threshold": thresholds[(scorer, q)],
+                    "median_best_line": float(np.median(best)),
+                }
+            )
+    print(f"{config}: null windows in {time.time() - start:.0f}s", flush=True)
+
+    known_level = 1.0 / (N_NULL_BANDS + 1)
+    rows = []
+    for index, (kind, name, stream) in enumerate(streams):
+        start = time.time()
+        rng = np.random.default_rng([EVAL_SEED, index])
+        query = min(sp.QUERY_GRID, key=lambda q: abs(q - stream["distance_modulus"]))
+        good = good_at[query]
+        placed = 0
+        tries = 0
+        while placed < N_PLACEMENTS and tries < 50 * N_PLACEMENTS:
+            tries += 1
+            ra, dec = hp.pix2ang(nside, int(rng.choice(candidates)), lonlat=True)
+            rotation = float(rng.uniform(0, 360))
+            band = track_band(
+                [rd.great_circle(float(ra), float(dec), rotation, stream["length"])],
+                stream["width"],
+                nside,
+            )
+            if band.sum() == 0 or (band & calibration).sum() / band.sum() < 0.9:
+                continue
+            band &= calibration
+            params = {
+                "morphology": "uniform",
+                "isochrone_model": sp.ISOCHRONE_FAMILY,
+                "orientation": rotation,
+                **stream,
+            }
+            sky = injector.inject_streams_full_sky(
+                [params],
+                np.random.default_rng([EVAL_SEED, index, placed]),
+                centers=[(float(ra), float(dec))],
+            )
+            stream_stars = sky["stream_raw_full"][good][band].sum()
+            background_stars = background.raw_map_full_dict["good"][query][band].sum()
+            # the windows holding enough of the copy, and its lines in each
+            scored, regions, lengths = [], [], []
+            for i, px in enumerate(tile_pixels):
+                if not band[px].any():
+                    continue
+                projection = projections[i]
+                inside = projection.image(band[projection.pixnums].astype(float)) > 0.5
+                length = line_counts(inside, grid).max()
+                if length >= min_length_pix:
+                    scored.append(projection)
+                    regions.append(hough_target(inside, grid) > 0)
+                    lengths.append(length)
+            row = {
+                "config": config,
+                "set": kind,
+                "stream": name,
+                "distance_modulus": stream["distance_modulus"],
+                "query": query,
+                "placement": placed,
+                "input_snr": stream_stars / np.sqrt(max(background_stars, 1.0)),
+                "n_windows": len(scored),
+            }
+            if scored:
+                answers = scores(sky["map_full"], scored, query)
+                longest = int(np.argmax(lengths))
+                for scorer, values in answers.items():
+                    along = [
+                        np.nanmax(v[r]) for v, r in zip(values, regions, strict=True)
+                    ]
+                    null_along = np.nanmax(
+                        null[query][scorer][:, regions[longest]], axis=1
+                    )
+                    p_value = (1 + np.sum(null_along >= along[longest])) / (
+                        1 + len(null_along)
+                    )
+                    row.update(
+                        {
+                            f"{scorer} score": float(max(along)),
+                            f"{scorer} blind": bool(
+                                max(along) >= thresholds[(scorer, query)]
+                            ),
+                            f"{scorer} known p": float(p_value),
+                            f"{scorer} known": bool(p_value <= known_level + 1e-12),
+                        }
+                    )
+            else:
+                for scorer in ("network", "matched filter"):
+                    row.update({f"{scorer} blind": False, f"{scorer} known": False})
+            rows.append(row)
+            placed += 1
+        print(
+            f"{config} {name}: {placed} placements, {time.time() - start:.0f}s",
+            flush=True,
+        )
+
+    out = result_dir(train_sky)
+    out.mkdir(parents=True, exist_ok=True)
+    name = config.replace("/", "_")
+    suffix = (
+        ""
+        if tuple(sets) == ("DES 2018", "distance scan")
+        else "__" + "_".join(x.replace(" ", "-") for x in sets)
+    )
+    pd.DataFrame(rows).to_csv(out / f"hough_{name}{suffix}.csv", index=False)
+    if not suffix:
+        pd.DataFrame(null_rows).to_csv(out / f"hough_null_{name}.csv", index=False)
+
+
+HOUGH_FIGURES = {
+    # without the track: what a search can claim
+    "blind": [
+        ("per pixel", "count/window x4", "detected", "per-pixel network, 4 models"),
+        ("lines", None, "network blind", "line network, 1% false lines per window"),
+        ("lines", None, "matched filter blind", "matched-filter lines, same rate"),
+    ],
+    # along the known track: the most the data allow
+    "known": [
+        ("lines", None, "network known", "line network, known track"),
+        ("lines", None, "matched filter known", "matched-filter lines, known track"),
+        (
+            "per pixel",
+            "count/window x4",
+            "matched_filter_detected",
+            "matched-filter band",
+        ),
+    ],
+}
+HOUGH_STYLES = ["#4d4d4d", "#1f6fb4", "#e07b39"]
+
+
+def hough_figures(train_sky="fold0", config="hough/band"):
+    """hough_{blind,known}_{sky}.png and hough.csv: the line model against the
+    per-pixel network and the matched filter on the same copies (DES 2018 at
+    full and reduced brightness), found against input S/N, near and far."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    folder = result_dir(train_sky)
+
+    def read(prefix, name, ensemble):
+        parts = [
+            folder / f"{prefix}_{name}.csv",
+            folder / f"{prefix}_{name}__fainter.csv",
+        ]
+        data = pd.concat(
+            [pd.read_csv(p) for p in parts if p.exists()], ignore_index=True
+        )
+        if ensemble:
+            data = data[data.scorer == "ensemble"]
+        return data[data.set.isin(["DES 2018", "fainter"])]
+
+    lines = read("hough", config.replace("/", "_"), ensemble=False)
+    rows = []
+    for figure, curves in HOUGH_FIGURES.items():
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.4), sharey=True)
+        for ax, (label, near) in zip(
+            axes, (("m−M < 16.5", True), ("m−M ≥ 16.5", False)), strict=True
+        ):
+            for (source, other, test, legend), colour in zip(
+                curves, HOUGH_STYLES, strict=True
+            ):
+                data = (
+                    lines
+                    if source == "lines"
+                    else read("evaluation", other.replace("/", "_"), ensemble=True)
+                )
+                mine = data[(data.distance_modulus < 16.5) == near].assign(
+                    detected=lambda d, t=test: d[t].astype(float)
+                )
+                rate = mine.groupby(
+                    pd.cut(mine.input_snr, SNR_EDGES), observed=True
+                ).detected.agg(["mean", "size"])
+                rate = rate[rate["size"] >= 4]
+                centres = [np.sqrt(max(b.left, 1) * b.right) for b in rate.index]
+                style = "--" if "matched" in test and figure == "known" else "-"
+                ax.plot(
+                    centres,
+                    rate["mean"],
+                    "o",
+                    ls=style,
+                    lw=2,
+                    color=colour,
+                    label=legend,
+                )
+                full = mine[mine.set == "DES 2018"]
+                rows.append(
+                    {
+                        "figure": figure,
+                        "test": legend,
+                        "streams": label,
+                        "half_recovery_snr": half_recovery_snr(mine),
+                        "found": mine.detected.mean(),
+                        "DES 2018 copies found": full.detected.mean(),
+                    }
+                )
+            ax.set_xscale("log")
+            ax.set_xticks([2, 4, 6, 10, 20, 40])
+            ax.set_xticklabels(["2", "4", "6", "10", "20", "40"])
+            ax.minorticks_off()
+            ax.set_title(label, fontsize=10)
+            ax.set_xlabel("S/N of the copy in the matched-filter input")
+            ax.axhline(0.5, color="#b0b0b0", lw=0.8, ls=":")
+            ax.spines[["top", "right"]].set_visible(False)
+        axes[0].set_ylabel("copies found")
+        axes[1].legend(frameon=False, fontsize=8, loc="lower right")
+        fig.suptitle(
+            "without the track" if figure == "blind" else "along the known track",
+            fontsize=11,
+        )
+        fig.tight_layout()
+        fig.savefig(
+            DOC_FIGURES / f"hough_{figure}_{train_sky}.png",
+            dpi=120,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+    table = pd.DataFrame(rows)
+    table.to_csv(folder / "hough.csv", index=False)
+    print(table.round(2).to_string(index=False))
 
 
 def label_figures():
@@ -1583,7 +2007,9 @@ if __name__ == "__main__":
     elif arguments.step == "train":
         train(arguments.config, arguments.seed, arguments.train_sky)
     elif arguments.step == "evaluate":
-        evaluate(
+        # a line model answers per window, the others per pixel
+        scorer = evaluate_hough if "hough" in CONFIGS[arguments.config] else evaluate
+        scorer(
             arguments.config, train_sky=arguments.train_sky, sets=tuple(arguments.sets)
         )
     elif arguments.step == "label-figures":
@@ -1595,3 +2021,5 @@ if __name__ == "__main__":
             sensitivity(arguments.train_sky)
             detection_tests(arguments.train_sky)
             levers(arguments.train_sky)
+            if (result_dir(arguments.train_sky) / "hough_hough_band.csv").exists():
+                hough_figures(arguments.train_sky)

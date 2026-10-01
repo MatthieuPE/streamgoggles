@@ -115,6 +115,7 @@ class HoughTransform(nn.Module):
                 np.vstack([coo.row, coo.col]),
                 coo.data.astype(np.float32),
                 coo.shape,
+                check_invariants=False,
             ).coalesce(),
             persistent=False,
         )
@@ -126,17 +127,22 @@ class HoughTransform(nn.Module):
         return lines.T.reshape(batch, channels, *self.shape)
 
 
+def line_counts(mask, grid):
+    """Pixels of a (H, W) mask on each line (`grid`: a `HoughLines`), 0 on
+    lines too short to be valid. Its maximum is the length, in pixels, of a
+    band's longest straight run in the window."""
+    counts = grid(np.asarray(mask) > 0.5) * np.sqrt(np.maximum(grid.lengths, 1.0))
+    return np.where(grid.valid, counts, 0.0)
+
+
 def hough_target(label, grid, fraction=0.8):
     """Positive lines for a (H, W) label mask (`grid`: a `HoughLines`): those
     holding at least ``fraction`` of the best line's labelled pixels, and
     their neighbours one step away in theta and rho. All zeros if the label
     is empty."""
-    mask = np.asarray(label) > 0.5
-    if not mask.any():
+    counts = line_counts(label, grid)
+    if counts.max() <= 0:
         return np.zeros(grid.shape, np.float32)
-    # line sums are over sqrt(length); undo it to count labelled pixels
-    counts = grid(mask) * np.sqrt(np.maximum(grid.lengths, 1.0))
-    counts = np.where(grid.valid, counts, 0.0)
     best = counts >= fraction * counts.max()
     # one cell either way in theta and rho: a line a step off is still the stream
     best = ndimage.binary_dilation(best, structure=np.ones((3, 3), bool))
