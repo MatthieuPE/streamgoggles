@@ -1287,3 +1287,29 @@ def test_poisson_normalizer_gives_the_excess_in_units_of_counting_noise():
     # not scale-free: four times the stars, same contrast, twice the significance
     quadrupled = PoissonNormalizer()(4 * counts[None], valid)[0]
     np.testing.assert_allclose(quadrupled, 2 * out, rtol=1e-5)
+
+
+def test_residual_normalizer_follows_a_gradient_and_keeps_a_narrow_stream():
+    from streamgoggles.datasets.transforms import ResidualNormalizer
+
+    rng = np.random.default_rng(2)
+    _, x = np.mgrid[0:96, 0:96]
+    level = 10.0 + 20.0 * x / 95  # a density gradient across the window
+    counts = rng.poisson(level).astype(float)
+    counts[47:49, :] += 0.5 * level[47:49, :]  # a narrow stream, +50%
+    valid = np.ones((96, 96), bool)
+    valid[:, 80:] = False  # masked sky
+    out = ResidualNormalizer(sigma_pix=16)(counts[None], valid)[0]
+    assert np.all(out[~valid] == 0)
+    # far from the stream (two smoothing scales): unit-variance noise, no
+    # trace of the gradient
+    quiet = out[:15, :70]
+    assert abs(quiet.mean()) < 0.1
+    assert 0.85 < quiet.std() < 1.15
+    assert abs(quiet[:, :35].mean() - quiet[:, 35:].mean()) < 0.15
+    # near it, the smoothing has taken a little of its excess
+    assert -0.3 < out[35:45, :70].mean() < 0
+    # the stream's line sum is close to its matched-filter S/N
+    expected = (0.5 * level[47:49, :80]).sum() / np.sqrt(level[47:49, :80].sum())
+    measured = out[47:49, :80].sum() / np.sqrt(out[47:49, :80].size)
+    assert 0.75 * expected < measured < 1.1 * expected

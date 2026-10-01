@@ -14,6 +14,7 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`des2018_reproduction` | the paper's own analysis on our data, without the network: which streams are in the data, and what our cuts cost | done (2026-09-29) |
 | {doc}`recovery` | each DES 2018 stream simulated and injected into the real sky 54 times; the fold imbalance traced to saturated false alarms | done (2026-09-29) |
 | {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
+| {doc}`window_level` | a network that answers with lines (a Hough transform built in), scored without the track; the matched filter's own line search alongside | done, quick models (2026-10-01, branch `hough-window-model`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -109,6 +110,14 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    all leave the limit at 9-15. The network acts as a local detector; the
    integration along the stream is what it lacks
    ({doc}`labels_normalization`, "Why is the network half as sensitive?").
+10. **A network that answers with lines finds near, faint streams best** —
+    once its inputs are matched-filter S/N maps. Without knowing the track
+    it finds half of the near copies at an input S/N of 7.9 (the per-pixel
+    network needs 12.1, and its test knows the track; the matched filter's
+    own line search 12.5), and Wambelong, which no other method finds. It
+    misses the two brightest short streams, and for distant ones the
+    matched filter's line search stays ahead (10.0 against 12.8)
+    ({doc}`window_level`).
 
 ## What comes next
 
@@ -158,4 +167,5 @@ results
 des2018_reproduction
 recovery
 labels_normalization
+window_level
 ```

@@ -121,9 +121,30 @@ CONFIGS = {
     # (`streamgoggles.models.hough`); trained on the band label turned into
     # its line, with cross-entropy, and more stream-free windows (30%) since
     # a window may now answer "no line"
+    # a combination: the four per-pixel count-label models, their output
+    # (logit minus its window median) summed along every line -- the same
+    # line search as the line model, on top of the per-pixel network
+    "count/window x4 lines": {
+        "label": None,
+        "normalizer": "window",
+        "parts": ["count/window"],
+        "seeds": [42, 43, 44, 45],
+        "lines": True,
+    },
     "hough/band": {
         "label": "band",
         "normalizer": "window",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+    },
+    # the same line model on inputs that are matched-filter S/N maps: each
+    # channel's excess over a local plane (1.8-degree Gaussian), over its
+    # square root (`ResidualNormalizer`) -- so the input's own line sums, which
+    # reach the lines untouched, are the matched filter's line search
+    "hough/band residual": {
+        "label": "band",
+        "normalizer": "residual",
         "loss": "bce",
         "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
         "training": {"background_fraction": 0.3},
@@ -306,6 +327,10 @@ def normalizer(name, channels):
         from streamgoggles.datasets.transforms import PoissonNormalizer
 
         return PoissonNormalizer()
+    if name == "residual":
+        from streamgoggles.datasets.transforms import ResidualNormalizer
+
+        return ResidualNormalizer()
     decoy = next(i for i, c in enumerate(channels) if c["filter"] == "decoy")
     return DecoyNormalizer(decoy)
 
@@ -928,24 +953,38 @@ def evaluate(config, seeds=SEEDS, train_sky="A", sets=("DES 2018", "distance sca
 HOUGH_NULL_WINDOWS = 600  # stream-free windows per queried distance
 HOUGH_FALSE_ALARM = 0.01  # blind test: share of stream-free windows with a line found
 HOUGH_MIN_LENGTH_DEG = 4.0  # a window scores a copy if it holds this much of it
+# A stream-free window must lie on calibration sky: at least this share of
+# its valid pixels. The per-pixel false-alarm rates are measured on
+# calibration pixels alone; a window reaching into the training-only sky
+# meets the leftover structure the calibration mask removes -- Sagittarius's
+# wing past its 6-degree mask, a real line the line model rightly finds.
+HOUGH_NULL_CALIBRATION = 0.95
+# The lines of a per-pixel model scored as lines (configurations with "lines")
+HOUGH_GRID = {"n_theta": 90, "rho_step": 2.0, "min_pixels": 20}
 
 
 def evaluate_hough(
     config, seeds=SEEDS, train_sky="fold0", sets=("DES 2018", "distance scan")
 ):
-    """Window-level scoring of a line model, and of the matched filter's own
-    line sums (a classical line search), on the same copies as `evaluate`.
+    """Window-level scoring of a line model -- or of a per-pixel ensemble
+    with a line search on top (configurations with "lines") -- and of the
+    matched filter's own line sums (a classical line search), on the same
+    copies as `evaluate`.
 
-    Each window answers with one score per line through it: the model's
-    probability (the mean over its seeds), or, for the matched filter, the
-    counts at the queried distance minus the smooth local background, over
-    the background's square root, summed along the line (`HoughLines`). The
+    Each window answers with one score per line through it: the line model's
+    probability (the mean over its seeds); for a per-pixel ensemble, the logit
+    of its mean output, minus its median over the window, summed along the
+    line over the square root of the line's length; for the matched filter,
+    the counts at the queried distance minus the smooth local background, over
+    the background's square root, summed the same way (`HoughLines`). The
     lines "along the track" of a copy, in a window, are those `hough_target`
     makes of the copy's band there; a window scores a copy if it holds at
     least HOUGH_MIN_LENGTH_DEG of it.
 
     Two tests, against HOUGH_NULL_WINDOWS stream-free windows centred on
-    random points of the calibration sky, at the same queried distance:
+    random points of the calibration sky and lying on it (at least
+    HOUGH_NULL_CALIBRATION of their valid pixels), at the same queried
+    distance:
 
     - blind: found if, in a window, a line along the track scores above the
       level that the best line of a stream-free window exceeds in
@@ -991,15 +1030,31 @@ def evaluate_hough(
     projections = [WindowProjection.for_window(t, pix, valid) for t in tiles]
     chans = channels()
     norm = normalizer(CONFIGS[config]["normalizer"], chans)
-    factory, _ = hough_parts(config)
     models = []
-    for seed in CONFIGS[config].get("seeds", seeds):
-        model = factory(QueryDistanceTransform.n_channels)
-        model.load_state_dict(
-            torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
-        )
-        models.append(model.eval())
-    grid = models[0].hough.grid
+    if "hough" in CONFIGS[config]:  # a line model: one answer per line
+        factory, _ = hough_parts(config)
+        for seed in CONFIGS[config].get("seeds", seeds):
+            model = factory(QueryDistanceTransform.n_channels)
+            model.load_state_dict(
+                torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
+            )
+            models.append(model.eval())
+        grid = models[0].hough.grid
+    else:  # a per-pixel ensemble, its answer summed along lines
+        from streamgoggles.models import build_model
+        from streamgoggles.models.hough import HoughLines
+
+        for part in CONFIGS[config].get("parts", [config]):
+            for seed in CONFIGS[config].get("seeds", seeds):
+                model = build_model(
+                    QueryDistanceTransform.n_channels,
+                    **{**sp.MODEL, **CONFIGS[part].get("model", {})},
+                )
+                model.load_state_dict(
+                    torch.load(model_stem(part, seed, train_sky).with_suffix(".pt"))
+                )
+                models.append(model.eval())
+        grid = HoughLines(image_pix, image_pix, **HOUGH_GRID)
     min_length_pix = HOUGH_MIN_LENGTH_DEG / pix.pixel_scale_deg
     streams = evaluation_streams(sets)
     queries = sorted(
@@ -1040,8 +1095,9 @@ def evaluate_hough(
     def scores(maps_full, windows, query):
         """Line scores of the model and of the matched filter, (n, n_theta,
         n_rho) each, NaN on lines too short to count."""
-        inputs, matched = [], []
+        inputs, matched, valids = [], [], []
         for projection in windows:
+            valids.append(projection.valid)
             valid_at = valid[projection.pixnums]
             stack = np.stack(
                 [
@@ -1068,9 +1124,17 @@ def evaluate_hough(
         with torch.no_grad():
             for start in range(0, len(inputs), 32):
                 x = torch.as_tensor(np.stack(inputs[start : start + 32]))
-                network.append(
-                    np.mean([torch.sigmoid(m(x))[:, 0].numpy() for m in models], 0)
-                )
+                if "hough" in CONFIGS[config]:
+                    network.append(
+                        np.mean([torch.sigmoid(m(x))[:, 0].numpy() for m in models], 0)
+                    )
+                    continue
+                answer = np.mean([m(x)[:, 0].numpy() for m in models], 0)
+                answer = np.log(np.clip(answer, 1e-6, 1 - 1e-6))
+                answer -= np.log1p(-np.exp(answer))  # the logit
+                for image, ok in zip(answer, valids[start : start + 32], strict=True):
+                    residual = np.where(ok, image - np.median(image[ok]), 0.0)
+                    network.append(grid(residual)[None])
         network = np.concatenate(network).astype(np.float32)
         matched = np.stack(matched).astype(np.float32)
         network[:, ~grid.valid] = np.nan
@@ -1078,7 +1142,7 @@ def evaluate_hough(
         return {"network": network, "matched filter": matched}
 
     # Stream-free windows: centred on random calibration pixels, at least
-    # half valid, unrotated like the tiles.
+    # half valid, lying on calibration sky, unrotated like the tiles.
     rng = np.random.default_rng([EVAL_SEED, 7])
     candidates = np.flatnonzero(calibration)
     null_windows = []
@@ -1091,7 +1155,11 @@ def evaluate_hough(
             height_deg=window_deg,
         )
         projection = WindowProjection.for_window(window, pix, valid)
-        if projection.valid.mean() >= 0.5:
+        if projection.valid.mean() < 0.5:
+            continue
+        on_calibration = projection.image(calibration[projection.pixnums].astype(float))
+        share = (on_calibration > 0.99)[projection.valid].mean()
+        if share >= HOUGH_NULL_CALIBRATION:
             null_windows.append(projection)
     background_maps = [
         background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
@@ -1217,31 +1285,183 @@ def evaluate_hough(
 
 
 HOUGH_FIGURES = {
-    # without the track: what a search can claim
+    # without the track: what a search can claim (the per-pixel test, which
+    # counts flagged pixels near the true track, is shown for reference)
     "blind": [
-        ("per pixel", "count/window x4", "detected", "per-pixel network, 4 models"),
-        ("lines", None, "network blind", "line network, 1% false lines per window"),
-        ("lines", None, "matched filter blind", "matched-filter lines, same rate"),
+        ("pixels", "count/window x4", "detected", "per-pixel network, current test"),
+        ("lines", "hough/band", "network blind", "line network"),
+        ("lines", "hough/band residual", "network blind", "line network, S/N inputs"),
+        ("lines", "hough/band", "matched filter blind", "matched-filter lines"),
     ],
     # along the known track: the most the data allow
     "known": [
-        ("lines", None, "network known", "line network, known track"),
-        ("lines", None, "matched filter known", "matched-filter lines, known track"),
+        ("lines", "hough/band", "network known", "line network"),
+        ("lines", "hough/band residual", "network known", "line network, S/N inputs"),
+        ("lines", "hough/band", "matched filter known", "matched-filter lines"),
+        ("pixels", "count/window x4", "matched_filter_detected", "matched-filter band"),
+    ],
+    # the per-pixel network with a line search on top, blind and known track
+    "combination": [
+        ("pixels", "count/window x4", "detected", "per-pixel network, current test"),
+        ("lines", "count/window x4 lines", "network blind", "per-pixel + lines, blind"),
         (
-            "per pixel",
-            "count/window x4",
-            "matched_filter_detected",
-            "matched-filter band",
+            "lines",
+            "count/window x4 lines",
+            "network known",
+            "per-pixel + lines, known track",
         ),
+        ("lines", "hough/band", "matched filter blind", "matched-filter lines, blind"),
     ],
 }
-HOUGH_STYLES = ["#4d4d4d", "#1f6fb4", "#e07b39"]
+# one colour per method, the same in every figure; dashed: no network
+HOUGH_COLOURS = {
+    "per-pixel network, current test": "#4d4d4d",
+    "line network": "#1f6fb4",
+    "line network, S/N inputs": "#2e8b57",
+    "matched-filter lines": "#e07b39",
+    "matched-filter lines, blind": "#e07b39",
+    "matched-filter band": "#9e9e9e",
+    "per-pixel + lines, blind": "#8e44ad",
+    "per-pixel + lines, known track": "#c39bd3",
+}
 
 
-def hough_figures(train_sky="fold0", config="hough/band"):
-    """hough_{blind,known}_{sky}.png and hough.csv: the line model against the
-    per-pixel network and the matched filter on the same copies (DES 2018 at
-    full and reduced brightness), found against input S/N, near and far."""
+# Stream-free windows, centred on calibration sky but reaching out of it,
+# where the best lines are strongest at m-M 17: two of the line model's (the
+# edge of the Sagittarius mask) and the matched filter's (near a masked dwarf).
+HOUGH_NULL_EXAMPLES = [(32.87, -11.34), (29.79, -12.94), (35.33, -39.94)]
+
+
+def hough_null_figure(train_sky="fold0", config="hough/band", query=17.0):
+    """hough_null_windows_{sky}.png: for each example window, the isochrone
+    and decoy inputs, the matched-filter residual (smoothed), the valid sky,
+    and the line model's answer over lines; the best line drawn in orange."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import torch
+    from scipy import ndimage
+
+    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
+    from streamgoggles.datasets.transforms import (
+        QueryDistanceTransform,
+        StreamMapTransform,
+    )
+    from streamgoggles.matched_filter import WindowProjection
+    from streamgoggles.windows import Window
+
+    configure_torch_threads(num_workers=0)
+    sp = real_des().stream_parameters_module()
+    background, _, pix = build_sky(EVALUATED_ON[train_sky], "count")
+    valid = background.valid_mask_full
+    chans = channels()
+    factory, _ = hough_parts(config)
+    models = []
+    for seed in CONFIGS[config].get("seeds", SEEDS):
+        model = factory(QueryDistanceTransform.n_channels)
+        model.load_state_dict(
+            torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
+        )
+        models.append(model.eval())
+    grid = models[0].hough.grid
+    view = QueryDistanceTransform(
+        StreamMapTransform(normalizer=normalizer("window", chans), augment=False),
+        query_grid=sp.QUERY_GRID,
+        step=sp.STEP,
+        query=query,
+    )
+    smooth_background = smooth_backgrounds(background, [query])[query]
+    good = next(
+        i
+        for i, c in enumerate(chans)
+        if c["filter"] == "good" and c["distance_modulus"] == query
+    )
+    maps = [
+        background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
+    ]
+    size = pix.image_size_pix[0]
+    window_deg = size * pix.pixel_scale_deg
+    yy, xx = np.mgrid[0:size, 0:size] - (size - 1) / 2
+    fig, axes = plt.subplots(
+        len(HOUGH_NULL_EXAMPLES), 5, figsize=(17, 3.6 * len(HOUGH_NULL_EXAMPLES))
+    )
+    for row, (ra, dec) in zip(axes, HOUGH_NULL_EXAMPLES, strict=True):
+        window = Window(
+            center_ra=ra, center_dec=dec, width_deg=window_deg, height_deg=window_deg
+        )
+        projection = WindowProjection.for_window(window, pix, valid)
+        valid_at = valid[projection.pixnums]
+        stack = np.stack(
+            [
+                projection.image(np.where(valid_at, m[projection.pixnums], 0.0))
+                for m in maps
+            ]
+        ).astype(np.float32)
+        x = view(
+            {
+                "map_stack": stack,
+                "label_stack": np.zeros_like(stack),
+                "valid_mask": projection.valid,
+                "params": {},
+                "metadata": {"channels": chans},
+            }
+        )["map_stack"]
+        with torch.no_grad():
+            answer = np.mean(
+                [
+                    torch.sigmoid(m(torch.as_tensor(x)[None]))[0, 0].numpy()
+                    for m in models
+                ],
+                0,
+            )
+        answer[~grid.valid] = np.nan
+        t, r = np.unravel_index(np.nanargmax(answer), answer.shape)
+        theta, rho = grid.thetas[t], grid.rhos[r]
+        best_line = np.abs(xx * np.cos(theta) + yy * np.sin(theta) - rho) < 1.0
+        smooth = projection.image(
+            np.where(valid_at, smooth_background[projection.pixnums], 0.0)
+        )
+        residual = np.where(
+            projection.valid,
+            (stack[good] - smooth) / np.sqrt(np.maximum(smooth, 0.5)),
+            0.0,
+        )
+        panels = [
+            (f"isochrone, m−M {query:g}", ndimage.gaussian_filter(x[1], 2)),
+            ("decoy", ndimage.gaussian_filter(x[3], 2)),
+            ("matched-filter residual", ndimage.gaussian_filter(residual, 2)),
+            ("valid sky", projection.valid.astype(float)),
+        ]
+        for ax, (title, image) in zip(row[:4], panels, strict=True):
+            ax.imshow(image, origin="lower", cmap="gray_r")
+            ax.contour(best_line, levels=[0.5], colors="#e07b39", linewidths=0.8)
+            ax.set_title(f"{title} — ({ra:.1f}, {dec:.1f})", fontsize=8)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        image = row[4].imshow(answer, origin="lower", aspect="auto", cmap="viridis")
+        row[4].set_title(
+            f"line network over (θ, ρ): best {np.nanmax(answer):.2f}", fontsize=8
+        )
+        row[4].set_xlabel("ρ bin", fontsize=8)
+        row[4].set_ylabel("θ bin", fontsize=8)
+        fig.colorbar(image, ax=row[4], fraction=0.046)
+    fig.tight_layout()
+    fig.savefig(
+        DOC_FIGURES / f"hough_null_windows_{train_sky}.png",
+        dpi=100,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
+def hough_figures(train_sky="fold0"):
+    """hough_{blind,known}_{sky}.png and hough.csv: the line model, the
+    per-pixel network with a line search on top, and the matched filter, on
+    the same copies (DES 2018 at full and reduced brightness): found against
+    input S/N, near and far, at 1% false lines per stream-free window
+    (blind) or along the known track."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -1251,33 +1471,32 @@ def hough_figures(train_sky="fold0", config="hough/band"):
 
     folder = result_dir(train_sky)
 
-    def read(prefix, name, ensemble):
+    def read(kind, config):
+        prefix = "hough" if kind == "lines" else "evaluation"
+        name = config.replace("/", "_")
         parts = [
             folder / f"{prefix}_{name}.csv",
             folder / f"{prefix}_{name}__fainter.csv",
         ]
-        data = pd.concat(
-            [pd.read_csv(p) for p in parts if p.exists()], ignore_index=True
-        )
-        if ensemble:
+        frames = [pd.read_csv(p) for p in parts if p.exists()]
+        if not frames:  # not evaluated yet
+            return pd.DataFrame()
+        data = pd.concat(frames, ignore_index=True)
+        if kind == "pixels":
             data = data[data.scorer == "ensemble"]
         return data[data.set.isin(["DES 2018", "fainter"])]
 
-    lines = read("hough", config.replace("/", "_"), ensemble=False)
     rows = []
     for figure, curves in HOUGH_FIGURES.items():
         fig, axes = plt.subplots(1, 2, figsize=(13, 4.4), sharey=True)
         for ax, (label, near) in zip(
             axes, (("m−M < 16.5", True), ("m−M ≥ 16.5", False)), strict=True
         ):
-            for (source, other, test, legend), colour in zip(
-                curves, HOUGH_STYLES, strict=True
-            ):
-                data = (
-                    lines
-                    if source == "lines"
-                    else read("evaluation", other.replace("/", "_"), ensemble=True)
-                )
+            for kind, config, test, legend in curves:
+                colour = HOUGH_COLOURS[legend]
+                data = read(kind, config)
+                if test not in data:  # not evaluated yet
+                    continue
                 mine = data[(data.distance_modulus < 16.5) == near].assign(
                     detected=lambda d, t=test: d[t].astype(float)
                 )
@@ -1286,7 +1505,7 @@ def hough_figures(train_sky="fold0", config="hough/band"):
                 ).detected.agg(["mean", "size"])
                 rate = rate[rate["size"] >= 4]
                 centres = [np.sqrt(max(b.left, 1) * b.right) for b in rate.index]
-                style = "--" if "matched" in test and figure == "known" else "-"
+                style = "--" if test.startswith("matched") else "-"
                 ax.plot(
                     centres,
                     rate["mean"],
@@ -1318,7 +1537,11 @@ def hough_figures(train_sky="fold0", config="hough/band"):
         axes[0].set_ylabel("copies found")
         axes[1].legend(frameon=False, fontsize=8, loc="lower right")
         fig.suptitle(
-            "without the track" if figure == "blind" else "along the known track",
+            {
+                "blind": "without the track (1% false lines per stream-free window)",
+                "known": "along the known track",
+                "combination": "the per-pixel network searched along lines",
+            }[figure],
             fontsize=11,
         )
         fig.tight_layout()
@@ -2007,8 +2230,10 @@ if __name__ == "__main__":
     elif arguments.step == "train":
         train(arguments.config, arguments.seed, arguments.train_sky)
     elif arguments.step == "evaluate":
-        # a line model answers per window, the others per pixel
-        scorer = evaluate_hough if "hough" in CONFIGS[arguments.config] else evaluate
+        # a line model, or a per-pixel ensemble searched along lines, answers
+        # per window; the others per pixel
+        lines = {"hough", "lines"} & set(CONFIGS[arguments.config])
+        scorer = evaluate_hough if lines else evaluate
         scorer(
             arguments.config, train_sky=arguments.train_sky, sets=tuple(arguments.sets)
         )
@@ -2023,3 +2248,4 @@ if __name__ == "__main__":
             levers(arguments.train_sky)
             if (result_dir(arguments.train_sky) / "hough_hough_band.csv").exists():
                 hough_figures(arguments.train_sky)
+                hough_null_figure(arguments.train_sky)
