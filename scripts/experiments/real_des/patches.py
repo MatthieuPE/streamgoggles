@@ -160,6 +160,32 @@ CONFIGS = {
         "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
         "training": {"background_fraction": 0.3},
     },
+    # what more models and longer training buy the 2-degree line model: four
+    # quick seeds, one quick seed (the fair reference for one long model), and
+    # one model trained four times longer (19,200 windows)
+    "hough/band2 residual x4": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "parts": ["hough/band2 residual"],
+        "seeds": [42, 43, 44, 45],
+    },
+    "hough/band2 residual s42": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "parts": ["hough/band2 residual"],
+        "seeds": [42],
+    },
+    "hough/band2 residual long": {
+        "label": "band2",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+        "windows": 19200,
+        "seeds": [42],
+    },
     # batch Dice weights bright streams' many pixels over faint ones' few;
     # per-pixel cross-entropy weights every pixel alike (logits head)
     "count/window bce": {
@@ -408,6 +434,26 @@ def hough_parts(config):
         return HoughTargetTransform(view, grid)
 
     return factory, wrapper
+
+
+def load_line_models(config, train_sky, seeds=SEEDS):
+    """The line models of a configuration trained on one sky, in eval mode:
+    each of its ``parts`` (the configurations whose trained models it
+    gathers; by default itself) at each of its seeds."""
+    import torch
+
+    from streamgoggles.datasets.transforms import QueryDistanceTransform
+
+    factory, _ = hough_parts(config)
+    models = []
+    for part in CONFIGS[config].get("parts", [config]):
+        for seed in CONFIGS[config].get("seeds", seeds):
+            model = factory(QueryDistanceTransform.n_channels)
+            model.load_state_dict(
+                torch.load(model_stem(part, seed, train_sky).with_suffix(".pt"))
+            )
+            models.append(model.eval())
+    return models
 
 
 def train(config, seed, train_sky="A"):
@@ -1159,13 +1205,7 @@ def evaluate_hough(
     norm = normalizer(CONFIGS[config]["normalizer"], chans)
     models = []
     if "hough" in CONFIGS[config]:  # a line model: one answer per line
-        factory, _ = hough_parts(config)
-        for seed in CONFIGS[config].get("seeds", seeds):
-            model = factory(QueryDistanceTransform.n_channels)
-            model.load_state_dict(
-                torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
-            )
-            models.append(model.eval())
+        models = load_line_models(config, train_sky, seeds)
         grid = models[0].hough.grid
     else:  # a per-pixel ensemble, its answer summed along lines
         from streamgoggles.models import build_model
@@ -1465,14 +1505,7 @@ def hough_null_figure(train_sky="fold0", config="hough/band", query=17.0):
     background, _, pix = build_sky(EVALUATED_ON[train_sky], "count")
     valid = background.valid_mask_full
     chans = channels()
-    factory, _ = hough_parts(config)
-    models = []
-    for seed in CONFIGS[config].get("seeds", SEEDS):
-        model = factory(QueryDistanceTransform.n_channels)
-        model.load_state_dict(
-            torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
-        )
-        models.append(model.eval())
+    models = load_line_models(config, train_sky)
     grid = models[0].hough.grid
     view = QueryDistanceTransform(
         StreamMapTransform(normalizer=normalizer("window", chans), augment=False),
@@ -1830,14 +1863,7 @@ def line_model_example(
         centers=[(ra, dec)],
     )
 
-    factory, _ = hough_parts(config)
-    line_models = []
-    for s in CONFIGS[config].get("seeds", SEEDS):
-        model = factory(QueryDistanceTransform.n_channels)
-        model.load_state_dict(
-            torch.load(model_stem(config, s, train_sky).with_suffix(".pt"))
-        )
-        line_models.append(model.eval())
+    line_models = load_line_models(config, train_sky)
     grid = line_models[0].hough.grid
     pixel_models = []
     for s in CONFIGS["count/window x4"]["seeds"]:
@@ -1996,6 +2022,43 @@ LINE_SKY_CONFIG = "hough/band residual"
 # lies within max(TRACK_TOLERANCE_DEG, two widths) of the track.
 TRACK_TOLERANCE_DEG = 1.0
 MIN_ALONG_DEG = 3.0
+# ... and runs along it: its direction within TRACK_ALIGN_DEG of the track's
+# where they meet -- a line crossing a track at an angle is not following it
+TRACK_ALIGN_DEG = 15.0
+
+
+def _tangents(points):
+    """Unit tangents of a polyline of unit vectors (central differences)."""
+    import numpy as np
+
+    tangents = np.gradient(points, axis=0)
+    tangents -= (tangents * points).sum(1, keepdims=True) * points
+    return tangents / np.maximum(np.linalg.norm(tangents, axis=1, keepdims=True), 1e-12)
+
+
+def _aligned_length(
+    points, step, reference, tolerance_deg, tangents=None, reference_tangents=None
+):
+    """Degrees of a polyline (unit vectors, ``step`` degrees apart) that lie
+    within ``tolerance_deg`` of a reference polyline AND run along it: their
+    directions within TRACK_ALIGN_DEG of the reference's nearest point's."""
+    import numpy as np
+
+    if tangents is None:
+        tangents = _tangents(points)
+    if reference_tangents is None:
+        reference_tangents = _tangents(reference)
+    cosines = points @ reference.T
+    nearest = cosines.argmax(1)
+    close = cosines[np.arange(len(points)), nearest] >= np.cos(
+        np.radians(tolerance_deg)
+    )
+    aligned = np.abs((tangents * reference_tangents[nearest]).sum(1)) >= np.cos(
+        np.radians(TRACK_ALIGN_DEG)
+    )
+    return float((close & aligned).sum() * step)
+
+
 # Objects marked on the maps, with the radius within which a line counts as
 # theirs: the Magellanic Clouds' outskirts and the two bright dwarf
 # spheroidals, whose stars past their masks every line through them crosses
@@ -2108,16 +2171,9 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
     )
     chans = channels()
     name = config.replace("/", "_")
-    factory, _ = hough_parts(config)
     models, levels = {}, {}
     for train_sky in ("fold0", "fold1"):
-        models[train_sky] = []
-        for seed in CONFIGS[config].get("seeds", SEEDS):
-            model = factory(QueryDistanceTransform.n_channels)
-            model.load_state_dict(
-                torch.load(model_stem(config, seed, train_sky).with_suffix(".pt"))
-            )
-            models[train_sky].append(model.eval())
+        models[train_sky] = load_line_models(config, train_sky)
         null = pd.read_csv(result_dir(train_sky) / f"hough_null_{name}.csv")
         for row in null.itertuples():
             levels[(train_sky, row.scorer, round(row.query, 1))] = row.threshold
@@ -2302,7 +2358,8 @@ def line_sky_matches(config=LINE_SKY_CONFIG, mask_objects=True):
     """Which DES 2018 streams have a detected line along their track at
     their distance (the queried distance nearest it): a segment with at
     least MIN_ALONG_DEG of it within max(TRACK_TOLERANCE_DEG, two widths) of
-    the track as the paper draws it. With the per-pixel network's result
+    the track as the paper draws it, and running along it (directions within
+    TRACK_ALIGN_DEG). With the per-pixel network's result
     (the first training, run.py detect) alongside. Writes
     line_sky/matches_<config>.csv, and marks each detection with the DES 2018
     stream it runs along, if any, in the detections file."""
@@ -2323,18 +2380,21 @@ def line_sky_matches(config=LINE_SKY_CONFIG, mask_objects=True):
     step = np.array(
         [r.length_deg / max(int(r.length_deg / 0.1) - 1, 1) for r in table.itertuples()]
     )
+    segment_tangents = [_tangents(seg) for seg in segments]
     pixel_test = pd.read_csv(rd.DETECTIONS)
     table["along"] = ""
     rows = []
     for stream, (width, _, distance, _) in sp.DES_STREAMS.items():
         query = min(sp.QUERY_GRID, key=lambda q: abs(q - distance))
         track = _unit(*des2018_arc(stream, n=600))
-        tolerance = np.radians(max(TRACK_TOLERANCE_DEG, 2 * width))
+        track_tangents = _tangents(track)
+        tolerance = max(TRACK_TOLERANCE_DEG, 2 * width)
         along = np.array(
             [
-                np.sum(np.arccos(np.clip((seg @ track.T).max(1), -1, 1)) <= tolerance)
-                * s
-                for seg, s in zip(segments, step, strict=True)
+                _aligned_length(seg, s, track, tolerance, tangents, track_tangents)
+                for seg, s, tangents in zip(
+                    segments, step, segment_tangents, strict=True
+                )
             ]
         )
         runs_along = along >= MIN_ALONG_DEG
@@ -2556,6 +2616,13 @@ def line_sky_chance(
                 np.array(steps),
             )
             tree = cKDTree(points)
+            # each segment's great circle, to keep only those along the track
+            poles = []
+            for r in mine.itertuples():
+                a, b = _unit(r.ra1, r.dec1), _unit(r.ra2, r.dec2)
+                pole = np.cross(a, b)
+                poles.append(pole / max(np.linalg.norm(pole), 1e-12))
+            poles = np.array(poles)
             chord = 2 * np.sin(np.radians(max(TRACK_TOLERANCE_DEG, 2 * width)) / 2)
             counts = []
             placed = 0
@@ -2568,10 +2635,16 @@ def line_sky_chance(
                 if inside.mean() < 0.9:
                     continue
                 placed += 1
-                near = tree.query_ball_point(_unit(*track), chord)
+                track_points = _unit(*track)
+                near = tree.query_ball_point(track_points, chord)
                 hits = np.unique(np.concatenate([np.asarray(h, int) for h in near]))
                 along = np.bincount(owner[hits], minlength=len(steps)) * steps
-                counts.append(int((along >= MIN_ALONG_DEG).sum()))
+                track_pole = np.cross(track_points[0], track_points[-1])
+                track_pole /= max(np.linalg.norm(track_pole), 1e-12)
+                aligned = np.abs(poles @ track_pole) >= np.cos(
+                    np.radians(TRACK_ALIGN_DEG)
+                )
+                counts.append(int(((along >= MIN_ALONG_DEG) & aligned).sum()))
             counts = np.array(counts)
             observed = int(matches.loc[len(rates), f"{scorer} lines"])
             rates.append(float((counts >= 1).mean()))
@@ -2811,10 +2884,19 @@ def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"
         for stream, (width, _, distance, _) in sp.DES_STREAMS.items()
     }
 
-    def overlap(track_points, reference, tolerance_deg):
-        """Degrees of the track within tolerance of a reference track."""
-        close = (track_points @ reference.T).max(1) >= np.cos(np.radians(tolerance_deg))
-        return close.sum() * 0.25
+    reference_tangents = {k: _tangents(v) for k, v in known_points.items()}
+    reference_tangents.update({k: _tangents(v[0]) for k, v in des.items()})
+
+    def overlap(track_points, reference_name, reference, tolerance_deg):
+        """Degrees of the track within tolerance of a reference track and
+        running along it."""
+        return _aligned_length(
+            track_points,
+            0.25,
+            reference,
+            tolerance_deg,
+            reference_tangents=reference_tangents[reference_name],
+        )
 
     rows = []
     for members in groups.values():
@@ -2838,7 +2920,9 @@ def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"
         identification, how = "", ""
         best = 0.0
         for stream, (reference, width, stream_distance) in des.items():
-            degrees = overlap(arc, reference, max(TRACK_TOLERANCE_DEG, 2 * width))
+            degrees = overlap(
+                arc, stream, reference, max(TRACK_TOLERANCE_DEG, 2 * width)
+            )
             if degrees >= MIN_ALONG_DEG and degrees > best:
                 best = degrees
                 at = abs(distance - stream_distance) <= 1.0
@@ -2861,7 +2945,7 @@ def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"
                     break
         known_best, known_name = 0.0, ""
         for reference_name, reference in known_points.items():
-            degrees = overlap(arc, reference, GALSTREAMS_TOLERANCE_DEG)
+            degrees = overlap(arc, reference_name, reference, GALSTREAMS_TOLERANCE_DEG)
             if degrees >= MIN_ALONG_DEG and degrees > known_best:
                 known_best, known_name = degrees, reference_name
         # a track hugging the footprint's edge: the background model's edge
@@ -3013,6 +3097,348 @@ def line_sky_track_figure(config=LINE_SKY_CONFIG, mask_objects=True, min_segment
         bbox_inches="tight",
     )
     plt.close(fig)
+
+
+# The leads of the track catalogues, looked at one by one: the ends of the
+# detected track (the 2-degree model's catalogue, or the 4-degree model's
+# where only it has the lead), its distance, the galstreams track it was
+# matched to, and which search found it. ATLAS, a DES 2018 stream both
+# searches find, is the control: what a real stream looks like here.
+LEADS = {
+    "ATLAS (control)": {
+        "ends": ((9.84, -20.01), (33.75, -34.50)),
+        "distance": 16.77,
+        "compare": "AAU-ATLAS.li2021",
+        "found_by": "both searches",
+    },
+    "Jhelum's eastern extension": {
+        "ends": ((74.98, -23.57), (79.34, -34.35)),
+        "distance": 15.2,
+        "compare": "Jhelum.ibata2024",
+        "found_by": "the line network",
+    },
+    "New-4 (matched filter's track)": {
+        "ends": ((89.75, -45.39), (93.10, -34.80)),
+        "distance": 16.26,
+        "compare": "New-4.ibata2024",
+        "found_by": "the matched filter",
+    },
+    "eastern track A": {
+        "ends": ((95.45, -45.39), (86.85, -34.39)),
+        "distance": 16.25,
+        "compare": "New-4.ibata2024",
+        "found_by": "the line network",
+    },
+    "eastern track B": {
+        "ends": ((95.59, -50.10), (91.33, -40.03)),
+        "distance": 16.5,
+        "compare": None,
+        "found_by": "the line network",
+    },
+    "Leiptr": {
+        "ends": ((82.92, -18.15), (88.83, -28.90)),
+        "distance": 15.25,
+        "compare": "Leiptr.ibata2021",
+        "found_by": "the line network",
+    },
+    "Cetus-Palca?": {
+        "ends": ((27.57, -40.00), (37.75, -50.73)),
+        "distance": 15.51,
+        "compare": "Cetus-Palca.thomas2021",
+        "found_by": "the line network",
+    },
+}
+LEAD_WIDTH_DEG = 0.4  # half-width of the band the profile and the diagram use
+LEAD_OFF_DEG = (1.5, 3.0)  # the flanking bands, either side of the track
+LEADS_DIR = LINE_SKY / "leads"
+
+
+def _lead_frame(ends):
+    """The lead's great circle: (pole, u, length_deg), u at its first end,
+    so a position's along-track angle is atan2(p.(pole x u), p.u)."""
+    import numpy as np
+
+    a, b = _unit(*ends[0]), _unit(*ends[1])
+    pole = np.cross(a, b)
+    pole /= np.linalg.norm(pole)
+    return pole, a, float(np.degrees(np.arccos(np.clip(a @ b, -1, 1))))
+
+
+def _lead_coordinates(ra, dec, frame):
+    """(offset from the track, position along it), degrees, for positions."""
+    import numpy as np
+
+    pole, u, _ = frame
+    p = _unit(ra, dec)
+    offset = np.degrees(np.arcsin(np.clip(p @ pole, -1, 1)))
+    along = np.degrees(np.arctan2(p @ np.cross(pole, u), p @ u))
+    return offset, along
+
+
+def lead_inspection():
+    """For each of LEADS: a zoomed map of the matched filter's excess (S/N)
+    at its distance, the matched-filter band significance along it at every
+    queried distance (the band against 200 null bands on the calibration
+    sky), and the Hess difference of its stars against flanking bands, with
+    the matched filter's polygon at its distance. Writes
+    line_sky/leads/<lead>.png and line_sky/leads/leads.csv."""
+    import healpy as hp
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import pyarrow.parquet as pq
+    from scipy import ndimage
+
+    from streamgoggles.evaluation.footprint import (
+        band_mean_statistics,
+        null_band_placements,
+        track_band,
+    )
+    from streamgoggles.matched_filter import build_matched_filters
+    from streamgoggles.objects_overlap import des2018_arc, get_footprint
+
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    background, _, pix = build_sky("inference", "count")
+    nside = pix.nside
+    valid = background.valid_mask_full & ~rd.object_mask(
+        nside, max_dwarf_mv=LINE_SKY_DWARF_MV
+    )
+    valid &= get_footprint("des_yr6_inference", nside=nside)[0]
+    calibration = valid & hp.read_map(rd.CALIBRATION_MASK).astype(bool)
+    queries = list(sp.QUERY_GRID)
+    smooth = smooth_backgrounds(background, queries, valid)
+    excess = {
+        q: np.where(valid, background.raw_map_full_dict["good"][q] - smooth[q], 0.0)
+        for q in queries
+    }
+    snr_map = {
+        q: np.where(
+            valid,
+            (background.raw_map_full_dict["good"][q] - smooth[q])
+            / np.sqrt(np.maximum(smooth[q], 0.5)),
+            hp.UNSEEN,
+        )
+        for q in queries
+    }
+    good = build_matched_filters(rd.filters_config(), namespace=rd.NAMESPACE)["good"]
+    known = _known_tracks()
+    stars_path = rd.INFERENCE_CATALOGUE
+    g_col, r_col = f"{rd.NAMESPACE}_g_obs", f"{rd.NAMESPACE}_r_obs"
+    LEADS_DIR.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for name, lead in LEADS.items():
+        frame = _lead_frame(lead["ends"])
+        length = frame[2]
+        arc_ra, arc_dec = _arc(*lead["ends"][0], *lead["ends"][1], 200)
+        band = track_band([(arc_ra, arc_dec)], LEAD_WIDTH_DEG, nside) & valid
+        rng = np.random.default_rng([EVAL_SEED, 31])
+        placements = null_band_placements(band, calibration, rng, N_NULL_BANDS)
+        at = np.flatnonzero(band)
+        profile = []
+        for q in queries:
+            stats = band_mean_statistics(excess[q], at, excess[q], placements)
+            profile.append((q, stats["snr"], stats["p_value"]))
+        profile = np.array(profile)
+        query = min(queries, key=lambda q: abs(q - lead["distance"]))
+
+        # the stars around the lead
+        lo_ra, hi_ra = np.min(arc_ra) - 6, np.max(arc_ra) + 6
+        lo_dec, hi_dec = np.min(arc_dec) - 5, np.max(arc_dec) + 5
+        table = pq.read_table(
+            stars_path,
+            columns=["ra", "dec", g_col, r_col],
+            filters=[
+                ("ra", ">=", lo_ra),
+                ("ra", "<=", hi_ra),
+                ("dec", ">=", lo_dec),
+                ("dec", "<=", hi_dec),
+            ],
+        ).to_pandas()
+        on_sky = valid[
+            hp.ang2pix(nside, table.ra.values, table.dec.values, lonlat=True)
+        ]
+        stars = table[on_sky]
+        offset, along = _lead_coordinates(stars.ra.values, stars.dec.values, frame)
+        inside = (along >= 0) & (along <= length)
+        on = inside & (np.abs(offset) <= LEAD_WIDTH_DEG)
+        off = (
+            inside
+            & (np.abs(offset) >= LEAD_OFF_DEG[0])
+            & (np.abs(offset) <= LEAD_OFF_DEG[1])
+        )
+        # valid areas of the two regions, from the HEALPix pixels' centres
+        pixels = hp.query_disc(
+            nside, _unit(*np.mean(lead["ends"], axis=0)), np.radians(length / 2 + 4)
+        )
+        pixels = pixels[valid[pixels]]
+        p_ra, p_dec = hp.pix2ang(nside, pixels, lonlat=True)
+        p_offset, p_along = _lead_coordinates(p_ra, p_dec, frame)
+        p_inside = (p_along >= 0) & (p_along <= length)
+        area_on = (p_inside & (np.abs(p_offset) <= LEAD_WIDTH_DEG)).sum()
+        area_off = (
+            p_inside
+            & (np.abs(p_offset) >= LEAD_OFF_DEG[0])
+            & (np.abs(p_offset) <= LEAD_OFF_DEG[1])
+        ).sum()
+        scale = area_on / max(area_off, 1)
+        g = stars[g_col].values
+        colour = g - stars[r_col].values
+        bins = (np.arange(-0.3, 1.25, 0.05), np.arange(16.5, 24.6, 0.2))
+        h_on = np.histogram2d(colour[on], g[on], bins=bins)[0]
+        h_off = np.histogram2d(colour[off], g[off], bins=bins)[0]
+        hess = ndimage.gaussian_filter(h_on - scale * h_off, 1.0)
+        polygon = good._polygon(["g", "r"], query)
+        from matplotlib.path import Path as MplPath
+
+        in_filter = MplPath(polygon).contains_points(np.c_[colour, g])
+        n_on = int((on & in_filter).sum())
+        n_off = int((off & in_filter).sum())
+        cmd_excess = n_on - scale * n_off
+        cmd_snr = cmd_excess / np.sqrt(max(n_on + scale**2 * n_off, 1))
+
+        # the figure: map, profile, Hess difference
+        fig, axes = plt.subplots(1, 3, figsize=(17, 5.4))
+        middle = np.mean(np.array(lead["ends"]), axis=0)
+        projector = hp.projector.GnomonicProj(
+            rot=(float(middle[0]), float(middle[1]), 0.0), xsize=240, reso=6.0
+        )
+        image = projector.projmap(
+            snr_map[query], lambda x, y, z: hp.vec2pix(nside, x, y, z)
+        )
+        seen = np.isfinite(image) & (image > hp.UNSEEN / 2)
+        values = np.where(seen, image, 0.0)
+        weight = ndimage.gaussian_filter(seen.astype(float), 3.0)
+        shown = ndimage.gaussian_filter(values, 3.0) / np.maximum(weight, 1e-3)
+        extent = projector.get_extent()
+        ax = axes[0]
+        ax.imshow(
+            np.where(seen, shown, np.nan),
+            origin="lower",
+            extent=extent,
+            cmap="RdBu_r",
+            vmin=-0.5,
+            vmax=0.5,
+        )
+
+        def draw(ra, dec, ax=ax, projector=projector, **style):
+            x, y = projector.ang2xy(np.asarray(ra), np.asarray(dec), lonlat=True)
+            ax.plot(x, y, **style)
+
+        pole = frame[0]
+        for side in (-1, 1):  # two rails beside the track, not over it
+            shift = np.radians(side * 1.0)
+            rail = np.cos(shift) * _unit(arc_ra, arc_dec) + np.sin(shift) * pole
+            draw(
+                np.degrees(np.arctan2(rail[:, 1], rail[:, 0])) % 360,
+                np.degrees(np.arcsin(np.clip(rail[:, 2], -1, 1))),
+                color="#1a1a1a",
+                lw=0.8,
+                ls="--",
+            )
+        angle, overlap = np.nan, 0.0
+        if lead["compare"] and lead["compare"] in known:
+            draw(*known[lead["compare"]], color="#2e8b57", lw=1.2, ls=":")
+            # how it meets the literature track: the angle where they are
+            # closest, and how much of the lead lies within 1.5 deg of it
+            ours = _unit(arc_ra, arc_dec)
+            theirs = _unit(*known[lead["compare"]])
+            cosines = ours @ theirs.T
+            i, j = np.unravel_index(cosines.argmax(), cosines.shape)
+            ours_t = np.cross(frame[0], ours[i])
+            ours_t /= np.linalg.norm(ours_t)
+            angle = float(
+                np.degrees(np.arccos(np.clip(abs(_tangents(theirs)[j] @ ours_t), 0, 1)))
+            )
+            overlap = float(
+                (cosines.max(1) >= np.cos(np.radians(GALSTREAMS_TOLERANCE_DEG))).sum()
+                * length
+                / (len(ours) - 1)
+            )
+        for stream in sp.DES_STREAMS:
+            draw(*des2018_arc(stream, n=200), color="#7a7a7a", lw=3, alpha=0.4)
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+        ax.set_xticks([])
+        ax.set_yticks([])
+        meeting = (
+            f" (at {angle:.0f}°, {overlap:.0f}° within 1.5°)"
+            if lead["compare"] and np.isfinite(angle)
+            else ""
+        )
+        ax.set_title(
+            f"matched-filter excess (S/N, smoothed 0.3°) at m−M {query:g}\n"
+            f"dashed: the track ±1°; green dotted: {lead['compare'] or '—'}{meeting}",
+            fontsize=8.5,
+        )
+        ax = axes[1]
+        ax.plot(profile[:, 0], profile[:, 1], "o-", color="#1f6fb4", lw=2)
+        ax.axhline(0, color="#b0b0b0", lw=0.8)
+        ax.axvline(lead["distance"], color="#e07b39", ls="--", lw=1)
+        for q, snr, p_value in profile:
+            if p_value <= 1.0 / (N_NULL_BANDS + 1) + 1e-12:
+                ax.plot(q, snr, "o", ms=11, mfc="none", mec="#c0392b", mew=1.5)
+        ax.set_xlabel("queried distance modulus")
+        ax.set_ylabel("band S/N against 200 null bands")
+        ax.set_title(
+            f"along the track ({length:.0f}°, ±{LEAD_WIDTH_DEG}°); orange: the "
+            "detection's distance;\nred circles: beyond every null band",
+            fontsize=8.5,
+        )
+        ax.spines[["top", "right"]].set_visible(False)
+        ax = axes[2]
+        limit = np.nanpercentile(np.abs(hess), 99) or 1.0
+        ax.imshow(
+            hess.T,
+            origin="lower",
+            aspect="auto",
+            extent=[bins[0][0], bins[0][-1], bins[1][0], bins[1][-1]],
+            cmap="RdBu_r",
+            vmin=-limit,
+            vmax=limit,
+        )
+        closed = np.vstack([polygon, polygon[:1]])
+        ax.plot(closed[:, 0], closed[:, 1], color="#1a1a1a", lw=0.8)
+        ax.set_ylim(bins[1][-1], bins[1][0])
+        ax.set_xlabel("g − r")
+        ax.set_ylabel("g")
+        ax.set_title(
+            f"stars on the track minus flanking bands ({LEAD_OFF_DEG[0]:g}-"
+            f"{LEAD_OFF_DEG[1]:g}°), by area;\nin the filter at m−M {query:g}: "
+            f"excess {cmd_excess:.0f} stars, {cmd_snr:.1f}σ",
+            fontsize=8.5,
+        )
+        fig.suptitle(f"{name} — found by {lead['found_by']}", fontsize=11)
+        fig.tight_layout()
+        slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+        fig.savefig(LEADS_DIR / f"{slug}.png", dpi=100, bbox_inches="tight")
+        fig.savefig(DOC_FIGURES / f"lead_{slug}.png", dpi=100, bbox_inches="tight")
+        plt.close(fig)
+        best = int(np.nanargmax(profile[:, 1]))
+        rows.append(
+            {
+                "lead": name,
+                "found_by": lead["found_by"],
+                "length_deg": length,
+                "detection_distance": lead["distance"],
+                "profile_peak_distance": float(profile[best, 0]),
+                "profile_peak_snr": float(profile[best, 1]),
+                "snr_at_detection": float(profile[queries.index(query), 1]),
+                "p_at_detection": float(profile[queries.index(query), 2]),
+                "cmd_excess": float(cmd_excess),
+                "cmd_snr": float(cmd_snr),
+                "compare": lead["compare"] or "",
+                "angle_to_compare_deg": angle,
+                "overlap_with_compare_deg": overlap,
+            }
+        )
+        print(f"{name}: done", flush=True)
+    table = pd.DataFrame(rows)
+    table.to_csv(LEADS_DIR / "leads.csv", index=False)
+    print(table.round(2).to_string(index=False), flush=True)
 
 
 def hough_figures(train_sky="fold0"):
@@ -3764,7 +4190,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
         "step",
-        choices=["audit", "train", "evaluate", "figures", "label-figures", "line-sky"],
+        choices=[
+            "audit",
+            "train",
+            "evaluate",
+            "figures",
+            "label-figures",
+            "line-sky",
+            "leads",
+        ],
     )
     parser.add_argument("--config", choices=list(CONFIGS))
     parser.add_argument("--seed", type=int, default=SEEDS[0])
@@ -3799,6 +4233,8 @@ if __name__ == "__main__":
         )
     elif arguments.step == "label-figures":
         label_figures()
+    elif arguments.step == "leads":  # the catalogue's leads, one by one
+        lead_inspection()
     elif arguments.step == "line-sky":  # the line model over the whole DES sky
         config = arguments.config or LINE_SKY_CONFIG
         line_sky(config)

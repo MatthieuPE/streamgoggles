@@ -13,24 +13,26 @@ Branch `line-model-sky`; code `scripts/experiments/real_des/patches.py`
 (`line-sky`).
 
 **In short.** Searching the whole sky without knowing any track, the line
-network finds **six DES 2018 streams beyond chance** — ATLAS, Phoenix,
-Indus, Jhelum, Chenab, Elqui — with a clean map: 138 lines, five in six
-along a stream or around the Magellanic Clouds. The matched filter's line
-search, once the bright dwarf galaxies and the globular clusters are masked
-(every line through them is bright), finds **five** — ATLAS, Phoenix, Elqui,
-and the two short, bright ones the line network misses, Tucana III and
-Willka Yaku. **Together, each at half its false-alarm rate (about 1% of
-stream-free windows for the two), they find seven**; at their own rates,
-eight; the per-pixel network found five. Joined across windows and
-distances, the lines make 54 tracks seen more than once: 13 along DES 2018
-streams, 22 in the Magellanic Clouds' outskirts, 10 along other known
-streams — among them the eastern extension of Jhelum that Ibata et al.
-(2024) proposed — and 7 unidentified. The line network misses short streams
-because its label taught it to: the band label's 4° minimum made every
-window holding a shorter clear stretch a negative example. **With a 2°
-minimum the failure is gone** — bright streams of 5-6°, missed everywhere,
-are found everywhere — and on the sky the line network finds Tucana III,
-at the cost of Jhelum and Phoenix.
+network finds **seven DES 2018 streams beyond chance** — ATLAS, Phoenix,
+Indus, Jhelum, Chenab, Elqui, and Turranburra by a single line — with a
+clean map: 138 lines, four in five along a stream or around the Magellanic
+Clouds. The matched filter's line search, once the bright dwarf galaxies and
+the globular clusters are masked (every line through them is bright), finds
+**six** — ATLAS, Phoenix, Chenab, Elqui, and the two short, bright ones the
+line network misses, Tucana III and Willka Yaku. **Together, each at half
+its false-alarm rate (about 1% of stream-free windows for the two), they
+find eight**; the per-pixel network found five. A line counts for a stream
+only if it runs *along* its track (directions within 15°): a line crossing
+a track is not following it. Joined across windows and distances, the lines
+make 54 tracks seen more than once: 11 along DES 2018 streams, 23 in the
+Magellanic Clouds' outskirts, 3 along other known streams and 16
+unidentified; a closer look at the unidentified ones is in
+{doc}`line_followup`. The line network misses short streams because its
+label taught it to: the band label's 4° minimum made every window holding a
+shorter clear stretch a negative example. **With a 2° minimum the failure
+is gone** — bright streams of 5-6°, missed everywhere, are found everywhere
+— and on the sky the line network finds Tucana III instead of Phoenix and
+Turranburra.
 
 ## How the maps are made
 
@@ -84,10 +86,13 @@ Tucana II).
 
 | | lines | around Fornax / Sculptor | DES 2018 streams found |
 |---|---|---|---|
-| matched filter, training mask only | 1,003 | 381 / 113 | 4, with Aliqa Uma by the Fornax burst |
-| **matched filter, bright dwarfs and clusters masked** | **430** | **0 / 0** | **5**, Aliqa Uma gone, Phoenix and ATLAS now beyond chance |
-| line network, training mask only | 152 | 0 / 0 | 6 |
-| line network, bright dwarfs and clusters masked | 138 | 0 / 0 | 6 |
+| matched filter, training mask only | 1,003 | 381 / 113 | 5 |
+| **matched filter, bright dwarfs and clusters masked** | **430** | **0 / 0** | **6**, Chenab added |
+| line network, training mask only | 152 | 0 / 0 | 7 |
+| line network, bright dwarfs and clusters masked | 138 | 0 / 0 | 7 |
+
+(Before lines had to run along a track, the bursts made the unmasked matched
+filter "find" Aliqa Uma, whose track passes Fornax: its lines crossed it.)
 
 The line network learned to ignore the bursts and is unchanged.
 
@@ -118,23 +123,24 @@ masked; bottom: both, each at half its rate (solid: line network; dashed:
 matched filter). `patches.py line-sky`.*
 
 Where the lines are (a line counts as a stream's if at least 3° of it runs
-within max(1°, two widths) of its track at any distance; as an object's if
-it passes within 20° of the LMC or 12° of the SMC, the calibration's discs):
+within max(1°, two widths) of its track and along it, at any distance; as an
+object's if it passes within 20° of the LMC or 12° of the SMC, the
+calibration's discs):
 
 | | line network | matched-filter line search | both, half rate each |
 |---|---|---|---|
-| along a DES 2018 track | 74 | 89 | 141 |
+| along a DES 2018 track | 68 | 83 | 131 |
 | around the LMC | 43 | 165 | 187 |
-| around the SMC | 4 | 56 | 56 |
-| elsewhere | 17 | 120 | 109 |
+| around the SMC | 4 | 58 | 58 |
+| elsewhere | 23 | 124 | 117 |
 | **all** | **138** | **430** | **493** |
 
 - **The Magellanic Clouds' outskirts** are real stars at their distance
   (the LMC at m−M 18.5, the SMC at 19): the line network draws them mostly
   at m−M 18-19, the matched filter at every distance.
-- **Elsewhere**, the line network's 17 lines are mostly a group in the east
-  (RA 73-94°, Dec −23° to −46°, m−M 15-16.5) — part of it along known
-  streams (below). The matched filter's include a bundle along Dec −41°,
+- **Elsewhere**, the line network's 23 lines are mostly a group in the east
+  (RA 73-94°, Dec −23° to −46°, m−M 15-16.5), looked at closely in
+  {doc}`line_followup`. The matched filter's include a bundle along Dec −41°,
   RA 300-333°, at m−M 16-18.5, parallel to the footprint's northern edge
   1.5-3° inside it, which the line network does not see.
 
@@ -146,10 +152,11 @@ it passes within 20° of the LMC or 12° of the SMC, the calibration's discs):
 ```
 
 A stream is found by a line search if a detected line at the queried
-distance nearest its own runs along its track (at least 3° within
-max(1°, two widths) of it). A long, wide track is crossed by a stray line
-often — a random track of Jhelum's shape is, in 42% of places — so what
-tells a stream from chance is **how many** lines run along it. Each stream's
+distance nearest its own runs along its track: at least 3° of it within
+max(1°, two widths) of the track, and in its direction (within 15°). Even
+so, a long, wide track has a stray line along it now and then — a random
+track of Jhelum's shape does in 9.5% of places — so what tells a stream from
+chance is **how many** lines run along it. Each stream's
 track was placed at 200 random places and position angles on the footprint;
 *p* is the share of them with at least as many lines along it as the stream
 itself, and a stream counts as found when *p* ≤ 0.05. The per-pixel
@@ -164,21 +171,21 @@ search at its own 1% level — is shown too, at about twice that rate.
 
 | | m−M | per-pixel network | line network: lines (*p*) | matched-filter lines (*p*) | both, half rate (*p*) |
 |---|---|---|---|---|---|
-| Jhelum | 15.6 | | **5 (0.035)** | | **5 (0.030)** |
+| Jhelum | 15.6 | | **5 (0.010)** | | **5 (0.005)** |
 | Wambelong | 15.9 | | | | |
-| Indus | 16.1 | | **5 (0.015)** | | **5 (0.040)** |
+| Indus | 16.1 | | **4 (0.010)** | | **4 (0.020)** |
 | Turbio | 16.1 | | | | |
-| Phoenix | 16.4 | | **2 (0.030)** | **2 (0.030)** | **3 (0.040)** |
+| Phoenix | 16.4 | | **2 (0.015)** | **2 (0.005)** | **3 (0.015)** |
 | ATLAS | 16.8 | **found** | **4 (0.005)** | **6 (0.015)** | **10 (0.005)** |
 | Molonglo | 16.8 | | | | |
-| Ravi | 16.8 | | | 1 (0.20) | |
-| Tucana III | 17.0 | **found** | | **4 (0.005)** | **3 (0.010)** |
-| Turranburra | 17.2 | | 1 (0.080) | | |
+| Ravi | 16.8 | | | | |
+| Tucana III | 17.0 | **found** | | **4 (0.005)** | **3 (0.005)** |
+| Turranburra | 17.2 | | **1 (0.010)** | | |
 | Aliqa Uma | 17.3 | | | | |
-| Willka Yaku | 17.7 | **found** | | **5 (0.015)** | **4 (0.020)** |
-| Chenab | 18.0 | **found** | **4 (0.005)** | 2 (0.16) | 5 (0.080) |
-| Elqui | 18.5 | **found** | **2 (0.010)** | **6 (0.010)** | **5 (0.015)** |
-| **found** | | **5** | **6** | **5** | **7** (either at its own rate: 8) |
+| Willka Yaku | 17.7 | **found** | | **5 (0.010)** | **4 (0.005)** |
+| Chenab | 18.0 | **found** | **4 (0.005)** | **2 (0.050)** | **5 (0.010)** |
+| Elqui | 18.5 | **found** | **1 (0.010)** | **5 (0.005)** | **4 (0.005)** |
+| **found** | | **5** | **7** | **6** | **8** (either at its own rate: 9) |
 
 What it says:
 
@@ -186,11 +193,9 @@ What it says:
    near, wide streams — Jhelum, Indus — that neither the matched filter nor
    the per-pixel network finds; the matched filter finds the short, bright
    ones — Tucana III, Willka Yaku — that the line network misses.
-2. **Combined at the same false-alarm rate, they find seven of the
+2. **Combined at the same false-alarm rate, they find eight of the
    fourteen**, against five for the per-pixel network; at their own rates,
-   eight. Chenab, found by the line network alone, falls just short in the
-   combination (*p* = 0.08): at half its rate, the line network keeps fewer
-   of its lines, and the matched filter's add more chance ones.
+   nine (Turranburra, by one line of the line network).
 3. **Five are found by nothing**: Wambelong, Turbio, Molonglo, Ravi,
    Aliqa Uma; {doc}`des2018_reproduction` found Ravi and Molonglo not to be
    in the data at all.
@@ -207,7 +212,7 @@ identification, in this order: a DES 2018 stream at its distance (within
 1 mag); the outskirts of a Magellanic Cloud (its middle within the
 calibration's 20° or 12°); the footprint's edge (60% of it within 1.5° of
 sky outside the footprint); another stream of galstreams (3° of it within
-1.5° of the stream's track); or none.
+1.5° of the stream's track, and along it); or none.
 
 ```{image} ../figures/real_des_patches/line_sky_tracks.png
 :alt: The tracks seen in at least two segments over the DES sky, coloured by distance, with the DES 2018 tracks underneath
@@ -220,27 +225,22 @@ mean distance, thicker for more segments; the unidentified numbered
 
 | | tracks seen in ≥ 2 segments |
 |---|---|
-| along a DES 2018 stream, at its distance | 13 — ATLAS (one track of 25.7°, from 37 segments in 9 windows), Jhelum, Indus, Chenab, Elqui, Phoenix, Willka Yaku, Tucana III |
-| the Magellanic Clouds' outskirts | 22 |
-| along another known stream | 10 |
-| unidentified | 7 |
-| the footprint's edge; a DES 2018 track at another distance | 1; 1 |
+| along a DES 2018 stream, at its distance | 11 — ATLAS (one track of 25.7°, from 37 segments in 9 windows), Jhelum, Indus, Chenab, Elqui, Phoenix, Willka Yaku, Tucana III |
+| the Magellanic Clouds' outskirts | 23 |
+| along another known stream | 3 |
+| unidentified | 16 |
+| the footprint's edge | 1 |
 
-Among the other known streams:
-
-- **Jhelum's eastern extension** (Ibata et al. 2024), at RA 77°, Dec −29°:
-  found by the line network, at m−M 15.2 — Jhelum's own distance (15.6 in
-  DES 2018).
-- **New-4** (Ibata et al. 2024), at RA 92°, Dec −40°, m−M 16.3, by the
-  matched filter; beside it, two unidentified tracks of the line network at
-  m−M 15.8-16 (RA 91-94°, Dec −40° to −45°) — perhaps the same structure.
-- **M2's stream** (Grillmair 2022), along the narrow strip of the footprint
-  at Dec 0°, m−M 16.2 — at a strip's edge, where lines run easily.
-- The bundle along Dec −41° (RA 300-333°), found by the matched filter
-  alone, falls on the tracks of Orphan-Chenab, C-7 and Phlegethon by
-  position, but at distances that do not fit them, parallel to the
-  footprint's edge: more likely an artefact of the matched filter's
-  background there than a stream.
+Along other known streams: **M2's stream** (Grillmair 2022), on the narrow
+strip of the footprint at Dec 0°, m−M 16.2 — at a strip's edge, where lines
+run easily; and **C-7** (Ibata et al. 2024), twice, in the bundle along
+Dec −41° (RA 300-333°) that the matched filter alone finds, parallel to the
+footprint's edge and at distances that do not fit — more likely an artefact
+of the matched filter's background there than a stream. Before lines had
+to run along a track, ten tracks were given to known streams, among them
+"Jhelum's eastern extension" and "New-4": they crossed those streams' tracks
+at 47-89°. The unidentified tracks of the east are looked at closely in
+{doc}`line_followup`.
 
 The catalogue is a list of candidates to look at, not a detection
 significance: a track's segments are not independent (overlapping windows,
@@ -310,10 +310,10 @@ exactly as above (`line-sky --config "hough/band2 residual"`):
 
 | DES 2018 streams found beyond chance | 4° label | 2° label |
 |---|---|---|
-| line network | 6: ATLAS, Phoenix, Indus, Jhelum, Chenab, Elqui | 5: ATLAS, Indus, Chenab, Elqui, **Tucana III** |
-| both searches, half rate each | 7 | 6 |
-| either search, its own rate | 8 | 7 |
-| line network's lines (along DES 2018 tracks) | 138 (74) | 177 (89) |
+| line network | 7: ATLAS, Phoenix, Indus, Jhelum, Chenab, Elqui, Turranburra | 6: ATLAS, Indus, Jhelum, Chenab, Elqui, **Tucana III** |
+| both searches, half rate each | 8 | 8 |
+| either search, its own rate | 9 | 8 |
+| line network's lines (along DES 2018 tracks) | 138 (68) | 177 (82) |
 
 ```{image} ../figures/real_des_patches/line_sky_streams_band2.png
 :alt: The fourteen DES 2018 streams and which method finds them, with the 2-degree line model
@@ -329,13 +329,11 @@ exactly as above (`line-sky --config "hough/band2 residual"`):
 
 On the real sky the 2° line network now finds **Tucana III** (3 lines,
 *p* = 0.01; a 15.5° track of 21 segments, 9 of them its own), but loses
-Jhelum (4 lines, *p* = 0.07) and Phoenix: the trade its slightly lower
-sensitivity to near streams on the copies predicts, within the spread two
-quick models per fold leave. Its catalogue holds more of the other known
-streams: New-4, now seen by both searches, and, by the line network,
-Cetus-Palca, Leiptr, the NGC 1261 stream, the extension of Tucana III and
-again Jhelum's eastern extension (identified by position; not every
-distance fits).
+Phoenix and Turranburra: the trade its slightly lower sensitivity to near
+streams on the copies predicts, within the spread two quick models per fold
+leave. Combined with the matched filter, both labels find the same eight.
+Its catalogue holds two more known streams, by the line network: the NGC
+1261 stream and the extension of Tucana III (Ibata et al. 2024).
 
 ## Reproducing
 

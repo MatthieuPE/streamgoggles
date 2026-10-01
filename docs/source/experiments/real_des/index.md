@@ -16,6 +16,7 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
 | {doc}`window_level` | a network that answers with lines (a Hough transform built in), scored without the track; the matched filter's own line search alongside | done, quick models (2026-10-01, branch `hough-window-model`) |
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks | done (2026-10-01, branch `line-model-sky`) |
+| {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | in progress (2026-10-01, branch `line-model-followup`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -119,19 +120,20 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
     misses the two brightest short streams, and for distant ones the
     matched filter's line search stays ahead (10.0 against 12.8)
     ({doc}`window_level`).
-11. **On the real sky, two line searches together find seven of the
+11. **On the real sky, two line searches together find eight of the
     fourteen DES 2018 streams beyond chance**, without knowing any track, at
-    the false-alarm rate of one: the line network six (ATLAS, Phoenix,
+    the false-alarm rate of one: the line network seven (ATLAS, Phoenix,
     Indus, Jhelum, Chenab, Elqui — the near, wide ones the per-pixel network
-    missed), the matched filter's line search five once the bright dwarfs
-    and clusters are masked (with Tucana III and Willka Yaku, the short,
-    bright ones the line network misses), against five for the per-pixel
-    network. The line network missed short streams because its label (4°
-    minimum) taught it to; with a 2° minimum it finds them, and Tucana III
-    on the sky, at the cost of Jhelum and Phoenix. Joined into tracks, the
-    lines also follow the Magellanic Clouds' outskirts and other known
-    streams, among them Jhelum's proposed eastern extension
-    ({doc}`line_sky`).
+    missed — and Turranburra by one line), the matched filter's line search
+    six once the bright dwarfs and clusters are masked (with Tucana III and
+    Willka Yaku, the short, bright ones the line network misses), against
+    five for the per-pixel network. The line network missed short streams
+    because its label (4° minimum) taught it to; with a 2° minimum it finds
+    them, and Tucana III on the sky. Joined into tracks, the lines also
+    follow the Magellanic Clouds' outskirts; of the tracks found elsewhere,
+    one runs along Leiptr (Ibata et al. 2021) and its Hess difference shows
+    a main sequence — the others are edges and depth changes
+    ({doc}`line_sky`, {doc}`line_followup`).
 
 ## What comes next
 
@@ -183,4 +185,5 @@ recovery
 labels_normalization
 window_level
 line_sky
+line_followup
 ```
