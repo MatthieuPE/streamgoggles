@@ -27,7 +27,10 @@ streams, 22 in the Magellanic Clouds' outskirts, 10 along other known
 streams — among them the eastern extension of Jhelum that Ibata et al.
 (2024) proposed — and 7 unidentified. The line network misses short streams
 because its label taught it to: the band label's 4° minimum made every
-window holding a shorter clear stretch a negative example.
+window holding a shorter clear stretch a negative example. **With a 2°
+minimum the failure is gone** — bright streams of 5-6°, missed everywhere,
+are found everywhere — and on the sky the line network finds Tucana III,
+at the cost of Jhelum and Phoenix.
 
 ## How the maps are made
 
@@ -270,7 +273,69 @@ shorter clear stretch — a stream cut by the window's edge, or partly masked
 — was therefore a *negative* example, and the line model learned to ignore
 short segments.
 
-<!-- the test of a 2-degree minimum is added below -->
+**The test**: the same line model, trained the same way, with one change —
+the band label's minimum length lowered to **2°** for the line model
+(`hough/band2 residual`; the per-pixel models keep their 4°). Two quick
+models on fold 0, scored on fold 1:
+
+| length | without the track, bright: 4° label → **2° label** | along the track, bright: 4° → **2°** | without the track, moderate: 4° → 2° |
+|---|---|---|---|
+| 4° | 0% → **25%** | 0% → **75%** | 0% → 0% |
+| 5° | 12% → **75%** | 25% → **100%** | 12% → 12% |
+| 6° | 0% → **100%** | 62% → **100%** | 12% → 25% |
+| 8° | 38% → **100%** | 100% → 100% | 62% → 50% |
+| 10° | 88% → **100%** | 88% → **100%** | 50% → 62% |
+| 15° | 100% → 100% | 100% → 100% | 88% → 75% |
+
+| DES 2018 copies (fold 0 → fold 1) | 4° label | **2° label** |
+|---|---|---|
+| Tucana III found without the track | 0% | **50%** |
+| Willka Yaku found without the track | 0% | **88%** |
+| distant copies found, full brightness | 72% | **89%** |
+| half-recovery input S/N without the track, near / far | 7.9 / 12.8 | 8.3 / **12.0** |
+| half-recovery input S/N along the track, near / far | 6.0 / 8.9 | 7.1 / 8.6 |
+
+**The 2° label removes the failure**: bright streams of 5-6° are found
+everywhere they were missed, Tucana III and Willka Yaku come back, and the
+distant streams gain; near streams move within the spread between seeds.
+Short streams of moderate brightness stay hard — at input S/N 7-9 they are
+simply faint, for the matched filter too. The 4° minimum was right for the
+per-pixel label (it stops a model from learning blobs); a line model, which
+answers with lines, does not learn blobs from a short segment.
+
+### The sky with the 2° label
+
+The 2° models were trained on both folds and the whole sky searched again,
+exactly as above (`line-sky --config "hough/band2 residual"`):
+
+| DES 2018 streams found beyond chance | 4° label | 2° label |
+|---|---|---|
+| line network | 6: ATLAS, Phoenix, Indus, Jhelum, Chenab, Elqui | 5: ATLAS, Indus, Chenab, Elqui, **Tucana III** |
+| both searches, half rate each | 7 | 6 |
+| either search, its own rate | 8 | 7 |
+| line network's lines (along DES 2018 tracks) | 138 (74) | 177 (89) |
+
+```{image} ../figures/real_des_patches/line_sky_streams_band2.png
+:alt: The fourteen DES 2018 streams and which method finds them, with the 2-degree line model
+:width: 85%
+```
+
+```{image} ../figures/real_des_patches/line_sky_tracks_band2.png
+:alt: The tracks seen in at least two segments with the 2-degree line model
+:width: 100%
+```
+
+*The same figures as above, with the line model trained on the 2° label.*
+
+On the real sky the 2° line network now finds **Tucana III** (3 lines,
+*p* = 0.01; a 15.5° track of 21 segments, 9 of them its own), but loses
+Jhelum (4 lines, *p* = 0.07) and Phoenix: the trade its slightly lower
+sensitivity to near streams on the copies predicts, within the spread two
+quick models per fold leave. Its catalogue holds more of the other known
+streams: New-4, now seen by both searches, and, by the line network,
+Cetus-Palca, Leiptr, the NGC 1261 stream, the extension of Tucana III and
+again Jhelum's eastern extension (identified by position; not every
+distance fits).
 
 ## Reproducing
 
@@ -284,4 +349,8 @@ python scripts/experiments/real_des/patches.py evaluate --config "hough/band res
 python scripts/experiments/real_des/patches.py line-sky
 # the length scan
 python scripts/experiments/real_des/patches.py evaluate --config "hough/band residual" --sets "length scan"
+# the 2-degree label: train both folds, score, and search the sky again
+python scripts/experiments/real_des/patches.py train --config "hough/band2 residual" --seed 42   # and 43; --train-sky fold1
+python scripts/experiments/real_des/patches.py evaluate --config "hough/band2 residual"          # and --train-sky fold1; --sets "length scan"
+python scripts/experiments/real_des/patches.py line-sky --config "hough/band2 residual"
 ```

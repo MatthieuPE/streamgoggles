@@ -2042,6 +2042,14 @@ def _suffix(mask_objects):
     return "" if mask_objects else "__unmasked"
 
 
+def _figure_tag(config):
+    """ "" for LINE_SKY_CONFIG's figures, "_<label>" for another model's
+    ("hough/band2 residual" -> "_band2"), so both sets stay side by side."""
+    if config == LINE_SKY_CONFIG:
+        return ""
+    return "_" + config.split("/")[1].split()[0]
+
+
 def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
     """The line model over the whole DES inference sky -- the known streams
     in it -- and the matched filter's line search alongside.
@@ -2486,7 +2494,9 @@ def line_sky_figures(config=LINE_SKY_CONFIG, mask_objects=True):
         )
         stem = scorer.replace(" ", "_")
         fig.savefig(
-            DOC_FIGURES / f"line_sky_{stem}{suffix}.png", dpi=100, bbox_inches="tight"
+            DOC_FIGURES / f"line_sky_{stem}{suffix}{_figure_tag(config)}.png",
+            dpi=100,
+            bbox_inches="tight",
         )
         plt.close(fig)
 
@@ -2686,7 +2696,9 @@ def line_sky_summary(config=LINE_SKY_CONFIG, mask_objects=True):
     )
     fig.tight_layout()
     fig.savefig(
-        DOC_FIGURES / f"line_sky_streams{suffix}.png", dpi=110, bbox_inches="tight"
+        DOC_FIGURES / f"line_sky_streams{suffix}{_figure_tag(config)}.png",
+        dpi=110,
+        bbox_inches="tight",
     )
     plt.close(fig)
 
@@ -2996,7 +3008,9 @@ def line_sky_track_figure(config=LINE_SKY_CONFIG, mask_objects=True, min_segment
         fontsize=10,
     )
     fig.savefig(
-        DOC_FIGURES / f"line_sky_tracks{suffix}.png", dpi=100, bbox_inches="tight"
+        DOC_FIGURES / f"line_sky_tracks{suffix}{_figure_tag(config)}.png",
+        dpi=100,
+        bbox_inches="tight",
     )
     plt.close(fig)
 

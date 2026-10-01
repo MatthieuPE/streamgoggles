@@ -126,10 +126,12 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
     missed), the matched filter's line search five once the bright dwarfs
     and clusters are masked (with Tucana III and Willka Yaku, the short,
     bright ones the line network misses), against five for the per-pixel
-    network. The line network misses short streams because its label (4°
-    minimum) taught it to. Joined into tracks, the lines also follow the
-    Magellanic Clouds' outskirts and other known streams, among them
-    Jhelum's proposed eastern extension ({doc}`line_sky`).
+    network. The line network missed short streams because its label (4°
+    minimum) taught it to; with a 2° minimum it finds them, and Tucana III
+    on the sky, at the cost of Jhelum and Phoenix. Joined into tracks, the
+    lines also follow the Magellanic Clouds' outskirts and other known
+    streams, among them Jhelum's proposed eastern extension
+    ({doc}`line_sky`).
 
 ## What comes next
 
