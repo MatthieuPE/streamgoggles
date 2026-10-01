@@ -119,15 +119,17 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
     misses the two brightest short streams, and for distant ones the
     matched filter's line search stays ahead (10.0 against 12.8)
     ({doc}`window_level`).
-11. **On the real sky, the line searches find nine of the fourteen DES 2018
-    streams beyond chance**, without knowing any track: the line network six
-    (ATLAS, Phoenix, Indus, Jhelum, Chenab, Elqui — the near, wide ones the
-    per-pixel network missed), the matched filter's line search four
-    (Tucana III, Elqui, Willka Yaku, Aliqa Uma — the short, bright ones),
-    against five for the per-pixel network. The line network's map is clean
-    (152 lines, five in six along a stream or the Magellanic Clouds); the
-    matched filter's is dominated by bursts around the bright dwarfs (1,003
-    lines) ({doc}`line_sky`).
+11. **On the real sky, two line searches together find seven of the
+    fourteen DES 2018 streams beyond chance**, without knowing any track, at
+    the false-alarm rate of one: the line network six (ATLAS, Phoenix,
+    Indus, Jhelum, Chenab, Elqui — the near, wide ones the per-pixel network
+    missed), the matched filter's line search five once the bright dwarfs
+    and clusters are masked (with Tucana III and Willka Yaku, the short,
+    bright ones the line network misses), against five for the per-pixel
+    network. The line network misses short streams because its label (4°
+    minimum) taught it to. Joined into tracks, the lines also follow the
+    Magellanic Clouds' outskirts and other known streams, among them
+    Jhelum's proposed eastern extension ({doc}`line_sky`).
 
 ## What comes next
 

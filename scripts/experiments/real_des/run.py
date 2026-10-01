@@ -382,17 +382,15 @@ CLUSTER_RADIUS_DEG = 2.0  # NGC 1904, NGC 1261: 72-86% within 1 deg, ~4% at 1-2
 CALIBRATION_MASK = OUT / "calibration_mask_nside512.fits.gz"
 
 
-def calibration_mask(nside=512):
-    """The stream-free sky with the unmasked structure the maps revealed removed.
-
-    Built on the training mask, so every known stream, cluster and dwarf is
-    already out; this removes, in addition, the Magellanic Clouds'
-    peripheries, Sagittarius out to 9 degrees from its track, every dwarf to
-    12 half-light radii, and every globular cluster whose centre lies within
-    2 degrees of the footprint to 2 degrees -- including the bright ones whose
-    centres sit in Gold's foreground holes, which the training mask never
-    selected.
-    """
+def object_mask(nside=512, max_dwarf_mv=None):
+    """The compact objects whose outskirts the training mask leaves: every
+    dwarf galaxy near the footprint to DWARF_HALF_LIGHT_RADII half-light
+    radii, and every globular cluster within CLUSTER_RADIUS_DEG of it to that
+    radius. Part of the calibration mask; a line search masks it too, since
+    every line through such an object is bright. With ``max_dwarf_mv``, only
+    the dwarfs brighter than that absolute magnitude: the ultra-faint ones
+    make no bursts of lines, and some lie on streams (Tucana III's own
+    progenitor, Tucana II beside Indus)."""
     import healpy as hp
     import numpy as np
 
@@ -401,23 +399,9 @@ def calibration_mask(nside=512):
         get_footprint,
         get_GC,
         mask_objects,
-        mask_streams,
     )
 
-    usable, _, _ = get_footprint("des_yr6_background", nside=nside)
     covered, _, _ = get_footprint("des_yr6", nside=nside)
-    removed = np.zeros_like(usable)
-    for ra, dec, radius in CALIBRATION_DISCS.values():
-        vector = hp.ang2vec(ra, dec, lonlat=True)
-        removed[hp.query_disc(nside, vector, np.radians(radius))] = True
-    sagittarius, _ = mask_streams(
-        {"Sagittarius": SAGITTARIUS_EXTENT_DEG},
-        nside=nside,
-        wide_stream_deg=0.0,
-        wide_stream_factor=1.0,
-        tracks={},
-    )
-    removed |= sagittarius
 
     def near_footprint(catalogue, reach_deg):
         near = []
@@ -428,6 +412,9 @@ def calibration_mask(nside=512):
         return np.array(near)
 
     dwarfs = get_dwarf()
+    if max_dwarf_mv is not None:
+        bright = np.asarray(dwarfs["M_V"].filled(np.nan), float) < max_dwarf_mv
+        dwarfs = dwarfs[bright]
     dwarf_mask, _ = mask_objects(
         dwarfs,
         near_footprint(dwarfs, 2.0),
@@ -442,7 +429,39 @@ def calibration_mask(nside=512):
         radius_factor=0.0,
         min_radius_deg=CLUSTER_RADIUS_DEG,
     )
-    removed |= dwarf_mask | cluster_mask
+    return dwarf_mask | cluster_mask
+
+
+def calibration_mask(nside=512):
+    """The stream-free sky with the unmasked structure the maps revealed removed.
+
+    Built on the training mask, so every known stream, cluster and dwarf is
+    already out; this removes, in addition, the Magellanic Clouds'
+    peripheries, Sagittarius out to 9 degrees from its track, every dwarf to
+    12 half-light radii, and every globular cluster whose centre lies within
+    2 degrees of the footprint to 2 degrees -- including the bright ones whose
+    centres sit in Gold's foreground holes, which the training mask never
+    selected.
+    """
+    import healpy as hp
+    import numpy as np
+
+    from streamgoggles.objects_overlap import get_footprint, mask_streams
+
+    usable, _, _ = get_footprint("des_yr6_background", nside=nside)
+    removed = np.zeros_like(usable)
+    for ra, dec, radius in CALIBRATION_DISCS.values():
+        vector = hp.ang2vec(ra, dec, lonlat=True)
+        removed[hp.query_disc(nside, vector, np.radians(radius))] = True
+    sagittarius, _ = mask_streams(
+        {"Sagittarius": SAGITTARIUS_EXTENT_DEG},
+        nside=nside,
+        wide_stream_deg=0.0,
+        wide_stream_factor=1.0,
+        tracks={},
+    )
+    removed |= sagittarius
+    removed |= object_mask(nside)
     calibration = usable & ~removed
     hp.write_map(
         CALIBRATION_MASK,

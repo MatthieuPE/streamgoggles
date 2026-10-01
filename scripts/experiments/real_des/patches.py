@@ -149,6 +149,17 @@ CONFIGS = {
         "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
         "training": {"background_fraction": 0.3},
     },
+    # the line model on S/N inputs, with the band label down to 2 degrees: the
+    # 4-degree minimum made every window holding a shorter clear stretch a
+    # negative example, and the model learned to answer "no line" to short
+    # streams however bright (the length scan)
+    "hough/band2 residual": {
+        "label": "band2",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+    },
     # batch Dice weights bright streams' many pixels over faint ones' few;
     # per-pixel cross-entropy weights every pixel alike (logits head)
     "count/window bce": {
@@ -300,6 +311,13 @@ def build_sky(sky, label, image_pix=IMAGE_PIX):
             "label_policy": "stream_band",
             "band_min_snr": 5.0,
             "band_min_length_deg": BAND_MIN_LENGTH_DEG,
+        },
+        # the band label down to 2 degrees: a short, clear segment is a line,
+        # not a negative example (the line model's own label)
+        "band2": {
+            "label_policy": "stream_band",
+            "band_min_snr": BAND_MIN_SNR,
+            "band_min_length_deg": 2.0,
         },
         "bandseg": {
             "label_policy": "stream_band",
@@ -534,6 +552,14 @@ FAINTER_BY = (
 )  # mag/arcsec^2: the "fainter" set, near the real streams' strength
 
 
+LENGTH_SCAN = {
+    "distance": 17.0,
+    "width": 0.2,
+    "lengths": [4.0, 5.0, 6.0, 8.0, 10.0, 15.0],
+    "sb": [32.0, 33.5],
+}
+
+
 def evaluation_streams(sets=("DES 2018", "distance scan")):
     """(set, name, params) injected on the evaluation sky. Sets: "DES 2018"
     (Table 1 parameters), "distance scan", and "fainter" (the DES 2018
@@ -592,6 +618,24 @@ def evaluation_streams(sets=("DES 2018", "distance scan")):
                 },
             )
         )
+    # one stream at m-M 17 and a fixed width, at several lengths, bright and
+    # moderate: does the line model miss short streams however bright?
+    for sb in LENGTH_SCAN["sb"]:
+        for length in LENGTH_SCAN["lengths"]:
+            streams.append(
+                (
+                    "length scan",
+                    f"L {length:g} SB {sb:g}",
+                    {
+                        "width": LENGTH_SCAN["width"],
+                        "length": length,
+                        "distance_modulus": LENGTH_SCAN["distance"],
+                        "richness": sb,
+                        "age": 13.0,
+                        "z": 0.0002,
+                    },
+                )
+            )
     return [s for s in streams if s[0] in sets]
 
 
@@ -630,7 +674,7 @@ def shapes(mask, nside):
     return {"groups": int(n_groups), "blob_share": float(short / pixels.size)}
 
 
-def smooth_backgrounds(background, queries):
+def smooth_backgrounds(background, queries, valid=None):
     """{query: the stream-free matched-filter counts smoothed to ~2 degrees}:
     the valid-weighted mean over nside-32 pixels (1.8 deg), interpolated back
     to every pixel. The coarse sums and the coarse valid fraction are
@@ -639,7 +683,8 @@ def smooth_backgrounds(background, queries):
     import healpy as hp
     import numpy as np
 
-    valid = background.valid_mask_full
+    if valid is None:
+        valid = background.valid_mask_full
     nside = hp.npix2nside(valid.size)
     coarse_weight = hp.ud_grade(valid.astype(float), MF_BACKGROUND_NSIDE)
     lon, lat = hp.pix2ang(nside, np.arange(valid.size), lonlat=True)
@@ -1236,12 +1281,13 @@ def evaluate_hough(
     background_maps = [
         background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
     ]
-    null, thresholds, null_rows = {}, {}, []
+    null, thresholds, null_rows, null_best = {}, {}, [], {}
     start = time.time()
     for q in queries:
         null[q] = scores(background_maps, null_windows, q)
         for scorer, values in null[q].items():
             best = np.nanmax(values.reshape(len(values), -1), axis=1)
+            null_best[f"{scorer}|{q:.1f}"] = best
             thresholds[(scorer, q)] = float(np.quantile(best, 1 - HOUGH_FALSE_ALARM))
             null_rows.append(
                 {
@@ -1341,6 +1387,9 @@ def evaluate_hough(
     pd.DataFrame(rows).to_csv(out / f"hough_{name}{suffix}.csv", index=False)
     if not suffix:
         pd.DataFrame(null_rows).to_csv(out / f"hough_null_{name}.csv", index=False)
+        # each stream-free window's best line, per scorer and distance, paired
+        # window by window: what a combination's false-alarm rate is read from
+        np.savez(out / f"hough_null_best_{name}.npz", **null_best)
 
 
 HOUGH_FIGURES = {
@@ -1952,7 +2001,7 @@ MIN_ALONG_DEG = 3.0
 # spheroidals, whose stars past their masks every line through them crosses
 LINE_SKY_OBJECTS = {
     "LMC": (80.89, -69.76, 20.0),
-    "SMC": (13.19, -72.83, 10.0),
+    "SMC": (13.19, -72.83, 12.0),  # the calibration's disc (run.py)
     "Fornax dSph": (40.0, -34.45, 4.0),
     "Sculptor dSph": (15.04, -33.71, 4.0),
 }
@@ -1989,7 +2038,11 @@ def _arc(ra1, dec1, ra2, dec2, n):
     )
 
 
-def line_sky(config=LINE_SKY_CONFIG):
+def _suffix(mask_objects):
+    return "" if mask_objects else "__unmasked"
+
+
+def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
     """The line model over the whole DES inference sky -- the known streams
     in it -- and the matched filter's line search alongside.
 
@@ -2002,8 +2055,17 @@ def line_sky(config=LINE_SKY_CONFIG):
     (the highest within 5 x 5 cells) and scores above the level that 1% of
     stream-free windows reach on the calibration sky of the tile's fold
     (`evaluate_hough` of the scoring models). Each detection is the stretch
-    of its line over valid sky in the tile, a segment on the sky. Writes
-    line_sky/detections_<config>.csv.
+    of its line over valid sky in the tile, a segment on the sky.
+
+    With ``mask_objects`` (the default), the compact objects whose outskirts
+    the training mask leaves -- dwarfs brighter than LINE_SKY_DWARF_MV to 12
+    half-light radii, globular clusters to 2 degrees (`object_mask`) -- are
+    masked from the search sky too: every line through one is bright.
+    Each detection also records ``level_half``, its scorer's level at half
+    the false-alarm rate (0.5% of stream-free windows): the combination of
+    the two searches keeps either's lines above it, for about 1% together.
+    Writes line_sky/detections_<config>.csv (``__unmasked`` without the
+    object mask) and the combination's levels and false-alarm rates.
     """
     import dataclasses
 
@@ -2029,6 +2091,8 @@ def line_sky(config=LINE_SKY_CONFIG):
     )
     nside = pix.nside
     valid = background.valid_mask_full
+    if mask_objects:
+        valid = valid & ~rd.object_mask(nside, max_dwarf_mv=LINE_SKY_DWARF_MV)
     usable = get_footprint("des_yr6_inference", nside=nside)[0]
     window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
     tiles = tile_footprint(
@@ -2049,6 +2113,22 @@ def line_sky(config=LINE_SKY_CONFIG):
         null = pd.read_csv(result_dir(train_sky) / f"hough_null_{name}.csv")
         for row in null.itertuples():
             levels[(train_sky, row.scorer, round(row.query, 1))] = row.threshold
+    # the combination: each search at half the false-alarm rate, and what the
+    # two give together on the same stream-free windows
+    half, combination = {}, []
+    for train_sky in ("fold0", "fold1"):
+        best = np.load(result_dir(train_sky) / f"hough_null_best_{name}.npz")
+        for q in sorted({float(k.split("|")[1]) for k in best.files}):
+            together = np.zeros(len(best[f"network|{q:.1f}"]), bool)
+            for scorer in ("network", "matched filter"):
+                values = best[f"{scorer}|{q:.1f}"]
+                half[(train_sky, scorer, round(q, 1))] = float(
+                    np.quantile(values, 1 - HOUGH_FALSE_ALARM / 2)
+                )
+                together |= values >= half[(train_sky, scorer, round(q, 1))]
+            combination.append(
+                {"models": train_sky, "query": q, "false_alarm_rate": together.mean()}
+            )
     grid = models["fold0"][0].hough.grid
     queries = list(sp.QUERY_GRID)
     norm = normalizer(CONFIGS[config]["normalizer"], chans)
@@ -2069,7 +2149,7 @@ def line_sky(config=LINE_SKY_CONFIG):
         )
         for q in queries
     }
-    smooth_background = smooth_backgrounds(background, queries)
+    smooth_background = smooth_backgrounds(background, queries, valid)
     maps = [
         background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
     ]
@@ -2149,6 +2229,7 @@ def line_sky(config=LINE_SKY_CONFIG):
                             "rho_pix": float(rho),
                             "score": float(values[t, r]),
                             "level": float(level),
+                            "level_half": half[(scoring, scorer, round(q, 1))],
                             "ra1": float(ra_grid[on][first]),
                             "dec1": float(dec_grid[on][first]),
                             "ra2": float(ra_grid[on][last]),
@@ -2166,14 +2247,50 @@ def line_sky(config=LINE_SKY_CONFIG):
             )
     LINE_SKY.mkdir(parents=True, exist_ok=True)
     table = pd.DataFrame(rows)
-    table.to_csv(LINE_SKY / f"detections_{name}.csv", index=False)
+    table.to_csv(
+        LINE_SKY / f"detections_{name}{_suffix(mask_objects)}.csv", index=False
+    )
+    combination = pd.DataFrame(combination)
+    combination.to_csv(LINE_SKY / f"combination_{name}.csv", index=False)
+    print(
+        "combination, stream-free windows with a line from either search: "
+        f"{combination.false_alarm_rate.min():.2%}-{combination.false_alarm_rate.max():.2%}",
+        flush=True,
+    )
     print(
         table.groupby(["scorer", "query"]).size().unstack("scorer").to_string(),
         flush=True,
     )
 
 
-def line_sky_matches(config=LINE_SKY_CONFIG):
+# The search masks the bright dwarfs' outskirts and the globular clusters
+# (`object_mask`): every line through them is bright. Not the ultra-faint
+# dwarfs, which make no bursts and some of which lie on streams.
+LINE_SKY_DWARF_MV = -8.0
+# The scorers of the sky maps: each search at its own 1% level, and their
+# combination -- either's lines above its level at half that rate, about 1%
+# of stream-free windows together (line_sky/combination_<config>.csv)
+LINE_SKY_SCORERS = ("network", "matched filter", "combined")
+
+
+def _scorers(table):
+    """The scorers a detections table holds (the combination needs the
+    half-rate levels, which the unmasked run did not record)."""
+    return LINE_SKY_SCORERS if "level_half" in table else LINE_SKY_SCORERS[:2]
+
+
+def _chosen(table, scorer):
+    """Which detections belong to a scorer of the sky maps (a boolean Series)."""
+    if scorer == "combined":
+        return table.score >= table.level_half
+    return table.scorer == scorer
+
+
+def _level(table, scorer):
+    return table.level_half if scorer == "combined" else table.level
+
+
+def line_sky_matches(config=LINE_SKY_CONFIG, mask_objects=True):
     """Which DES 2018 streams have a detected line along their track at
     their distance (the queried distance nearest it): a segment with at
     least MIN_ALONG_DEG of it within max(TRACK_TOLERANCE_DEG, two widths) of
@@ -2188,8 +2305,9 @@ def line_sky_matches(config=LINE_SKY_CONFIG):
 
     rd = real_des()
     sp = rd.stream_parameters_module()
-    name = config.replace("/", "_")
+    name = config.replace("/", "_") + _suffix(mask_objects)
     table = pd.read_csv(LINE_SKY / f"detections_{name}.csv")
+    scorers = _scorers(table)
     segments = [
         _unit(*_arc(r.ra1, r.dec1, r.ra2, r.dec2, max(int(r.length_deg / 0.1), 2)))
         for r in table.itertuples()
@@ -2218,16 +2336,16 @@ def line_sky_matches(config=LINE_SKY_CONFIG):
             table.loc[runs_along, "along"] + "; " + stream,
         )
         row = {"stream": stream, "distance_modulus": distance, "query": query}
-        for scorer in ("network", "matched filter"):
+        for scorer in scorers:
             hits = (
-                runs_along
-                & (table.scorer == scorer)
-                & np.isclose(table["query"], query)
+                runs_along & _chosen(table, scorer) & np.isclose(table["query"], query)
             )
             row[f"{scorer} found"] = bool(hits.any())
             row[f"{scorer} lines"] = int(hits.sum())
             row[f"{scorer} best"] = (
-                float((table.score / table.level)[hits].max()) if hits.any() else np.nan
+                float((table.score / _level(table, scorer))[hits].max())
+                if hits.any()
+                else np.nan
             )
         pixel = pixel_test[
             (pixel_test.stream == stream) & np.isclose(pixel_test["query"], query)
@@ -2252,16 +2370,19 @@ def line_sky_matches(config=LINE_SKY_CONFIG):
     matches.to_csv(LINE_SKY / f"matches_{name}.csv", index=False)
     table.to_csv(LINE_SKY / f"detections_{name}.csv", index=False)
     print(
-        table.groupby(["scorer", "kind"])
-        .size()
-        .unstack("scorer")
+        pd.DataFrame(
+            {
+                scorer: table[_chosen(table, scorer)].kind.value_counts()
+                for scorer in scorers
+            }
+        )
         .fillna(0)
         .astype(int),
         flush=True,
     )
     print(matches.to_string(index=False), flush=True)
-    for scorer in ("network", "matched filter"):
-        mine = table[table.scorer == scorer]
+    for scorer in scorers:
+        mine = table[_chosen(table, scorer)]
         print(
             f"{scorer}: {len(mine)} lines, {(mine.along != '').sum()} along a DES 2018 "
             f"track (any distance); streams found at their distance: "
@@ -2270,7 +2391,7 @@ def line_sky_matches(config=LINE_SKY_CONFIG):
         )
 
 
-def line_sky_figures(config=LINE_SKY_CONFIG):
+def line_sky_figures(config=LINE_SKY_CONFIG, mask_objects=True):
     """line_sky_<scorer>.png: the detected lines over the DES sky, one panel
     per range of distance, coloured by the queried distance, over the
     inference footprint, with the DES 2018 tracks of the streams in that
@@ -2286,7 +2407,8 @@ def line_sky_figures(config=LINE_SKY_CONFIG):
     from streamgoggles.objects_overlap import des2018_arc, get_footprint
 
     sp = real_des().stream_parameters_module()
-    name = config.replace("/", "_")
+    suffix = _suffix(mask_objects)
+    name = config.replace("/", "_") + suffix
     table = pd.read_csv(LINE_SKY / f"detections_{name}.csv")
     footprint = get_footprint("des_yr6_inference", nside=64)[0]
     fra, fdec = hp.pix2ang(64, np.flatnonzero(footprint), lonlat=True)
@@ -2298,10 +2420,14 @@ def line_sky_figures(config=LINE_SKY_CONFIG):
     norm = matplotlib.colors.Normalize(15.0, 19.0)
     titles = {
         "network": "line network (S/N inputs), out of fold",
-        "matched filter": "matched-filter line search",
+        "matched filter": "matched-filter line search"
+        + (", dwarfs and clusters masked" if mask_objects else ""),
+        "combined": "both searches, each at half its false-alarm rate "
+        "(solid: line network; dashed: matched filter)",
     }
-    for scorer, title in titles.items():
-        mine = table[table.scorer == scorer]
+    for scorer in _scorers(table):
+        title = titles[scorer]
+        mine = table[_chosen(table, scorer)]
         fig, axes = plt.subplots(
             len(DISTANCE_RANGES),
             1,
@@ -2337,7 +2463,8 @@ def line_sky_figures(config=LINE_SKY_CONFIG):
             lines = mine[np.isin(np.round(mine["query"], 1), queries)]
             for r in lines.itertuples():
                 ra, dec = _arc(r.ra1, r.dec1, r.ra2, r.dec2, 20)
-                ax.plot(wrap(ra), dec, color=cmap(norm(r.query)), lw=1.2)
+                style = "--" if r.scorer == "matched filter" else "-"
+                ax.plot(wrap(ra), dec, style, color=cmap(norm(r.query)), lw=1.2)
             ax.set_title(f"{label}: {len(lines)} lines", fontsize=10)
             ax.set_xlim(112, -65)
             ax.set_ylim(-70, 8)
@@ -2353,11 +2480,14 @@ def line_sky_figures(config=LINE_SKY_CONFIG):
             pad=0.01,
             label="queried distance modulus",
         )
+        level = "half its level" if scorer == "combined" else "the 1% level"
         fig.suptitle(
-            f"{title}: lines above the 1% level of stream-free windows", fontsize=11
+            f"{title}: lines above {level} of stream-free windows", fontsize=11
         )
         stem = scorer.replace(" ", "_")
-        fig.savefig(DOC_FIGURES / f"line_sky_{stem}.png", dpi=100, bbox_inches="tight")
+        fig.savefig(
+            DOC_FIGURES / f"line_sky_{stem}{suffix}.png", dpi=100, bbox_inches="tight"
+        )
         plt.close(fig)
 
 
@@ -2365,7 +2495,9 @@ LINE_SKY_CHANCE_TRACKS = 200
 LINE_SKY_CHANCE_SEED = 2029
 
 
-def line_sky_chance(config=LINE_SKY_CONFIG, n_random=LINE_SKY_CHANCE_TRACKS):
+def line_sky_chance(
+    config=LINE_SKY_CONFIG, mask_objects=True, n_random=LINE_SKY_CHANCE_TRACKS
+):
     """How often each stream would be "found" by chance: its track, as a
     great circle of its length, at n_random random places and position
     angles on the inference footprint (at least 90% of it on the footprint),
@@ -2385,18 +2517,19 @@ def line_sky_chance(config=LINE_SKY_CONFIG, n_random=LINE_SKY_CHANCE_TRACKS):
 
     rd = real_des()
     sp = rd.stream_parameters_module()
-    name = config.replace("/", "_")
+    name = config.replace("/", "_") + _suffix(mask_objects)
     table = pd.read_csv(LINE_SKY / f"detections_{name}.csv")
     matches = pd.read_csv(LINE_SKY / f"matches_{name}.csv")
     footprint = get_footprint("des_yr6_inference", nside=64)[0]
     candidates = np.flatnonzero(footprint)
     rng = np.random.default_rng(LINE_SKY_CHANCE_SEED)
-    for scorer in ("network", "matched filter"):
+    scorers = _scorers(table)
+    for scorer in scorers:
         rates, p_values = [], []
         # in the order of `line_sky_matches`'s rows: DES_STREAMS's
         for width, length, distance, _ in sp.DES_STREAMS.values():
             query = min(sp.QUERY_GRID, key=lambda q: abs(q - distance))
-            mine = table[(table.scorer == scorer) & np.isclose(table["query"], query)]
+            mine = table[_chosen(table, scorer) & np.isclose(table["query"], query)]
             if mine.empty:
                 rates.append(0.0)
                 p_values.append(np.nan)
@@ -2440,22 +2573,11 @@ def line_sky_chance(config=LINE_SKY_CONFIG, n_random=LINE_SKY_CHANCE_TRACKS):
         matches[f"{scorer} chance"] = rates
         matches[f"{scorer} p"] = p_values
     matches.to_csv(LINE_SKY / f"matches_{name}.csv", index=False)
-    print(
-        matches[
-            [
-                "stream",
-                "network lines",
-                "network chance",
-                "network p",
-                "matched filter lines",
-                "matched filter chance",
-                "matched filter p",
-                "per-pixel found",
-            ]
-        ].to_string(index=False),
-        flush=True,
-    )
-    for scorer in ("network", "matched filter"):
+    columns = ["stream"]
+    for scorer in scorers:
+        columns += [f"{scorer} lines", f"{scorer} p"]
+    print(matches[[*columns, "per-pixel found"]].to_string(index=False), flush=True)
+    for scorer in scorers:
         print(
             f"{scorer}: found {int(matches[f'{scorer} found'].sum())}, expected by chance "
             f"{matches[f'{scorer} chance'].sum():.1f}",
@@ -2466,7 +2588,7 @@ def line_sky_chance(config=LINE_SKY_CONFIG, n_random=LINE_SKY_CHANCE_TRACKS):
 LINE_SKY_SIGNIFICANCE = 0.05  # a found stream counts if chance does as well this rarely
 
 
-def line_sky_summary(config=LINE_SKY_CONFIG):
+def line_sky_summary(config=LINE_SKY_CONFIG, mask_objects=True):
     """line_sky_streams.png: the fourteen DES 2018 streams, nearest first,
     and which method finds them at their distance: the per-pixel network
     (the first training's test), the line network, the matched filter's line
@@ -2481,10 +2603,12 @@ def line_sky_summary(config=LINE_SKY_CONFIG):
     import numpy as np
     import pandas as pd
 
-    matches = pd.read_csv(LINE_SKY / f"matches_{config.replace('/', '_')}.csv")
+    suffix = _suffix(mask_objects)
+    matches = pd.read_csv(LINE_SKY / f"matches_{config.replace('/', '_')}{suffix}.csv")
     matches = matches.sort_values("distance_modulus").reset_index(drop=True)
+    scorers = [s for s in LINE_SKY_SCORERS if f"{s} found" in matches]
     state = {}
-    for scorer in ("network", "matched filter"):
+    for scorer in scorers:
         significant = matches[f"{scorer} found"] & (
             matches[f"{scorer} p"] <= LINE_SKY_SIGNIFICANCE
         )
@@ -2493,6 +2617,10 @@ def line_sky_summary(config=LINE_SKY_CONFIG):
             "significant",
             np.where(matches[f"{scorer} found"], "chance", "none"),
         )
+    state["per-pixel"] = np.where(
+        matches["per-pixel found"].astype(bool), "significant", "none"
+    )
+    # either search at its own 1% level: about 2% false lines together
     state["either"] = np.where(
         (state["network"] == "significant")
         | (state["matched filter"] == "significant"),
@@ -2503,16 +2631,19 @@ def line_sky_summary(config=LINE_SKY_CONFIG):
             "none",
         ),
     )
-    state["per-pixel"] = np.where(
-        matches["per-pixel found"].astype(bool), "significant", "none"
-    )
     columns = {
         "per-pixel": ("per-pixel network\n(first training)", "#4d4d4d"),
         "network": ("line network", "#2e8b57"),
-        "matched filter": ("matched-filter\nline search", "#e07b39"),
-        "either": ("either line\nsearch", "#1f6fb4"),
+        "matched filter": (
+            "matched-filter\nline search"
+            + ("\n(objects masked)" if mask_objects else ""),
+            "#e07b39",
+        ),
+        "combined": ("both, at half\nthe rate each\n(~1% together)", "#1f6fb4"),
+        "either": ("either, at its\nown 1%\n(~2% together)", "#8e44ad"),
     }
-    fig, ax = plt.subplots(figsize=(7.8, 6.6))
+    columns = {k: v for k, v in columns.items() if k in state}
+    fig, ax = plt.subplots(figsize=(9.2, 6.8))
     for x, (key, (label, colour)) in enumerate(columns.items()):
         faces = {"significant": colour, "chance": colour, "none": "white"}
         alphas = {"significant": 1.0, "chance": 0.3, "none": 1.0}
@@ -2554,7 +2685,319 @@ def line_sky_summary(config=LINE_SKY_CONFIG):
         fontsize=10,
     )
     fig.tight_layout()
-    fig.savefig(DOC_FIGURES / "line_sky_streams.png", dpi=110, bbox_inches="tight")
+    fig.savefig(
+        DOC_FIGURES / f"line_sky_streams{suffix}.png", dpi=110, bbox_inches="tight"
+    )
+    plt.close(fig)
+
+
+# Segments of one track: great circles within TRACK_LINK_POLE_DEG of each
+# other, coming within TRACK_LINK_GAP_DEG on the sky, at queried distances at
+# most TRACK_LINK_QUERY apart.
+TRACK_LINK_POLE_DEG = 5.0
+TRACK_LINK_GAP_DEG = 1.0
+TRACK_LINK_QUERY = 0.5
+GALSTREAMS_TOLERANCE_DEG = 1.5  # a track is a known stream's within this, over 3 deg
+# a track runs along the footprint's edge if this share of it lies within
+# TRACK_EDGE_DEG of sky outside the footprint
+TRACK_EDGE_DEG = 1.5
+TRACK_EDGE_SHARE = 0.6
+
+
+def _known_tracks():
+    """{name: (ra, dec)} of every stream galstreams traces near the DES
+    footprint (its measured tracks, read from its files; `stream_tracks`)."""
+    import galstreams
+    import numpy as np
+    from astropy.table import Table
+
+    tracks = {}
+    for path in sorted(
+        (Path(galstreams.__file__).parent / "tracks").glob("track.st.*.ecsv")
+    ):
+        if path.name.endswith(".summary.ecsv"):
+            continue
+        table = Table.read(path)
+        ra = np.asarray(table["ra"].value, float)
+        dec = np.asarray(table["dec"].value, float)
+        wrapped = np.where(ra > 180, ra - 360, ra)
+        if ((dec < 10) & (wrapped > -70) & (wrapped < 115)).any():
+            tracks[path.name[len("track.st.") : -len(".ecsv")]] = (ra, dec)
+    return tracks
+
+
+def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"):
+    """The detected segments joined into tracks: a catalogue of candidates.
+
+    Segments of ``scorer``'s detections (by default the combination, both
+    searches at half their false-alarm rate) are joined when their great
+    circles agree within TRACK_LINK_POLE_DEG, they come within
+    TRACK_LINK_GAP_DEG of each other, and their queried distances differ by
+    at most TRACK_LINK_QUERY -- the same structure seen by overlapping tiles
+    and neighbouring distances. Each track: the great circle through its
+    segments (the plane of least scatter), its extent along it, its mean
+    distance (weighted by how far each segment stands above its level) and
+    range, its number of segments, tiles and sources, and an identification
+    -- a DES 2018 stream at its distance, another stream of galstreams, the
+    periphery of a Magellanic Cloud, or none. Writes
+    line_sky/tracks_<config>.csv.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from streamgoggles.objects_overlap import des2018_arc
+
+    sp = real_des().stream_parameters_module()
+    name = config.replace("/", "_") + _suffix(mask_objects)
+    table = pd.read_csv(LINE_SKY / f"detections_{name}.csv")
+    table = table[_chosen(table, scorer)].reset_index(drop=True)
+    table["ratio"] = table.score / _level(table, scorer)
+    points = [
+        _unit(*_arc(r.ra1, r.dec1, r.ra2, r.dec2, max(int(r.length_deg / 0.25), 2)))
+        for r in table.itertuples()
+    ]
+    ends = [(p[0], p[-1]) for p in points]
+    poles = np.array([np.cross(a, b) / np.linalg.norm(np.cross(a, b)) for a, b in ends])
+    middles = np.array([p[len(p) // 2] for p in points])
+    parent = list(range(len(table)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    gap = np.cos(np.radians(TRACK_LINK_GAP_DEG))
+    for i in range(len(table)):
+        for j in range(i + 1, len(table)):
+            if abs(table["query"][i] - table["query"][j]) > TRACK_LINK_QUERY + 1e-9:
+                continue
+            if abs(poles[i] @ poles[j]) < np.cos(np.radians(TRACK_LINK_POLE_DEG)):
+                continue
+            reach = (table.length_deg[i] + table.length_deg[j]) / 2 + TRACK_LINK_GAP_DEG
+            if middles[i] @ middles[j] < np.cos(np.radians(reach)):
+                continue
+            if (points[i] @ points[j].T).max() >= gap:
+                parent[root(i)] = root(j)
+    groups = {}
+    for i in range(len(table)):
+        groups.setdefault(root(i), []).append(i)
+
+    known = _known_tracks()
+    known_points = {k: _unit(*v) for k, v in known.items()}
+    # the sky outside the footprint, for tracks that hug its edge
+    import healpy as hp
+    from scipy.spatial import cKDTree
+
+    from streamgoggles.objects_overlap import get_footprint
+
+    outside = np.flatnonzero(~get_footprint("des_yr6_inference", nside=64)[0])
+    edge_tree = cKDTree(_unit(*hp.pix2ang(64, outside, lonlat=True)))
+    edge_chord = 2 * np.sin(np.radians(TRACK_EDGE_DEG) / 2)
+    des = {
+        stream: (_unit(*des2018_arc(stream, n=600)), width, distance)
+        for stream, (width, _, distance, _) in sp.DES_STREAMS.items()
+    }
+
+    def overlap(track_points, reference, tolerance_deg):
+        """Degrees of the track within tolerance of a reference track."""
+        close = (track_points @ reference.T).max(1) >= np.cos(np.radians(tolerance_deg))
+        return close.sum() * 0.25
+
+    rows = []
+    for members in groups.values():
+        cloud = np.concatenate([points[i] for i in members])
+        pole = np.linalg.eigh(cloud.T @ cloud)[1][:, 0]
+        u = cloud[0] - (cloud[0] @ pole) * pole
+        u /= np.linalg.norm(u)
+        v = np.cross(pole, u)
+        phi = np.sort(np.degrees(np.arctan2(cloud @ v, cloud @ u)) % 360)
+        gaps = np.diff(np.concatenate([phi, [phi[0] + 360]]))
+        widest = int(np.argmax(gaps))
+        start = phi[(widest + 1) % len(phi)]
+        length = 360 - gaps[widest]
+        along = np.radians(start + np.linspace(0, length, max(int(length / 0.25), 2)))
+        arc = np.cos(along)[:, None] * u + np.sin(along)[:, None] * v
+        ra = np.degrees(np.arctan2(arc[:, 1], arc[:, 0])) % 360
+        dec = np.degrees(np.arcsin(np.clip(arc[:, 2], -1, 1)))
+        mine = table.loc[members]
+        weights = mine.ratio.to_numpy()
+        distance = float(np.average(mine["query"], weights=weights))
+        identification, how = "", ""
+        best = 0.0
+        for stream, (reference, width, stream_distance) in des.items():
+            degrees = overlap(arc, reference, max(TRACK_TOLERANCE_DEG, 2 * width))
+            if degrees >= MIN_ALONG_DEG and degrees > best:
+                best = degrees
+                at = abs(distance - stream_distance) <= 1.0
+                identification = stream
+                how = "DES 2018" if at else "DES 2018 track, another distance"
+        edge_share = float(
+            np.mean([len(h) > 0 for h in edge_tree.query_ball_point(arc, edge_chord)])
+        )
+        # the Magellanic Clouds' outskirts before other streams: they fill
+        # their region with lines, which any stream crossing it would claim
+        if not identification:
+            middle = arc[len(arc) // 2]
+            for obj in ("LMC", "SMC"):
+                ra0, dec0, radius = LINE_SKY_OBJECTS[obj]
+                if (
+                    np.degrees(np.arccos(np.clip(middle @ _unit(ra0, dec0), -1, 1)))
+                    <= radius
+                ):
+                    identification, how = f"{obj} periphery", "Magellanic"
+                    break
+        known_best, known_name = 0.0, ""
+        for reference_name, reference in known_points.items():
+            degrees = overlap(arc, reference, GALSTREAMS_TOLERANCE_DEG)
+            if degrees >= MIN_ALONG_DEG and degrees > known_best:
+                known_best, known_name = degrees, reference_name
+        # a track hugging the footprint's edge: the background model's edge
+        # effect before any stream that happens to run there
+        if not identification and edge_share >= TRACK_EDGE_SHARE:
+            identification, how = "footprint edge", "edge"
+        if not identification and known_name:
+            identification, how = known_name, "galstreams"
+        rows.append(
+            {
+                "length_deg": float(length),
+                "ra_start": float(ra[0]),
+                "dec_start": float(dec[0]),
+                "ra_end": float(ra[-1]),
+                "dec_end": float(dec[-1]),
+                "ra_mid": float(ra[len(ra) // 2]),
+                "dec_mid": float(dec[len(dec) // 2]),
+                "distance_modulus": distance,
+                "query_min": float(mine["query"].min()),
+                "query_max": float(mine["query"].max()),
+                "segments": len(members),
+                "tiles": int(mine.tile.nunique()),
+                "network_segments": int((mine.scorer == "network").sum()),
+                "matched_filter_segments": int((mine.scorer == "matched filter").sum()),
+                "best_ratio": float(weights.max()),
+                "summed_ratio": float(weights.sum()),
+                # the share of its lines' pixels on valid sky: low along the
+                # edges of the footprint and of masks
+                "valid_share": float(mine.valid_share.mean()),
+                "edge_share": edge_share,
+                "identification": identification or "unidentified",
+                "kind": how or "unidentified",
+                "galstreams": known_name,
+            }
+        )
+    tracks = (
+        pd.DataFrame(rows)
+        .sort_values(["segments", "best_ratio"], ascending=False)
+        .reset_index(drop=True)
+    )
+    tracks.index.name = "track"
+    tracks.to_csv(LINE_SKY / f"tracks_{name}.csv")
+    print(
+        f"{len(table)} segments -> {len(tracks)} tracks; "
+        f"{(tracks.segments >= 2).sum()} seen in at least two segments",
+        flush=True,
+    )
+    print(tracks.groupby("kind").size().to_string(), flush=True)
+    print(
+        tracks[tracks.segments >= 2][
+            [
+                "identification",
+                "kind",
+                "length_deg",
+                "ra_mid",
+                "dec_mid",
+                "distance_modulus",
+                "segments",
+                "tiles",
+                "network_segments",
+                "matched_filter_segments",
+                "best_ratio",
+            ]
+        ]
+        .round(2)
+        .to_string(),
+        flush=True,
+    )
+
+
+def line_sky_track_figure(config=LINE_SKY_CONFIG, mask_objects=True, min_segments=2):
+    """line_sky_tracks.png: the tracks seen in at least ``min_segments``
+    segments, over the DES sky, coloured by distance, the unidentified ones
+    numbered; the DES 2018 tracks in grey underneath."""
+    import healpy as hp
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    from streamgoggles.objects_overlap import des2018_arc, get_footprint
+
+    sp = real_des().stream_parameters_module()
+    suffix = _suffix(mask_objects)
+    name = config.replace("/", "_") + suffix
+    tracks = pd.read_csv(LINE_SKY / f"tracks_{name}.csv", index_col="track")
+    shown = tracks[tracks.segments >= min_segments]
+    footprint = get_footprint("des_yr6_inference", nside=64)[0]
+    fra, fdec = hp.pix2ang(64, np.flatnonzero(footprint), lonlat=True)
+
+    def wrap(ra):
+        return np.where(np.asarray(ra) > 180, np.asarray(ra) - 360, ra)
+
+    cmap = plt.get_cmap("viridis")
+    norm = matplotlib.colors.Normalize(15.0, 19.0)
+    fig, ax = plt.subplots(figsize=(13, 7.2), layout="constrained")
+    ax.scatter(wrap(fra), fdec, s=6, marker="s", color="#efefef", lw=0)
+    for stream in sp.DES_STREAMS:
+        ra, dec = des2018_arc(stream, n=200)
+        ax.plot(wrap(ra), dec, color="#9e9e9e", lw=6, alpha=0.5, solid_capstyle="round")
+    for obj, (ra, dec, _) in LINE_SKY_OBJECTS.items():
+        at = max(dec, -68.5)
+        ax.plot(wrap(ra), at, "+", color="#c0392b", ms=9, mew=1.5)
+        ax.text(wrap(ra) - 1.5, at + 1.0, obj, fontsize=8, color="#c0392b")
+    for number, r in shown.iterrows():
+        ra, dec = _arc(r.ra_start, r.dec_start, r.ra_end, r.dec_end, 40)
+        width = 1.2 + 0.4 * min(r.segments, 8)
+        ax.plot(wrap(ra), dec, color=cmap(norm(r.distance_modulus)), lw=width)
+        label = (
+            r.identification.split(".")[0]
+            if r.kind in ("DES 2018", "galstreams")
+            else f"#{number}"
+        )
+        quiet = r.kind in ("Magellanic", "edge") or (
+            r.kind == "galstreams" and r.segments < 4 and r.network_segments == 0
+        )
+        if not quiet:
+            ax.text(
+                wrap(r.ra_mid) - 1.0,
+                r.dec_mid + 1.2,
+                label,
+                fontsize=7.5,
+                color="#1a1a1a" if r.kind == "unidentified" else "#4d4d4d",
+                weight="bold" if r.kind == "unidentified" else "normal",
+            )
+    ax.set_xlim(112, -65)
+    ax.set_ylim(-70, 8)
+    ax.set_aspect(1 / np.cos(np.radians(35)))
+    ax.set_xlabel("RA (deg)")
+    ax.set_ylabel("Dec (deg)")
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.colorbar(
+        matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap),
+        ax=ax,
+        fraction=0.025,
+        pad=0.01,
+        label="distance modulus (mean of the track's segments)",
+    )
+    ax.set_title(
+        f"tracks seen in at least {min_segments} segments (both searches at half "
+        "their false-alarm rate); thicker: more segments; grey: DES 2018",
+        fontsize=10,
+    )
+    fig.savefig(
+        DOC_FIGURES / f"line_sky_tracks{suffix}.png", dpi=100, bbox_inches="tight"
+    )
     plt.close(fig)
 
 
@@ -3349,6 +3792,8 @@ if __name__ == "__main__":
         line_sky_chance(config)
         line_sky_figures(config)
         line_sky_summary(config)
+        line_sky_tracks(config)
+        line_sky_track_figure(config)
     else:
         figures(arguments.train_sky)
         if arguments.train_sky != "A":
