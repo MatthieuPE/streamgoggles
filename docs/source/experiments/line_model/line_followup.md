@@ -197,7 +197,8 @@ filter's polygon. `run.py leads`.*
   distance, 8° east of where DES 2018 stopped. West, the map shows a streak
   along the proposed extension itself, about 2° north of the lead, which
   crosses it at 22°; the Hess difference of the lead holds a sequence too —
-  something is there, which the straight segment fits poorly.
+  something is there, which the straight segment fits poorly. (Fitted, in
+  {doc}`long_and_fits`, the lead turns out to be Indus.)
 
 ```{image} ../figures/line_model/lead_ngc_1261_s_stream.png
 :alt: NGC 1261's stream: along the proposed track, a sequence in the Hess difference
