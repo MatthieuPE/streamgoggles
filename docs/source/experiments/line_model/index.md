@@ -21,6 +21,7 @@ and figures.
 | {doc}`window_level` | the line model on the copies, without knowing their track and along it, against the per-pixel network and the matched filter's own line search; S/N inputs | done, quick models (2026-10-01) |
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks; the bright dwarfs masked; the two line searches combined; a catalogue of tracks; why short streams were missed (the label), and the 2° label | done (2026-10-01) |
 | {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02) |
+| {doc}`long_and_fits` | four long line models per fold; the leads that held, fitted: a distance and a curved track each | in progress (2026-10-02, branch `line-model-long-fits`) |
 
 ## Conclusions so far
 
@@ -86,4 +87,5 @@ python scripts/experiments/line_model/run.py leads                              
 window_level
 line_sky
 line_followup
+long_and_fits
 ```

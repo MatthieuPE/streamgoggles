@@ -138,6 +138,14 @@ CONFIGS = {
         "windows": 19200,
         "seeds": [42],
     },
+    # four of them per fold: is the long model's sky a good draw?
+    "hough/band2 residual long x4": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "parts": ["hough/band2 residual long"],
+        "seeds": [42, 43, 44, 45],
+    },
 }
 
 
@@ -2672,6 +2680,381 @@ def lead_inspection(names=None):
     print(table.round(2).to_string(index=False), flush=True)
 
 
+# The leads that held, fitted: a distance and a curved track each, with
+# ATLAS as the control. Literature distance moduli: galstreams' where it has
+# one (ATLAS, Li et al. 2021; Leiptr, Ibata et al. 2021); NGC 1261's stream
+# at its cluster's (16.3 kpc, Harris 2010); Tucana III's extensions at
+# Tucana III's (Shipp et al. 2018).
+FIT_LEADS = {
+    "ATLAS (control)": 16.65,
+    "Leiptr": 14.25,
+    "NGC 1261's stream": 16.06,
+    "Tucana III, east of its DES 2018 track": 17.0,
+    "Tucana III, west of its DES 2018 track": 17.0,
+}
+FIT_DISTANCES = (13.5, 18.5, 0.1)  # the trial distances: from, to, step
+FIT_BIN_DEG = 1.5  # bins along the track for the track fit
+FIT_HALF_WIDTH_DEG = 4.0  # how far across the track the fit looks
+FIT_MARGIN_DEG = 3.0  # how far beyond the lead's ends
+FIT_STEP_DEG = 0.2  # bins across the track
+
+
+def _scan_distance(
+    phi1, phi2, colour, g, polygons, track, width, length, pixels, offsets
+):
+    """The band's excess against flanking bands, at each trial distance:
+    (S/N, excess) arrays. ``track(phi1)`` is the track's across offset;
+    ``pixels`` the valid pixels' (phi1, phi2), for the areas."""
+    import numpy as np
+    from matplotlib.path import Path as MplPath
+
+    inside = (phi1 >= 0) & (phi1 <= length)
+    across = np.abs(phi2 - track(phi1))
+    on = inside & (across <= width)
+    off = inside & (across >= offsets[0]) & (across <= offsets[1])
+    p_inside = (pixels[0] >= 0) & (pixels[0] <= length)
+    p_across = np.abs(pixels[1] - track(pixels[0]))
+    area_on = (p_inside & (p_across <= width)).sum()
+    area_off = (p_inside & (p_across >= offsets[0]) & (p_across <= offsets[1])).sum()
+    scale = area_on / max(area_off, 1)
+    snr, excess = [], []
+    points = np.c_[colour, g]
+    for polygon in polygons:
+        selected = MplPath(polygon).contains_points(points)
+        n_on, n_off = (on & selected).sum(), (off & selected).sum()
+        excess.append(n_on - scale * n_off)
+        snr.append(excess[-1] / np.sqrt(max(n_on + scale**2 * n_off, 1)))
+    return np.array(snr), np.array(excess)
+
+
+def lead_fits(names=None):
+    """For each of FIT_LEADS: its stars, selected by the matched filter at each
+    trial distance from 13.5 to 18.5 (below the search's grid, which starts at
+    15); the distance where the excess along its track stands out most
+    against flanking bands; there, a curved track -- the across-track
+    position of a Gaussian fitted to the excess in 1.5-degree bins along the
+    track, then a quadratic through them -- and a width; and the distance
+    again, along the curved track. Writes line_sky/leads/fits.csv and
+    fit_<lead>.png."""
+    import healpy as hp
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import pyarrow.parquet as pq
+    from scipy import ndimage
+    from scipy.optimize import curve_fit
+
+    from streamgoggles.matched_filter import build_matched_filters
+    from streamgoggles.objects_overlap import get_footprint
+
+    rd = real_des()
+    background, _, pix = build_sky("inference", "count")
+    nside = pix.nside
+    valid = background.valid_mask_full & ~rd.object_mask(
+        nside, max_dwarf_mv=LINE_SKY_DWARF_MV
+    )
+    valid &= get_footprint("des_yr6_inference", nside=nside)[0]
+    good = build_matched_filters(rd.filters_config(), namespace=rd.NAMESPACE)["good"]
+    distances = np.round(np.arange(*FIT_DISTANCES), 2)
+    polygons = [good._polygon(["g", "r"], float(d)) for d in distances]
+    known = _known_tracks()
+    g_col, r_col = f"{rd.NAMESPACE}_g_obs", f"{rd.NAMESPACE}_r_obs"
+    LEADS_DIR.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for name, literature in FIT_LEADS.items():
+        if names is not None and name not in names:
+            continue
+        lead = LEADS[name]
+        frame = _lead_frame(lead["ends"])
+        pole, u, length = frame
+        v = np.cross(pole, u)
+        reach = FIT_MARGIN_DEG + FIT_HALF_WIDTH_DEG
+        arc_ra, arc_dec = _arc(*lead["ends"][0], *lead["ends"][1], 200)
+        widen = 1 / np.cos(np.radians(min(np.max(np.abs(arc_dec)) + reach, 80)))
+        table = pq.read_table(
+            rd.INFERENCE_CATALOGUE,
+            columns=["ra", "dec", g_col, r_col],
+            filters=[
+                ("ra", ">=", float(np.min(arc_ra) - reach * widen)),
+                ("ra", "<=", float(np.max(arc_ra) + reach * widen)),
+                ("dec", ">=", float(np.min(arc_dec) - reach)),
+                ("dec", "<=", float(np.max(arc_dec) + reach)),
+            ],
+        ).to_pandas()
+        on_sky = valid[
+            hp.ang2pix(nside, table.ra.values, table.dec.values, lonlat=True)
+        ]
+        stars = table[on_sky]
+        phi2, phi1 = _lead_coordinates(stars.ra.values, stars.dec.values, frame)
+        near = (
+            (np.abs(phi2) <= FIT_HALF_WIDTH_DEG)
+            & (phi1 >= -FIT_MARGIN_DEG)
+            & (phi1 <= length + FIT_MARGIN_DEG)
+        )
+        phi1, phi2 = phi1[near], phi2[near]
+        g = stars[g_col].values[near]
+        colour = g - stars[r_col].values[near]
+        disc = hp.query_disc(
+            nside,
+            _unit(*np.mean(lead["ends"], axis=0)),
+            np.radians(length / 2 + reach + 1),
+        )
+        disc = disc[valid[disc]]
+        p2, p1 = _lead_coordinates(*hp.pix2ang(nside, disc, lonlat=True), frame)
+        keep = (
+            (np.abs(p2) <= FIT_HALF_WIDTH_DEG)
+            & (p1 >= -FIT_MARGIN_DEG)
+            & (p1 <= length + FIT_MARGIN_DEG)
+        )
+        pixels = (p1[keep], p2[keep])
+
+        # 1. the distance, along the straight lead
+        straight = lambda x: np.zeros_like(x)
+        snr_straight, _ = _scan_distance(
+            phi1,
+            phi2,
+            colour,
+            g,
+            polygons,
+            straight,
+            LEAD_WIDTH_DEG,
+            length,
+            pixels,
+            LEAD_OFF_DEG,
+        )
+        best = int(np.argmax(snr_straight))
+
+        # 2. the track: a Gaussian across the track in each bin along it
+        from matplotlib.path import Path as MplPath
+
+        selected = MplPath(polygons[best]).contains_points(np.c_[colour, g])
+        edges1 = np.arange(-FIT_MARGIN_DEG, length + FIT_MARGIN_DEG + 1e-9, FIT_BIN_DEG)
+        edges2 = np.arange(-FIT_HALF_WIDTH_DEG, FIT_HALF_WIDTH_DEG + 1e-9, FIT_STEP_DEG)
+        centres2 = 0.5 * (edges2[1:] + edges2[:-1])
+        counts = np.histogram2d(phi1[selected], phi2[selected], bins=(edges1, edges2))[
+            0
+        ]
+        area = np.histogram2d(pixels[0], pixels[1], bins=(edges1, edges2))[0]
+        density = np.where(area > 0, counts / np.maximum(area, 1), np.nan)
+
+        def model(x, amplitude, centre, sigma, level, slope):
+            return (
+                amplitude * np.exp(-0.5 * ((x - centre) / sigma) ** 2)
+                + level
+                + slope * x
+            )
+
+        fitted = []
+        for k in range(len(edges1) - 1):
+            profile, ok = density[k], np.isfinite(density[k])
+            if ok.sum() < 15:
+                continue
+            smooth = ndimage.gaussian_filter1d(
+                np.where(ok, profile, np.nanmedian(profile)), 1.5
+            )
+            window = np.abs(centres2) <= 1.5
+            start = centres2[window][np.argmax(smooth[window])]
+            level = np.nanmedian(profile)
+            try:
+                values, cov = curve_fit(
+                    model,
+                    centres2[ok],
+                    profile[ok],
+                    p0=[max(np.nanmax(smooth) - level, 1e-3), start, 0.3, level, 0.0],
+                    sigma=np.sqrt(np.maximum(counts[k][ok], 1))
+                    / np.maximum(area[k][ok], 1),
+                    bounds=(
+                        [0, -2.5, 0.05, -np.inf, -np.inf],
+                        [np.inf, 2.5, 1.5, np.inf, np.inf],
+                    ),
+                    maxfev=5000,
+                )
+            except (RuntimeError, ValueError):
+                continue
+            errors = np.sqrt(np.diag(cov))
+            if values[0] / max(errors[0], 1e-12) >= 2 and errors[1] < 1.0:
+                fitted.append(
+                    (0.5 * (edges1[k] + edges1[k + 1]), values[1], errors[1], values[2])
+                )
+        fitted = np.array(fitted)
+        if len(fitted) >= 3:
+            coefficients = np.polyfit(fitted[:, 0], fitted[:, 1], 2, w=1 / fitted[:, 2])
+            width = float(np.median(fitted[:, 3]))
+        else:  # too few bins to bend the track: keep it straight
+            coefficients, width = np.zeros(3), LEAD_WIDTH_DEG
+        curved = np.poly1d(coefficients)
+
+        # 3. the distance again, along the curved track
+        band = float(np.clip(1.5 * width, 0.25, 1.0))
+        snr_curved, excess_curved = _scan_distance(
+            phi1,
+            phi2,
+            colour,
+            g,
+            polygons,
+            curved,
+            band,
+            length,
+            pixels,
+            (max(LEAD_OFF_DEG[0], 3 * band), max(LEAD_OFF_DEG[1], 3 * band + 1.5)),
+        )
+        # the curved track is kept only if it gathers more of the excess than
+        # the straight lead: with few bins fitted, a quadratic can swing off
+        # the stream (and then the distance scan along it means nothing)
+        accepted = snr_curved.max() > snr_straight.max()
+        if not accepted:
+            curved = straight
+            snr_curved, excess_curved = _scan_distance(
+                phi1,
+                phi2,
+                colour,
+                g,
+                polygons,
+                straight,
+                LEAD_WIDTH_DEG,
+                length,
+                pixels,
+                LEAD_OFF_DEG,
+            )
+            width = LEAD_WIDTH_DEG
+        best_curved = int(np.argmax(snr_curved))
+        within = distances[snr_curved >= snr_curved[best_curved] - 1]
+
+        # the curved track on the sky, and against the literature track
+        along = np.linspace(0, length, 120)
+        offset = np.radians(curved(along))
+        position = np.radians(along)
+        points = (
+            np.cos(offset)[:, None]
+            * (np.cos(position)[:, None] * u + np.sin(position)[:, None] * v)
+            + np.sin(offset)[:, None] * pole
+        )
+        track_ra = np.degrees(np.arctan2(points[:, 1], points[:, 0])) % 360
+        track_dec = np.degrees(np.arcsin(np.clip(points[:, 2], -1, 1)))
+        separation = np.nan
+        if lead["compare"] in known:
+            theirs = _unit(*known[lead["compare"]])
+            closest = np.degrees(np.arccos(np.clip((points @ theirs.T).max(1), -1, 1)))
+            separation = float(np.median(closest))
+
+        # the figure: the stars across and along the track, the distance scans
+        fig, axes = plt.subplots(
+            1, 2, figsize=(15, 4.8), gridspec_kw={"width_ratios": [1.6, 1]}
+        )
+        ax = axes[0]
+        # each bin along the track minus its own median: the stream, not the
+        # density's gradient along the track
+        shown = ndimage.gaussian_filter(
+            np.nan_to_num(density - np.nanmedian(density, axis=1, keepdims=True)), 1.0
+        )
+        ax.imshow(
+            shown.T,
+            origin="lower",
+            aspect="auto",
+            cmap="gray_r",
+            extent=[edges1[0], edges1[-1], edges2[0], edges2[-1]],
+        )
+        ax.plot(
+            along,
+            curved(along),
+            color="#e07b39",
+            lw=1.5,
+            label="the fitted track" if accepted else "the lead (curve rejected)",
+        )
+        ax.axhline(0, color="#1f6fb4", lw=1, ls="--", label="the lead (straight)")
+        if len(fitted):
+            ax.errorbar(
+                fitted[:, 0],
+                fitted[:, 1],
+                yerr=fitted[:, 2],
+                fmt="o",
+                color="#e07b39",
+                ms=4,
+            )
+        ax.set_xlabel("along the lead (deg)")
+        ax.set_ylabel("across (deg)")
+        ax.set_title(
+            f"stars in the filter at m−M {distances[best]:.1f}, density minus each "
+            "column's median (smoothed); "
+            f"width {width:.2f}°",
+            fontsize=9,
+        )
+        ax.legend(fontsize=8, frameon=False, loc="upper right")
+        ax = axes[1]
+        ax.plot(
+            distances,
+            snr_straight,
+            color="#1f6fb4",
+            lw=1.5,
+            label="along the straight lead",
+        )
+        ax.plot(
+            distances,
+            snr_curved,
+            color="#e07b39",
+            lw=2,
+            label="along the fitted track" if accepted else "(the lead again)",
+        )
+        ax.axvline(distances[best_curved], color="#e07b39", ls=":", lw=1)
+        ax.axvline(
+            literature, color="#2e8b57", ls="--", lw=1.2, label="literature distance"
+        )
+        ax.axvspan(
+            15.0, 19.0, color="#f2f2f2", zorder=0, label="the search's distances"
+        )
+        ax.set_xlabel("trial distance modulus")
+        ax.set_ylabel("excess S/N against flanking bands")
+        ax.set_title(
+            f"best m−M {distances[best_curved]:.1f} (S/N within 1: "
+            f"{within.min():.1f}-{within.max():.1f}); literature {literature:.2f}",
+            fontsize=9,
+        )
+        ax.legend(fontsize=8, frameon=False)
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.suptitle(f"{name} — fitted", fontsize=11)
+        fig.tight_layout()
+        slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+        fig.savefig(DOC_FIGURES / f"fit_{slug}.png", dpi=100, bbox_inches="tight")
+        plt.close(fig)
+        rows.append(
+            {
+                "lead": name,
+                "length_deg": length,
+                "distance_straight": float(distances[best]),
+                "snr_straight": float(snr_straight[best]),
+                "distance": float(distances[best_curved]),
+                "distance_low": float(within.min()),
+                "distance_high": float(within.max()),
+                "snr": float(snr_curved[best_curved]),
+                "excess_stars": float(excess_curved[best_curved]),
+                "literature_distance": literature,
+                "width_deg": width,
+                "bins_fitted": len(fitted),
+                "curved_track_kept": bool(accepted),
+                "curvature_deg": float(
+                    curved(length / 2) - 0.5 * (curved(0) + curved(length))
+                ),
+                "median_offset_from_literature_track_deg": separation,
+                "track_ra": " ".join(f"{x:.2f}" for x in track_ra[::10]),
+                "track_dec": " ".join(f"{x:.2f}" for x in track_dec[::10]),
+            }
+        )
+        print(
+            f"{name}: m-M {distances[best_curved]:.1f} ({within.min():.1f}-{within.max():.1f}), "
+            f"S/N {snr_curved[best_curved]:.1f}; straight {distances[best]:.1f}; "
+            f"width {width:.2f}; {len(fitted)} bins; literature {literature}",
+            flush=True,
+        )
+    table = pd.DataFrame(rows)
+    if names is not None and (LEADS_DIR / "fits.csv").exists():
+        kept = pd.read_csv(LEADS_DIR / "fits.csv")
+        table = pd.concat([kept[~kept.lead.isin(table.lead)], table], ignore_index=True)
+    table.to_csv(LEADS_DIR / "fits.csv", index=False)
+
+
 def hough_figures(train_sky="fold0"):
     """hough_{blind,known}_{sky}.png and hough.csv: the line model, the
     per-pixel network with a line search on top, and the matched filter, on
@@ -2778,7 +3161,7 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "step", choices=["train", "evaluate", "figures", "line-sky", "leads"]
+        "step", choices=["train", "evaluate", "figures", "line-sky", "leads", "fits"]
     )
     parser.add_argument("--config", choices=list(CONFIGS))
     parser.add_argument("--seed", type=int, default=SEEDS[0])
@@ -2803,6 +3186,8 @@ if __name__ == "__main__":
         )
     elif arguments.step == "leads":  # the catalogue's leads, one by one
         lead_inspection()
+    elif arguments.step == "fits":  # the leads that held, fitted
+        lead_fits()
     elif arguments.step == "line-sky":  # the line model over the whole DES sky
         config = arguments.config or LINE_SKY_CONFIG
         line_sky(config)
