@@ -7,14 +7,14 @@ straight line through the window, the probability that a stream lies along
 it. The line is computed with a *Hough transform* built into the network.
 This page explains the method, how each network is plugged, what goes in and
 what comes out, and follows real examples through it. How well it works on
-the real DES sky is in {doc}`../experiments/real_des/window_level`.
+the real DES sky is in {doc}`../experiments/line_model/window_level`.
 
 ```{note}
 Code: {py:mod}`streamgoggles.models.hough` (the transform, the line model,
 its training target), {py:func}`streamgoggles.models.build_model` (choosing a
 model by options), {py:class}`~streamgoggles.datasets.transforms.ResidualNormalizer`
 (the S/N inputs). The figures of this page are made by
-`scripts/experiments/real_des/patches.py` (`line_model_figures`).
+`scripts/experiments/line_model/run.py figures`.
 ```
 
 ## Why lines
@@ -220,7 +220,7 @@ window. Two ways to read it:
 The stream-free windows must lie on the calibration sky: a line search
 integrates over a whole window, so a single straight feature of the sky —
 the edge of a mask with real stars beyond it, as along Sagittarius — sets
-its false-alarm level (see {doc}`../experiments/real_des/window_level`).
+its false-alarm level (see {doc}`../experiments/line_model/window_level`).
 
 ## Worked examples
 
@@ -290,10 +290,11 @@ sums = grid(snr_image)                # (90, 69): each line's matched-filter S/N
 target = hough_target(band_mask, grid)   # the band's lines, as a 0/1 map
 ```
 
-In the real-DES experiment (`scripts/experiments/real_des/patches.py`), a
+In the line-model experiment (`scripts/experiments/line_model/run.py`), a
 configuration is a dictionary; `hough` makes it a line model, `lines` a
-per-pixel ensemble searched along lines, and `evaluate` scores each the way
-it answers — per window for those, per pixel for the others:
+per-pixel ensemble searched along lines, and `evaluate` scores both per
+window (the per-pixel models themselves are trained and scored per pixel by
+`scripts/experiments/real_des/patches.py`):
 
 ```python
 "hough/band residual": {
@@ -321,4 +322,4 @@ it answers — per window for those, per pixel for the others:
   level has to be set on sky free of both.
 - **On the real sky**, the line model on S/N inputs finds near, faint
   streams better than anything before it, but misses the short bright ones
-  ({doc}`../experiments/real_des/window_level`).
+  ({doc}`../experiments/line_model/window_level`).
