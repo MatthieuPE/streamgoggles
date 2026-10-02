@@ -14,9 +14,6 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`des2018_reproduction` | the paper's own analysis on our data, without the network: which streams are in the data, and what our cuts cost | done (2026-09-29) |
 | {doc}`recovery` | each DES 2018 stream simulated and injected into the real sky 54 times; the fold imbalance traced to saturated false alarms | done (2026-09-29) |
 | {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
-| {doc}`window_level` | a network that answers with lines (a Hough transform built in), scored without the track; the matched filter's own line search alongside | done, quick models (2026-10-01, branch `hough-window-model`) |
-| {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks | done (2026-10-01, branch `line-model-sky`) |
-| {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02, branch `line-model-followup`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -112,34 +109,11 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
    all leave the limit at 9-15. The network acts as a local detector; the
    integration along the stream is what it lacks
    ({doc}`labels_normalization`, "Why is the network half as sensitive?").
-10. **A network that answers with lines finds near, faint streams best** —
-    once its inputs are matched-filter S/N maps. Without knowing the track
-    it finds half of the near copies at an input S/N of 7.9 (the per-pixel
-    network needs 12.1, and its test knows the track; the matched filter's
-    own line search 12.5), and Wambelong, which no other method finds. It
-    misses the two brightest short streams, and for distant ones the
-    matched filter's line search stays ahead (10.0 against 12.8)
-    ({doc}`window_level`).
-11. **On the real sky, two line searches together find eight of the
-    fourteen DES 2018 streams beyond chance**, without knowing any track, at
-    the false-alarm rate of one: the line network seven (ATLAS, Phoenix,
-    Indus, Jhelum, Chenab, Elqui — the near, wide ones the per-pixel network
-    missed — and Turranburra by one line), the matched filter's line search
-    six once the bright dwarfs and clusters are masked (with Tucana III and
-    Willka Yaku, the short, bright ones the line network misses), against
-    five for the per-pixel network. The line network missed short streams
-    because its label (4° minimum) taught it to; with a 2° minimum it finds
-    them, and Tucana III on the sky. Joined into tracks, the lines also
-    follow the Magellanic Clouds' outskirts; of the tracks found elsewhere,
-    one runs along Leiptr (Ibata et al. 2021) and its Hess difference shows
-    a main sequence — the others are edges and depth changes
-    ({doc}`line_sky`, {doc}`line_followup`).
-12. **With four quick models, or one long one, the line network alone finds
-    seven or eight DES 2018 streams, and the two line searches together
-    nine of the fourteen** — all but Wambelong, Turbio, Molonglo, Ravi and
-    Aliqa Uma. Followed up one by one, three of the catalogue's other tracks
-    hold: Leiptr, NGC 1261's stream and Tucana III's extension east of its
-    DES 2018 track, at its distance ({doc}`line_followup`).
+
+What followed — a network that answers with lines rather than pixels,
+which builds the integration along a stream into the model, scored on the
+copies and run over the whole sky — differs enough to have its own section:
+{doc}`../line_model/index`.
 
 ## What comes next
 
@@ -189,7 +163,4 @@ results
 des2018_reproduction
 recovery
 labels_normalization
-window_level
-line_sky
-line_followup
 ```

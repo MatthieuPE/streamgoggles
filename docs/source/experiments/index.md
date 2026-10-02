@@ -182,6 +182,7 @@ it moves the results.
 | Survey-wide contamination | False alarms over a fully tiled footprint, rather than around one injected stream. | planned |
 | DES survey model | Switch the simulations from LSST year 1 to the DES Y6 survey model (`survey="des"`, `release="yr6"` in streamobs), so that detection limits can be compared with the DES 2018 stream search, whose known streams reach surface brightness 34-34.3. Includes the magnitude cut: g < 23.5 as in DES Y3 (chosen against depth and galaxy-contamination fluctuations) versus 24 or 24.5, judged on real data since the simulated background has depth variations only at 27' scale and unclustered galaxies. | in place: the notebooks use DES Y6 at RA 0, Dec -50, with the light background built from the LSST CMD grids; the magnitude cut is still 24.5 |
 | Real data | Train with the known streams masked, then unmask and check that they are recovered. | planned |
+| {doc}`line_model/index` | A network that answers with lines (a Hough transform built in) on the real DES sky: scored on simulated copies without knowing their track, run over the whole sky, its detections joined into tracks and followed up. | the line network finds 7-8 of the 14 DES 2018 streams by itself and, with the matched filter's line search, 9; three tracks beyond DES 2018 hold: Leiptr, NGC 1261's stream, Tucana III's extension |
 
 ```{toctree}
 :maxdepth: 1
@@ -193,4 +194,5 @@ two_streams
 stream_parameters
 matched_filter_errors
 real_des/index
+line_model/index
 ```

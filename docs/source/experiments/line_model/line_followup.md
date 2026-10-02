@@ -5,9 +5,9 @@ questions: does the 2° line model gain from more models or longer
 training — enough to find Jhelum and Phoenix again — and are the tracks it
 found outside the DES 2018 streams real? This page answers both.
 
-Branch `line-model-followup`; code `scripts/experiments/real_des/patches.py`
-(`lead_inspection`, and the configurations `hough/band2 residual x4`,
-`s42` and `long`).
+Branch `line-model-followup`; code `scripts/experiments/line_model/run.py`
+(`leads`, and the configurations `hough/band2 residual x4`, `s42` and
+`long`).
 
 **In short.** More models help up to two per fold, longer training barely
 — on the copies. On the real sky, **four quick models** give the line
@@ -41,7 +41,7 @@ and the DES 2018 copies found at full brightness):
 | 1 long model (19,200 windows) | 8.1 / 12.4 | 7.4 / 12.0 | 85% / 71% |
 
 **From one model to two, the limit improves; from two to four, it does
-not** — as for the per-pixel network ({doc}`labels_normalization`). **Four
+not** — as for the per-pixel network ({doc}`../real_des/labels_normalization`). **Four
 times the training does about what a second model does** for near streams
 (8.1 against 8.7 for one quick model) and loses the short distant ones
 again (far copies found 71% against 79%). Four
@@ -103,7 +103,7 @@ crossing lines: a lead was given to a known stream if 3° of it lay within
 satisfies. Lines must now run *along* a track (directions within 15°), for
 the DES 2018 streams as for the others ({doc}`line_sky` uses this rule).
 
-```{image} ../figures/real_des_patches/lead_atlas__control.png
+```{image} ../figures/line_model/lead_atlas__control.png
 :alt: ATLAS, the control: a streak on the map, a peak at its distance, a main sequence in the Hess difference
 :width: 100%
 ```
@@ -113,32 +113,32 @@ band's S/N at m−M 16.5-17 (9.4 against the null bands); a main sequence
 from its turnoff at g ≈ 20.8 inside the filter's polygon. What a stream
 looks like here.*
 
-```{image} ../figures/real_des_patches/lead_leiptr.png
+```{image} ../figures/line_model/lead_leiptr.png
 :alt: Leiptr: a main sequence in the Hess difference, the band's S/N highest at the nearest distance
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_jhelum_s_eastern_extension.png
+```{image} ../figures/line_model/lead_jhelum_s_eastern_extension.png
 :alt: Jhelum's eastern extension: the lead crosses the proposed track; a weak sequence
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_new_4__matched_filter_s_track.png
+```{image} ../figures/line_model/lead_new_4__matched_filter_s_track.png
 :alt: The matched filter's New-4 track: along the footprint's edge, a broad excess, no sequence
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_eastern_track_a.png
+```{image} ../figures/line_model/lead_eastern_track_a.png
 :alt: Eastern track A: along the footprint's edge, a broad faint excess, no distance peak
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_eastern_track_b.png
+```{image} ../figures/line_model/lead_eastern_track_b.png
 :alt: Eastern track B: along the footprint's edge, a broad faint excess, no distance peak
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_cetus_palca.png
+```{image} ../figures/line_model/lead_cetus_palca.png
 :alt: The lead matched to Cetus-Palca: an excess at the faintest magnitudes only
 :width: 100%
 ```
@@ -147,7 +147,7 @@ looks like here.*
 dotted, the known track it was matched to, with the angle and overlap where
 they meet); middle, the band's S/N against 200 null bands at each distance
 (red circles: beyond all of them); right, the Hess difference with the
-filter's polygon. `patches.py`, `lead_inspection`.*
+filter's polygon. `run.py leads`.*
 
 | lead (found by) | its angle to the known track, overlap | band S/N, peak (distance) | Hess difference | verdict |
 |---|---|---|---|---|
@@ -199,17 +199,17 @@ filter's polygon. `patches.py`, `lead_inspection`.*
   crosses it at 22°; the Hess difference of the lead holds a sequence too —
   something is there, which the straight segment fits poorly.
 
-```{image} ../figures/real_des_patches/lead_ngc_1261_s_stream.png
+```{image} ../figures/line_model/lead_ngc_1261_s_stream.png
 :alt: NGC 1261's stream: along the proposed track, a sequence in the Hess difference
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_tucana_iii__east_of_its_des_2018_track.png
+```{image} ../figures/line_model/lead_tucana_iii__east_of_its_des_2018_track.png
 :alt: Tucana III east of its DES 2018 track: a peak at its distance and a main sequence
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/lead_tucana_iii__west_of_its_des_2018_track.png
+```{image} ../figures/line_model/lead_tucana_iii__west_of_its_des_2018_track.png
 :alt: Tucana III west of its DES 2018 track: a streak along the proposed extension, north of the lead
 :width: 100%
 ```
@@ -217,6 +217,6 @@ filter's polygon. `patches.py`, `lead_inspection`.*
 ## Reproducing
 
 ```bash
-python scripts/experiments/real_des/patches.py line-sky --config "hough/band2 residual"   # the catalogue
-python scripts/experiments/real_des/patches.py leads    # the leads' figures and leads.csv
+python scripts/experiments/line_model/run.py line-sky --config "hough/band2 residual"   # the catalogue
+python scripts/experiments/line_model/run.py leads    # the leads' figures and leads.csv
 ```

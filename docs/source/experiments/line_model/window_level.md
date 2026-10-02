@@ -1,6 +1,6 @@
 # A network that answers with lines
 
-{doc}`labels_normalization` ended on one diagnosis: the per-pixel network
+{doc}`../real_des/labels_normalization` ended on one diagnosis: the per-pixel network
 acts as a *local* detector. It flags a stream where a few degrees of it stand
 out, and no change of label, loss, depth or training range made it integrate
 a faint stream along its length — which is what the matched filter does,
@@ -9,8 +9,9 @@ network: the network answers with **lines** through the window rather than
 pixels, and is scored as a search would use it, without the track.
 
 Branch `hough-window-model`; code in `src/streamgoggles/models/hough.py` and
-`scripts/experiments/real_des/patches.py`; everything on the real DES Y6 sky,
-trained on fold 0 and scored on fold 1, like {doc}`labels_normalization`.
+`scripts/experiments/line_model/run.py` (sharing the skies of
+`scripts/experiments/real_des/patches.py`); everything on the real DES Y6 sky,
+trained on fold 0 and scored on fold 1, like {doc}`../real_des/labels_normalization`.
 
 **In short.** Building the integration into the network works for near
 streams, once its inputs are matched-filter S/N maps: without knowing the
@@ -87,7 +88,7 @@ along lines (the combination below), the others per-pixel models as before.
 
 ## How it is scored
 
-The same DES 2018 copies as in {doc}`labels_normalization` — each stream at
+The same DES 2018 copies as in {doc}`../real_des/labels_normalization` — each stream at
 its Table 1 parameters, 8 places on fold 1, at full brightness and 1 and 1.5
 mag/arcsec² fainter — land on exactly the same places (checked copy by copy),
 so the methods compare copy by copy. Each window covering a copy (the
@@ -114,7 +115,7 @@ Two tests, against 600 stream-free windows per queried distance:
 - **along the known track**: in the window holding the longest stretch of
   the copy, its best line against the same lines in the stream-free windows,
   found when at most 1/201 of them score as high (the level of the band
-  tests of {doc}`labels_normalization`).
+  tests of {doc}`../real_des/labels_normalization`).
 
 The per-pixel network's current test is not blind — it counts flagged pixels
 near the true track and compares them with the same band placed elsewhere —
@@ -128,7 +129,7 @@ windows only *centred* on the calibration sky, the line network's 1% level
 at m−M 17 was a probability of 0.94, and the matched filter's an S/N of 13.7
 — while the median window's best line scores 0.10 and 3.3.
 
-```{image} ../figures/real_des_patches/hough_null_windows_fold0.png
+```{image} ../figures/line_model/hough_null_windows_fold0.png
 :alt: Three stream-free windows with their strongest lines: two along the edge of the Sagittarius mask, one through a compact overdensity near a masked dwarf
 :width: 100%
 ```
@@ -139,7 +140,7 @@ Sagittarius mask, where the isochrone channel holds a band of excess stars
 the decoy does not: Sagittarius's wing, past its 6-degree mask, at about
 its distance. Bottom: the matched filter's — every short line through one
 compact overdensity at the edge of a mask (near the Fornax dwarf) is bright;
-the line network gives that window 0.05. `patches.py figures`.*
+the line network gives that window 0.05. `run.py figures`.*
 
 Neither is the network inventing lines: the Sagittarius wing is a real
 linear overdensity, and the network is right to find it. Both windows reach
@@ -153,12 +154,12 @@ used below.
 
 ## Results
 
-```{image} ../figures/real_des_patches/hough_blind_fold0.png
+```{image} ../figures/line_model/hough_blind_fold0.png
 :alt: Copies found without the track, against input S/N, near and far: per-pixel network, line network, line network on S/N inputs, matched-filter lines
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/hough_known_fold0.png
+```{image} ../figures/line_model/hough_known_fold0.png
 :alt: Copies found along the known track, against input S/N, near and far: line network, line network on S/N inputs, matched-filter lines, matched-filter band
 :width: 100%
 ```
@@ -167,7 +168,7 @@ used below.
 (the per-pixel network's test, which knows the track, for reference).
 Bottom: along the known track. The DES 2018 copies at full brightness and 1
 and 1.5 mag/arcsec² fainter, near (m−M < 16.5) and far; dashed, no network.
-`patches.py figures`.*
+`run.py figures`.*
 
 | half-recovery input S/N (DES 2018 copies found) | near | far |
 |---|---|---|
@@ -181,7 +182,7 @@ and 1.5 mag/arcsec² fainter, near (m−M < 16.5) and far; dashed, no network.
 | line network, window-normalized inputs | 7.7 | 8.6 |
 | line network, S/N inputs | 6.0 | 8.9 |
 | matched-filter lines | 6.2 | 4.7 |
-| matched-filter band ({doc}`labels_normalization`) | 5.2 | 5.0 |
+| matched-filter band ({doc}`../real_des/labels_normalization`) | 5.2 | 5.0 |
 
 Stream by stream, at full brightness (of 8 places, without the track):
 
@@ -239,11 +240,11 @@ cost is that of the line network plus about 3 minutes for the normalizer
 
 ```bash
 # the line models (two seeds each; ~17 min a model)
-python scripts/experiments/real_des/patches.py train --config hough/band --seed 42
-python scripts/experiments/real_des/patches.py train --config "hough/band residual" --seed 42
+python scripts/experiments/line_model/run.py train --config hough/band --seed 42
+python scripts/experiments/line_model/run.py train --config "hough/band residual" --seed 42
 # window-level scoring: a line model, or a per-pixel ensemble with "lines"
 # (~10 min each; --sets fainter for the fainter copies)
-python scripts/experiments/real_des/patches.py evaluate --config hough/band
-python scripts/experiments/real_des/patches.py evaluate --config "count/window x4 lines"
-python scripts/experiments/real_des/patches.py figures       # the figures of this page
+python scripts/experiments/line_model/run.py evaluate --config hough/band
+python scripts/experiments/line_model/run.py evaluate --config "count/window x4 lines"
+python scripts/experiments/line_model/run.py figures       # the figures of this page
 ```

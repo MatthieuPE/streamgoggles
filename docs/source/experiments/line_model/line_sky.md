@@ -4,12 +4,12 @@
 2018 streams. This page runs it over the **real DES sky, with the real
 streams in it**, and draws where it finds lines, to compare with the
 fourteen streams of DES 2018 (Shipp et al. 2018) and with the per-pixel
-network of the first training ({doc}`results`, 5 of 14). The matched
+network of the first training ({doc}`../real_des/results`, 5 of 14). The matched
 filter's own line search is run alongside, and the two are combined; the
 detected segments are joined into a catalogue of tracks. How the line model
 works is in the guide, {doc}`../../narrative/line_model`.
 
-Branch `line-model-sky`; code `scripts/experiments/real_des/patches.py`
+Branch `line-model-sky`; code `scripts/experiments/line_model/run.py`
 (`line-sky`).
 
 **In short.** Searching the whole sky without knowing any track, the line
@@ -98,17 +98,17 @@ The line network learned to ignore the bursts and is unchanged.
 
 ## The maps
 
-```{image} ../figures/real_des_patches/line_sky_network.png
+```{image} ../figures/line_model/line_sky_network.png
 :alt: Lines the line network detects over the DES sky, in three ranges of distance, with the DES 2018 tracks and the Magellanic Clouds and bright dwarfs marked
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/line_sky_matched_filter.png
+```{image} ../figures/line_model/line_sky_matched_filter.png
 :alt: Lines the matched filter's line search detects over the DES sky with the bright dwarfs and clusters masked, in three ranges of distance
 :width: 100%
 ```
 
-```{image} ../figures/real_des_patches/line_sky_combined.png
+```{image} ../figures/line_model/line_sky_combined.png
 :alt: Lines of both searches, each at half its false-alarm rate, over the DES sky
 :width: 100%
 ```
@@ -120,7 +120,7 @@ Clouds (their centres lie past the footprint's edge, drawn at it) and the
 Fornax and Sculptor dwarfs. Top: the line network at its 1% level; middle:
 the matched filter's line search at its 1% level, dwarfs and clusters
 masked; bottom: both, each at half its rate (solid: line network; dashed:
-matched filter). `patches.py line-sky`.*
+matched filter). `run.py line-sky`.*
 
 Where the lines are (a line counts as a stream's if at least 3° of it runs
 within max(1°, two widths) of its track and along it, at any distance; as an
@@ -146,7 +146,7 @@ calibration's discs):
 
 ## The fourteen DES 2018 streams
 
-```{image} ../figures/real_des_patches/line_sky_streams.png
+```{image} ../figures/line_model/line_sky_streams.png
 :alt: The fourteen DES 2018 streams, nearest first, and which method finds them
 :width: 85%
 ```
@@ -160,7 +160,7 @@ chance is **how many** lines run along it. Each stream's
 track was placed at 200 random places and position angles on the footprint;
 *p* is the share of them with at least as many lines along it as the stream
 itself, and a stream counts as found when *p* ≤ 0.05. The per-pixel
-network's test (a band's flagged pixels against 200 null bands, {doc}`results`)
+network's test (a band's flagged pixels against 200 null bands, {doc}`../real_des/results`)
 is already one of significance.
 
 The **combination** keeps either search's lines above its level at half the
@@ -197,7 +197,7 @@ What it says:
    fourteen**, against five for the per-pixel network; at their own rates,
    nine (Turranburra, by one line of the line network).
 3. **Five are found by nothing**: Wambelong, Turbio, Molonglo, Ravi,
-   Aliqa Uma; {doc}`des2018_reproduction` found Ravi and Molonglo not to be
+   Aliqa Uma; {doc}`../real_des/des2018_reproduction` found Ravi and Molonglo not to be
    in the data at all.
 
 ## Tracks: a catalogue of candidates
@@ -214,14 +214,14 @@ calibration's 20° or 12°); the footprint's edge (60% of it within 1.5° of
 sky outside the footprint); another stream of galstreams (3° of it within
 1.5° of the stream's track, and along it); or none.
 
-```{image} ../figures/real_des_patches/line_sky_tracks.png
+```{image} ../figures/line_model/line_sky_tracks.png
 :alt: The tracks seen in at least two segments over the DES sky, coloured by distance, with the DES 2018 tracks underneath
 :width: 100%
 ```
 
 *The 54 tracks seen in at least two segments (of 94), coloured by their
 mean distance, thicker for more segments; the unidentified numbered
-(line_sky/tracks_hough_band residual.csv). `patches.py line-sky`.*
+(line_sky/tracks_hough_band residual.csv). `run.py line-sky`.*
 
 | | tracks seen in ≥ 2 segments |
 |---|---|
@@ -315,12 +315,12 @@ exactly as above (`line-sky --config "hough/band2 residual"`):
 | either search, its own rate | 9 | 8 |
 | line network's lines (along DES 2018 tracks) | 138 (68) | 177 (82) |
 
-```{image} ../figures/real_des_patches/line_sky_streams_band2.png
+```{image} ../figures/line_model/line_sky_streams_band2.png
 :alt: The fourteen DES 2018 streams and which method finds them, with the 2-degree line model
 :width: 85%
 ```
 
-```{image} ../figures/real_des_patches/line_sky_tracks_band2.png
+```{image} ../figures/line_model/line_sky_tracks_band2.png
 :alt: The tracks seen in at least two segments with the 2-degree line model
 :width: 100%
 ```
@@ -339,16 +339,16 @@ Its catalogue holds two more known streams, by the line network: the NGC
 
 ```bash
 # the fold-1 line models, and their 1% levels on fold 0 (~20 + 10 min)
-python scripts/experiments/real_des/patches.py train --config "hough/band residual" --seed 42 --train-sky fold1
-python scripts/experiments/real_des/patches.py train --config "hough/band residual" --seed 43 --train-sky fold1
-python scripts/experiments/real_des/patches.py evaluate --config "hough/band residual" --train-sky fold1
-python scripts/experiments/real_des/patches.py evaluate --config "hough/band residual" --train-sky fold0
+python scripts/experiments/line_model/run.py train --config "hough/band residual" --seed 42 --train-sky fold1
+python scripts/experiments/line_model/run.py train --config "hough/band residual" --seed 43 --train-sky fold1
+python scripts/experiments/line_model/run.py evaluate --config "hough/band residual" --train-sky fold1
+python scripts/experiments/line_model/run.py evaluate --config "hough/band residual" --train-sky fold0
 # the whole sky: detections, matches, chance, maps, tracks (~10 min)
-python scripts/experiments/real_des/patches.py line-sky
+python scripts/experiments/line_model/run.py line-sky
 # the length scan
-python scripts/experiments/real_des/patches.py evaluate --config "hough/band residual" --sets "length scan"
+python scripts/experiments/line_model/run.py evaluate --config "hough/band residual" --sets "length scan"
 # the 2-degree label: train both folds, score, and search the sky again
-python scripts/experiments/real_des/patches.py train --config "hough/band2 residual" --seed 42   # and 43; --train-sky fold1
-python scripts/experiments/real_des/patches.py evaluate --config "hough/band2 residual"          # and --train-sky fold1; --sets "length scan"
-python scripts/experiments/real_des/patches.py line-sky --config "hough/band2 residual"
+python scripts/experiments/line_model/run.py train --config "hough/band2 residual" --seed 42   # and 43; --train-sky fold1
+python scripts/experiments/line_model/run.py evaluate --config "hough/band2 residual"          # and --train-sky fold1; --sets "length scan"
+python scripts/experiments/line_model/run.py line-sky --config "hough/band2 residual"
 ```
