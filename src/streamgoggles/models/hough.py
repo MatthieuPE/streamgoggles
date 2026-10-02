@@ -128,9 +128,12 @@ class HoughTransform(nn.Module):
 
 
 def line_counts(mask, grid):
-    """Pixels of a (H, W) mask on each line (`grid`: a `HoughLines`), 0 on
-    lines too short to be valid. Its maximum is the length, in pixels, of a
-    band's longest straight run in the window."""
+    """Pixels of a (H, W) mask on each line (`grid`: a `HoughLines`), weighted
+    as the line weighs them, 0 on lines too short to be valid. A line gathers
+    a strip ``rho_step`` pixels wide (each pixel shares its vote between the
+    two nearest rho bins), so on a band at least that wide the maximum is
+    ``rho_step`` times the length, in pixels, of the band's longest straight
+    run in the window."""
     counts = grid(np.asarray(mask) > 0.5) * np.sqrt(np.maximum(grid.lengths, 1.0))
     return np.where(grid.valid, counts, 0.0)
 

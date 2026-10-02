@@ -216,6 +216,15 @@ TRAINING_SETS = {
         "z": (0.0001, 0.001, "log"),
         "richness": (32.0, 36.0),
     },
+    # the population set as strong as the DES 2018 streams are in the real
+    # DES Y6 data: their copies at Table 1's surface brightness come out 0.5-2
+    # mag stronger than the streams themselves, which lie at 33.0-35.5 on
+    # this scale (scripts/experiments/line_model, des2018)
+    "population des2018": {
+        "age": (9.0, 13.5),
+        "z": (0.0001, 0.001, "log"),
+        "richness": (32.5, 35.5),
+    },
 }
 
 

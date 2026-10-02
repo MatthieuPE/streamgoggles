@@ -22,6 +22,7 @@ and figures.
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks; the bright dwarfs masked; the two line searches combined; a catalogue of tracks; why short streams were missed (the label), and the 2° label | done (2026-10-01) |
 | {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02) |
 | {doc}`long_and_fits` | four long line models per fold; the leads that held, fitted: a distance and a curved track each | done (2026-10-02, branch `line-model-long-fits`) |
+| {doc}`des2018_known` | the DES 2018 streams where DES 2018 found them, each method side by side, along their tracks and without; each against its simulated copies at its strength; why the misses | in progress (2026-10-02, branch `des2018-recovery`) |
 
 ## Conclusions so far
 
@@ -94,4 +95,5 @@ window_level
 line_sky
 line_followup
 long_and_fits
+des2018_known
 ```
