@@ -21,7 +21,7 @@ and figures.
 | {doc}`window_level` | the line model on the copies, without knowing their track and along it, against the per-pixel network and the matched filter's own line search; S/N inputs | done, quick models (2026-10-01) |
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks; the bright dwarfs masked; the two line searches combined; a catalogue of tracks; why short streams were missed (the label), and the 2° label | done (2026-10-01) |
 | {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02) |
-| {doc}`long_and_fits` | four long line models per fold; the leads that held, fitted: a distance and a curved track each | in progress (2026-10-02, branch `line-model-long-fits`) |
+| {doc}`long_and_fits` | four long line models per fold; the leads that held, fitted: a distance and a curved track each | done (2026-10-02, branch `line-model-long-fits`) |
 
 ## Conclusions so far
 
@@ -45,16 +45,22 @@ and figures.
    to**: the band label's 4° minimum made every window holding a shorter
    clear stretch a negative example; with a 2° minimum it finds them
    ({doc}`line_sky`).
-5. **Two models per fold are enough on the copies, but more help on the
-   sky**: four quick models, or one long one, give the line network seven or
-   eight streams by itself and the combination nine — all but Wambelong,
-   Turbio, Molonglo, Ravi and Aliqa Uma, two of which are not in the data
-   ({doc}`line_followup`).
-6. **Beyond DES 2018, three tracks hold**: Leiptr, NGC 1261's stream and
-   Tucana III's extension east of its DES 2018 track (at its distance) —
-   each along its proposed track, with a main sequence in its Hess
-   difference. The other leads were the footprint's edge, depth changes, or
-   lines crossing a known stream ({doc}`line_followup`).
+5. **The robust number is eight of the fourteen DES 2018 streams**, found
+   by the two line searches together at the false-alarm rate of one: ATLAS,
+   Chenab, Elqui, Indus, Jhelum, Phoenix, Tucana III, Willka Yaku — with two
+   or four quick models per fold, or four long ones; one long model per fold
+   found nine, partly by a good draw. Four long models are the most
+   sensitive on the copies (half the near copies at input S/N 7.9). None
+   finds Wambelong, Turbio, Molonglo, Ravi or Aliqa Uma; two of them are not
+   in the data ({doc}`line_followup`, {doc}`long_and_fits`).
+6. **Beyond DES 2018, three tracks hold**, each with a main sequence in its
+   Hess difference ({doc}`line_followup`), and fitted from their stars
+   ({doc}`long_and_fits`): Tucana III continuing 8° east of its DES 2018
+   track at its own distance (m−M 16.7); NGC 1261's stream on its proposed
+   track, at m−M 15.5; and a stream along Leiptr's direction at m−M 15.1,
+   farther than Leiptr's catalogued 6-9 kpc. The other leads were the
+   footprint's edge, depth changes, lines crossing a known stream — and
+   Indus.
 
 ## Where things live
 

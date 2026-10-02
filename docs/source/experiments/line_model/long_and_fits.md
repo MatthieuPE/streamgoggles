@@ -9,11 +9,53 @@ distances: where do they lie, and how far?
 Branch `line-model-long-fits`; code `scripts/experiments/line_model/run.py`
 (`lead_fits`, and the configuration `hough/band2 residual long x4`).
 
-**In short.** <!-- filled in below -->
+**In short.** Four long models per fold are the most sensitive line model
+on the copies, but on the sky the two line searches together find **eight of
+the fourteen DES 2018 streams** with them, as with every other variant but
+one: the single long model's nine was partly a good draw. Eight is the
+robust number — ATLAS, Chenab, Elqui, Indus, Jhelum, Phoenix, Tucana III and
+Willka Yaku. Fitted from their stars, the leads that held become: **Tucana
+III continuing east** of where DES 2018 stopped, at its own distance (m−M
+16.7 against 17.0); **NGC 1261's stream** on its proposed track, at m−M 15.5;
+**a stream along Leiptr's direction at m−M 15.1** (10.5 kpc), farther than
+Leiptr's catalogued 6-9 kpc; and, west of Tucana III, **Indus**. The method
+recovers the control, ATLAS, at m−M 16.8 (16.65 catalogued) and its width.
 
 ## Four long models per fold
 
-<!-- added when the six trainings end -->
+Three more long models per fold (seeds 43-45, 19,200 windows each, about
+four hours each with the six training at once), averaged with the first into
+four per fold (`hough/band2 residual long x4`). On the copies (fold-0 models
+on fold 1; half-recovery input S/N, and the share of bright streams of each
+length found in the length scan of {doc}`line_sky`):
+
+| 2° line model | without the track, near / far | along the track, near / far | DES 2018 copies found, near / far | bright streams found, 4° / 5° / 6° / 8° |
+|---|---|---|---|---|
+| 2 quick models | 8.3 / 12.0 | 7.1 / 8.6 | 88% / 89% | 25% / 75% / 100% / 100% |
+| 4 quick models | 8.3 / 12.2 | 7.1 / 8.5 | 90% / 82% | 25% / 62% / 100% / 100% |
+| 1 long model | 8.1 / 12.4 | 7.4 / 12.0 | 85% / 71% | 0% / 12% / 0% / 25% |
+| **4 long models** | **7.9 / 11.9** | 7.1 / 8.9 | 88% / 78% | 0% / 12% / 38% / 100% |
+
+On the sky (out of fold, as in {doc}`line_sky`):
+
+| DES 2018 streams found beyond chance | line network | both, half rate each | either, its own rate |
+|---|---|---|---|
+| 2 quick models | 6 | 8 | 8 |
+| 4 quick models | 7 | 8 | 9 |
+| 1 long model | 8 | 9 | 9 |
+| **4 long models** | **7**: ATLAS, Chenab, Elqui, Indus, Jhelum, Phoenix, Turranburra | **8** | **9** |
+
+**Four long models are the most sensitive line model on the copies** —
+half the near copies found at an input S/N of 7.9, the far ones at 11.9 —
+and they recover part of the short streams one long model lost (bright
+streams of 6° found at 38%, of 8° at 100%). **On the sky, the two line
+searches together find eight of the fourteen, as with every other variant
+but one**: the single long model's nine was partly a good draw. Eight is the
+robust number: ATLAS, Chenab, Elqui, Indus, Jhelum, Phoenix, Tucana III and
+Willka Yaku, at the false-alarm rate of one search — nine with each search
+at its own (Turranburra, by one line of the line network). The line network
+of four long models finds Phoenix and Jhelum but not Tucana III, which the
+matched filter finds.
 
 ## The leads fitted
 
