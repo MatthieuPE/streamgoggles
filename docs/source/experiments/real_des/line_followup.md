@@ -9,11 +9,71 @@ Branch `line-model-followup`; code `scripts/experiments/real_des/patches.py`
 (`lead_inspection`, and the configurations `hough/band2 residual x4`,
 `s42` and `long`).
 
-**In short.** <!-- filled in below -->
+**In short.** More models help up to two per fold, longer training barely
+— on the copies. On the real sky, **four quick models** give the line
+network seven DES 2018 streams by itself (Jhelum, Indus, Turranburra, and
+Tucana III among them) and **one long model** eight (Phoenix comes back);
+with the matched filter's line search, they find **eight and nine of the
+fourteen** — every stream but Wambelong, Turbio, Molonglo, Ravi and Aliqa
+Uma, two of which are not in the data at all. Looked at one by one, the
+leads of the catalogue split cleanly: **Leiptr, NGC 1261's stream and
+Tucana III's eastern extension hold** — each runs along its proposed track
+and shows a main sequence in the Hess difference, Tucana III's at its own
+distance — while the eastern tracks are the footprint's edge, and the
+"Jhelum extension" and "New-4" were lines crossing those streams, which the
+matching now refuses.
 
 ## More models, longer training
 
-<!-- the comparison is added below -->
+The 2° line model of {doc}`line_sky` is two quick models (4,800 windows)
+per fold. Two more seeds were trained on each fold (`hough/band2 residual
+x4`: four models averaged), and one model per fold four times longer
+(19,200 windows; `hough/band2 residual long`), compared with one quick
+model (`hough/band2 residual s42`, the same seed). On the copies (fold-0
+models on fold 1; half-recovery input S/N, without and along the track,
+and the DES 2018 copies found at full brightness):
+
+| 2° line model | without the track, near / far | along the track, near / far | DES 2018 copies found, near / far |
+|---|---|---|---|
+| 1 quick model | 8.7 / 12.9 | 6.6 / 11.5 | 88% / 79% |
+| 2 quick models | 8.3 / 12.0 | 7.1 / 8.6 | 88% / 89% |
+| 4 quick models | 8.3 / 12.2 | 7.1 / 8.5 | 90% / 82% |
+| 1 long model (19,200 windows) | 8.1 / 12.4 | 7.4 / 12.0 | 85% / 71% |
+
+**From one model to two, the limit improves; from two to four, it does
+not** — as for the per-pixel network ({doc}`labels_normalization`). **Four
+times the training does about what a second model does** for near streams
+(8.1 against 8.7 for one quick model) and loses the short distant ones
+again (far copies found 71% against 79%). Four
+models find Jhelum's copies everywhere (100%, against 88%), but the short
+streams' less often (Tucana III 25% against 50%, Willka Yaku 50% against
+88%): averaging four models dilutes a response to short streams that only
+some of them give.
+
+On the sky (out of fold, as in {doc}`line_sky`):
+
+| DES 2018 streams found beyond chance | line network | both searches, half rate each | either, its own rate |
+|---|---|---|---|
+| 4° label, 2 models | 7: ATLAS, Phoenix, Indus, Jhelum, Chenab, Elqui, Turranburra | 8 | 9 |
+| 2° label, 2 models | 6: ATLAS, Indus, Jhelum, Chenab, Elqui, Tucana III | 8 | 8 |
+| **2° label, 4 models** | **7**: ATLAS, Indus, Jhelum, Chenab, Elqui, Tucana III, Turranburra | **8** | **9** |
+| 2° label, 1 long model (19,200 windows) | **8**: ATLAS, Indus, Jhelum, Chenab, Elqui, Tucana III, Phoenix and Turranburra (one line each) | **9** | **9** |
+
+With four models **Jhelum is found with five lines, Turranburra comes back,
+and Tucana III stays**: the line network alone finds seven, the same
+number as the 4° label but with Tucana III for Phoenix. The matched filter
+finds Phoenix, so the combination of the two searches finds the same eight:
+ATLAS, Chenab, Elqui, Indus, Jhelum, Phoenix, Tucana III, Willka Yaku.
+
+**The long model finds the most on the sky**: eight by the line network
+alone, Phoenix and Turranburra by a single line each, and **nine with the
+matched filter** — every DES 2018 stream but Wambelong, Turbio, Molonglo,
+Ravi and Aliqa Uma. But it is one model per fold, and on the copies it has
+lost what the 2° label gave: the length scan finds bright streams of 4-6°
+at 0-12% again (the two quick 2° models: 25-100%), Tucana III's and Willka
+Yaku's copies at 0%. A single model per fold is a noisy measure — its sky
+result could be a good draw — and the long training may also learn the
+short segments away again; four long models would tell.
 
 ## The leads, one by one
 
@@ -98,6 +158,9 @@ filter's polygon. `patches.py`, `lead_inspection`.*
 | eastern track A (line network) | 89° to New-4, 3.0° | 3.7 (16.0), flat | a broad excess at faint magnitudes | the footprint's edge |
 | eastern track B (line network) | — | 3.5 (17.0), flat | a broad excess at faint magnitudes | the footprint's edge |
 | "Cetus-Palca" (line network) | 20°, 9.0° | 3.5 (15.0), falling | an excess at g ≈ 24 only | not Cetus-Palca (26-35 kpc); depth |
+| **NGC 1261's stream** (line network) | **10°, 11.2°** | 3.2 (15.5) | **a sequence from g ≈ 20.5** | **NGC 1261's stream, as Ibata et al. (2024) trace it** |
+| **Tucana III, east of the DES 2018 track** (line network) | **16°, 3.3°** | **2.9 (17.0)** | **a main sequence from g ≈ 21** | **Tucana III's extension, at its distance** |
+| Tucana III, west of the DES 2018 track (line network) | 22°, 0° | 3.2 (16.0) | a sequence from g ≈ 20 | a streak along the proposed extension, 2° north of the lead |
 
 - **Leiptr** (Ibata et al. 2021) is the one lead that holds: the Hess
   difference shows a main sequence, the shape of a stellar population that
@@ -121,6 +184,35 @@ filter's polygon. `patches.py`, `lead_inspection`.*
   Hess difference shows a weak sequence — not enough to call it a stream.
 - **"Cetus-Palca"** is at the wrong distance (Cetus-Palca lies at 26-35 kpc)
   and its excess lies at the faintest magnitudes only.
+- **NGC 1261's stream** (Ibata et al. 2024): the lead runs along it (10°,
+  over 11°), and the Hess difference shows a sequence whose turnoff, at
+  g ≈ 20.5-21, puts it near m−M 16.5 — the globular cluster NGC 1261 is at
+  m−M 16.1. The band's S/N peaks nearer (15.5), as Leiptr's does: the
+  profile, through the matched filter's changing background with distance,
+  prefers the near distances, and the sequence is the better guide.
+- **Tucana III's extensions** (Ibata et al. 2024), found by the four-model
+  line network beyond the DES 2018 track either side. East, the band's S/N
+  peaks at m−M 17.0 — Tucana III's own distance — and the Hess difference
+  shows a main sequence turning off at g ≈ 21: the stream continues, at its
+  distance, 8° east of where DES 2018 stopped. West, the map shows a streak
+  along the proposed extension itself, about 2° north of the lead, which
+  crosses it at 22°; the Hess difference of the lead holds a sequence too —
+  something is there, which the straight segment fits poorly.
+
+```{image} ../figures/real_des_patches/lead_ngc_1261_s_stream.png
+:alt: NGC 1261's stream: along the proposed track, a sequence in the Hess difference
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/lead_tucana_iii__east_of_its_des_2018_track.png
+:alt: Tucana III east of its DES 2018 track: a peak at its distance and a main sequence
+:width: 100%
+```
+
+```{image} ../figures/real_des_patches/lead_tucana_iii__west_of_its_des_2018_track.png
+:alt: Tucana III west of its DES 2018 track: a streak along the proposed extension, north of the lead
+:width: 100%
+```
 
 ## Reproducing
 

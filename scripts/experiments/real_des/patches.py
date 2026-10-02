@@ -3147,6 +3147,26 @@ LEADS = {
         "compare": "Cetus-Palca.thomas2021",
         "found_by": "the line network",
     },
+    # from the four-model catalogue: Tucana III's extensions (Ibata et al.
+    # 2024) beyond the DES 2018 track, either side, and NGC 1261's stream
+    "Tucana III, west of its DES 2018 track": {
+        "ends": ((339.11, -62.65), (351.0, -61.64)),
+        "distance": 16.29,
+        "compare": "TucanaIII.ibata2024",
+        "found_by": "the line network",
+    },
+    "Tucana III, east of its DES 2018 track": {
+        "ends": ((6.0, -58.76), (19.47, -54.68)),
+        "distance": 16.73,
+        "compare": "TucanaIII.ibata2024",
+        "found_by": "the line network",
+    },
+    "NGC 1261's stream": {
+        "ends": ((48.96, -52.73), (29.30, -58.87)),
+        "distance": 15.23,
+        "compare": "NGC1261.ibata2024",
+        "found_by": "the line network",
+    },
 }
 LEAD_WIDTH_DEG = 0.4  # half-width of the band the profile and the diagram use
 LEAD_OFF_DEG = (1.5, 3.0)  # the flanking bands, either side of the track
@@ -3175,7 +3195,7 @@ def _lead_coordinates(ra, dec, frame):
     return offset, along
 
 
-def lead_inspection():
+def lead_inspection(names=None):
     """For each of LEADS: a zoomed map of the matched filter's excess (S/N)
     at its distance, the matched-filter band significance along it at every
     queried distance (the band against 200 null bands on the calibration
@@ -3231,6 +3251,8 @@ def lead_inspection():
     LEADS_DIR.mkdir(parents=True, exist_ok=True)
     rows = []
     for name, lead in LEADS.items():
+        if names is not None and name not in names:
+            continue
         frame = _lead_frame(lead["ends"])
         length = frame[2]
         arc_ra, arc_dec = _arc(*lead["ends"][0], *lead["ends"][1], 200)
@@ -3437,6 +3459,10 @@ def lead_inspection():
         )
         print(f"{name}: done", flush=True)
     table = pd.DataFrame(rows)
+    if names is not None and (LEADS_DIR / "leads.csv").exists():
+        # keep the rows of the leads not looked at again
+        kept = pd.read_csv(LEADS_DIR / "leads.csv")
+        table = pd.concat([kept[~kept.lead.isin(table.lead)], table], ignore_index=True)
     table.to_csv(LEADS_DIR / "leads.csv", index=False)
     print(table.round(2).to_string(index=False), flush=True)
 

@@ -16,7 +16,7 @@ out of it, and then run over the whole DES footprint with the known streams
 | {doc}`labels_normalization` | quick models: the training label (count or band) and the normalization (window, decoy, Poisson); galaxy masks; patches of the sky | done (2026-09-29, branch `des-clean-training`) |
 | {doc}`window_level` | a network that answers with lines (a Hough transform built in), scored without the track; the matched filter's own line search alongside | done, quick models (2026-10-01, branch `hough-window-model`) |
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks | done (2026-10-01, branch `line-model-sky`) |
-| {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | in progress (2026-10-01, branch `line-model-followup`) |
+| {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02, branch `line-model-followup`) |
 
 How the real catalogue and its masks are built is in
 {doc}`../../narrative/real_des_background`; the code is
@@ -134,6 +134,12 @@ removed from the calibration sky only as a diagnostic. `run.py folds`.*
     one runs along Leiptr (Ibata et al. 2021) and its Hess difference shows
     a main sequence — the others are edges and depth changes
     ({doc}`line_sky`, {doc}`line_followup`).
+12. **With four quick models, or one long one, the line network alone finds
+    seven or eight DES 2018 streams, and the two line searches together
+    nine of the fourteen** — all but Wambelong, Turbio, Molonglo, Ravi and
+    Aliqa Uma. Followed up one by one, three of the catalogue's other tracks
+    hold: Leiptr, NGC 1261's stream and Tucana III's extension east of its
+    DES 2018 track, at its distance ({doc}`line_followup`).
 
 ## What comes next
 
