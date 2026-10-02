@@ -22,7 +22,7 @@ and figures.
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks; the bright dwarfs masked; the two line searches combined; a catalogue of tracks; why short streams were missed (the label), and the 2° label | done (2026-10-01) |
 | {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02) |
 | {doc}`long_and_fits` | four long line models per fold; the leads that held, fitted: a distance and a curved track each | done (2026-10-02, branch `line-model-long-fits`) |
-| {doc}`des2018_known` | the DES 2018 streams where DES 2018 found them, each method side by side, along their tracks and without; each against its simulated copies at its strength; why the misses | in progress (2026-10-02, branch `des2018-recovery`) |
+| {doc}`des2018_known` | the DES 2018 streams where DES 2018 found them, each method side by side, along their tracks and without; each against its simulated copies at its strength; why the misses; training at the streams' strength | done (2026-10-02, branch `des2018-recovery`) |
 
 ## Conclusions so far
 
@@ -62,6 +62,15 @@ and figures.
    farther than Leiptr's catalogued 6-9 kpc. The other leads were the
    footprint's edge, depth changes, lines crossing a known stream — and
    Indus.
+7. **Where DES 2018 found them, the line network finds eight of the fourteen
+   streams along their tracks and six to seven without** (nine and eight with
+   the matched filter's line sums) — and finds them as often as its simulated
+   copies at the same strength predict: the simulations predict how the
+   model does on the real sky. Of the twelve streams in our data, only Aliqa
+   Uma (under the mask of Fornax's outskirts) and Wambelong (S/N 5.2) are
+   found by no line search. The streams are 0.5-2 mag fainter in our data
+   than their copies at Table 1's surface brightness, but training at their
+   strength makes the network less sensitive, not more ({doc}`des2018_known`).
 
 ## Where things live
 
