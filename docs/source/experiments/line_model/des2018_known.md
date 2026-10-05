@@ -10,26 +10,27 @@ is the cause.
 
 Branch `des2018-recovery`; code `scripts/experiments/line_model/run.py`
 (`des2018_known`, `des2018_strength`, `des2018_table`, `des2018_figures`,
-`des2018_training`).
+`des2018_training`); the trainings' configurations `hough/band2 residual des`
+and `hough/band2s5 residual`.
 
 **In short.** Trained only on simulations, the line network (four long
 models per fold) finds **8 of the 14 DES 2018 streams along their known
-tracks** — ATLAS, Chenab, Elqui,
-Jhelum, Phoenix, Tucana III, Turbio and Turranburra — and 7 without knowing
-them, as in the sky search; the matched filter's own line sums find 8 and 6,
-the two together 9 and 8. Of the twelve streams in our data, only Aliqa Uma
-and Wambelong are found by neither line search, by neither test: Aliqa Uma
-has 59% of its band under the mask of Fornax's outskirts, Wambelong is at
-S/N 5.2. **The network finds the real streams about as often as it finds
-their simulated copies at the same strength** (6 found where its copies
-predict 4.1, of the nine streams within the copies' range): the simulations
-predict how the model does on the real sky. What limits it is its
-sensitivity from S/N about 12 down — where it finds half its copies or
-fewer. **The DES 2018 streams are 0.5 to 2 mag fainter in our data than
+tracks** — ATLAS, Chenab, Elqui, Jhelum, Phoenix, Tucana III, Turbio and
+Turranburra — and 7 without knowing them, as in the sky search; the matched
+filter's own line sums find 8 and 6, the two together 9 and 8. Of the
+twelve streams in our data, only Aliqa Uma and Wambelong are found by
+neither line search, by neither test: Aliqa Uma has 59% of its band under
+the mask of Fornax's outskirts, Wambelong is at S/N 5.2. **The network finds
+the real streams about as often as it finds their simulated copies at the
+same strength** (6 found where its copies predict 4.1, of the nine streams
+within the copies' range): the simulations predict how the model does on the
+real sky. **The DES 2018 streams are 0.5 to 2 mag fainter in our data than
 their copies at Table 1's surface brightness**, 33.0 to 35.5 on streamobs's
-scale, where the training stopped at 34.5; but **training at their strength
-makes the network less sensitive, not more** (8 streams along their tracks
-→ 6).
+scale, where the training stopped at 34.5 — but training at their strength
+makes the network less sensitive (8 streams along their tracks → 6). What
+helps is the label: **a line taught only where the stream reaches S/N 5 in
+the window, not 2, gives the best line network so far — 9 of the 14 along
+their tracks and 7 without**, with two quick models per fold.
 
 ## The test
 
@@ -198,76 +199,93 @@ So the misses are of three kinds:
   sensitivity limit of {doc}`window_level` — and the training gave it few
   streams there.
 
-## Training at the streams' strength
+## Training for the DES 2018 streams
 
-The direct lever: train where the real streams are. The same 2° line model,
-two quick models per fold, trained on streams of 32.5 to 35.5 mag/arcsec²
-(`hough/band2 residual des`, the `population des2018` training set) against
-the same models trained on 32 to 34.5 (`hough/band2 residual`), on the
-copies (fold-0 models on fold 1), the sky search and the real streams:
+Two levers on the training, each against the same reference — the 2° line
+model, two quick models per fold, its band label from S/N 2 in the window,
+trained on 32 to 34.5 mag/arcsec² (`hough/band2 residual`) — on the copies
+(fold-0 models on fold 1), the sky search and the real streams:
 
-| two quick models per fold | trained on 32-34.5 | trained on 32.5-35.5 |
-|---|---|---|
-| copies: half found without the track, near / far (input S/N) | **8.3 / 12.0** | 9.4 / 13.9 |
-| copies: half found along the track, near / far | **7.1 / 8.6** | 8.0 / 12.3 |
-| DES 2018 copies found without the track, near / far | **88% / 89%** | 85% / 74% |
-| sky search: line network / both searches / either | 6 / 8 / 8 | 6 / 8 / 8 |
-| DES 2018 streams along their tracks / without | **8** / 6 | 6 / 6 |
+- **training at the streams' strength**: streams of 32.5 to 35.5
+  mag/arcsec², where the real ones lie (`hough/band2 residual des`, the
+  `population des2018` training set);
+- **lines only where they show**: the band label from S/N 5 in the window
+  instead of 2 (`hough/band2s5 residual`, the `band2s5` label); a stream
+  that reaches S/N 5 in no placement is drawn again, so the network is never
+  told "line" where the line cannot be seen. At 32-34.5, 38 of 40 drawn
+  streams still find a placement where they do.
+
+| two quick models per fold | lines from S/N 2, 32-34.5 | lines from S/N 2, 32.5-35.5 | **lines from S/N 5, 32-34.5** |
+|---|---|---|---|
+| copies: half found without the track, near / far (input S/N) | 8.3 / 12.0 | 9.4 / 13.9 | 8.4 / **11.5** |
+| copies: half found along the track, near / far | 7.1 / 8.6 | 8.0 / 12.3 | **6.6 / 8.3** |
+| DES 2018 copies found without the track, near / far | 88% / 89% | 85% / 74% | 85% / **94%** |
+| sky search: line network / both searches / either | 6 / 8 / 8 | 6 / 8 / 8 | **7** / 8 / 8 |
+| **DES 2018 streams along their tracks / without** | 8 / 6 | 6 / 6 | **9 / 7** |
 
 ```{image} ../figures/line_model/des2018_training.png
-:alt: Each DES 2018 stream found or not by the line network trained on 32-34.5 and on 32.5-35.5 mag/arcsec2
-:width: 70%
+:alt: Each DES 2018 stream found or not by the line network under the three trainings
+:width: 100%
 ```
 
 *Each DES 2018 stream, with its S/N in our data and its surface brightness
-on streamobs's scale, found or not by the two trainings' line networks.
+on streamobs's scale, found or not by the three trainings' line networks.
 `run.py`, `des2018_training`.*
 
-**Training at the streams' strength does not help: it makes the network
-less sensitive** — on the copies at every distance, and on the real streams
-along their tracks (Phoenix and Turbio lost), for the same six without them
-and the same sky. The per-pixel network's training down to 36 mag/arcsec²
-failed the same way ({doc}`../real_des/labels_normalization`). Two readings,
-not yet told apart:
-
-- **the label**: the band label calls a stream a line wherever its band
-  reaches S/N 2 in the window, so a fainter training set shows the network
-  more lines it cannot see; taught to answer "line" where nothing shows, it
-  answers more softly everywhere — the level its stream-free windows reach
-  in 1% of them fell from 0.08-0.58 to 0.03-0.19 (fold 0);
-- **the budget**: harder examples may need more than the quick tier's
-  4,800 windows.
+1. **Training at the streams' strength makes the network less sensitive,
+   not more** — on the copies at every distance, and on the real streams
+   along their tracks (Phoenix and Turbio lost). The per-pixel network's
+   training down to 36 mag/arcsec² failed the same way
+   ({doc}`../real_des/labels_normalization`).
+2. **Teaching lines only where they show helps**: on the copies along the
+   track (half found at S/N 6.6 and 8.3, near and far) and far without it
+   (11.5), and on the real streams — **nine of the fourteen along their
+   tracks** (Willka Yaku now found, *p* = 0.002) **and seven without them**
+   (Phoenix back), the best of any line network so far, with two quick
+   models per fold where the four long ones found eight and seven. The
+   network alone now finds along the tracks what it found only together
+   with the matched filter's line sums. The gains on the copies are of the
+   order of the spread between seeds; on the real streams they are one
+   stream each.
+3. **The two levers read together**: a line the network cannot see is worse
+   than no example. Training fainter adds such lines under the S/N-2 label
+   — the level its stream-free windows reach in 1% of them fell from
+   0.08-0.58 to 0.03-0.19 (fold 0), the network answering more softly
+   everywhere; the S/N-5 label removes them. Training at the streams'
+   strength with the S/N-5 label is the combination not yet tried.
 
 ## What it means for the question
 
 - **A network trained only on streamobs simulations finds, without being
-  told where to look, six to seven of the fourteen DES 2018 streams** in our
+  told where to look, seven of the fourteen DES 2018 streams** in our
   matched-filter maps, at one false line per hundred stream-free windows;
-  with the matched filter's own line sums, eight. Along their known tracks,
-  eight; nine with the matched filter's line sums.
+  with the matched filter's own line sums, eight. **Along their known
+  tracks, nine** — the network alone.
 - **Eight is about what this input allows at that false-alarm rate**: the
-  streams it misses without their track are those our data hold at S/N
-  5 or less (Wambelong, Turbio, Turranburra), Aliqa Uma under the Fornax
-  mask, and the two that are not in our data.
+  streams missed without their track are those our data hold at S/N 5 or
+  less (Wambelong, Turbio, Turranburra), Aliqa Uma under the Fornax mask, and
+  the two that are not in our data; Willka Yaku (8.7), found without its
+  track by the matched filter's line sums only, is the one the network
+  could still gain.
 - **The simulations predict the network's results on the real streams**, so
-  the copies are a sound bench to improve it on.
+  the copies are a sound bench to improve it on — and what helped on the
+  copies (the S/N-5 label) helped on the real streams.
 - **What could move the number**, in order of expected gain: the input — our
   selection, a magnitude deeper than DES 2018's, takes Turranburra from S/N
   8.6 to 3.9 ({doc}`../real_des/des2018_reproduction`); the search's masks
   (Aliqa Uma under Fornax's 12 half-light radii); and the network's own
-  sensitivity to short, narrow streams (Willka Yaku, Tucana III), where the
-  matched filter's line sums still do better — the label's S/N threshold is
-  the next lever there.
+  sensitivity: the S/N-5 label with long training, and at the streams'
+  strength.
 
 ## Reproducing
 
 ```bash
 python scripts/experiments/line_model/run.py des2018    # both configurations, ~25 min each, then the figures
 python scripts/experiments/line_model/run.py des2018 --config "hough/band2 residual long x4"
-python scripts/experiments/line_model/run.py train --config "hough/band2 residual des" --seed 42   # 43; --train-sky fold1; ~37 min each, four at once
-python scripts/experiments/line_model/run.py evaluate --config "hough/band2 residual des"           # --train-sky fold1; --sets fainter
-python scripts/experiments/line_model/run.py line-sky --config "hough/band2 residual des"
-python scripts/experiments/line_model/run.py des2018 --config "hough/band2 residual des"            # and "hough/band2 residual"
+python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual" --seed 42   # 43; --train-sky fold1; ~37 min each, four at once; and "hough/band2 residual des"
+python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual"           # --train-sky fold1; --sets fainter
+python scripts/experiments/line_model/run.py line-sky --config "hough/band2s5 residual"
+python scripts/experiments/line_model/run.py des2018 --config "hough/band2s5 residual"            # and "hough/band2 residual"
 ```
 
-The comparison of the two trainings is `des2018_training()` in `run.py`.
+The comparison of the trainings is `des2018_training()` in `run.py`.

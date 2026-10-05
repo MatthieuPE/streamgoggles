@@ -151,6 +151,17 @@ CONFIGS = {
         "training": {"background_fraction": 0.3},
         "training_set": "population des2018",
     },
+    # the 2-degree line model taught lines only where they show: the band
+    # label from S/N 5 in the window instead of 2 -- training on fainter
+    # streams made the model less sensitive (des2018_known.md), as if lines it
+    # could not see taught it to answer softly everywhere
+    "hough/band2s5 residual": {
+        "label": "band2s5",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+    },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
         "label": None,
@@ -3656,12 +3667,14 @@ def des2018_figures(configs=DES2018_CONFIGS):
     return table
 
 
-# The two trainings compared: the same 2-degree line model, two quick models
-# per fold, trained on the population set (32-34.5 mag/arcsec2) and at the
-# DES 2018 streams' strength in our data (32.5-35.5)
+# The trainings compared: the same 2-degree line model, two quick models per
+# fold, its band label from S/N 2 or 5 in the window, trained on the
+# population set (32-34.5 mag/arcsec2) or at the DES 2018 streams' strength in
+# our data (32.5-35.5)
 DES2018_TRAININGS = {
-    "hough/band2 residual": ("trained on 32-34.5", "#88c999"),
-    "hough/band2 residual des": ("trained on 32.5-35.5", "#1b5e20"),
+    "hough/band2 residual": ("lines from S/N 2,\n32-34.5", "#88c999"),
+    "hough/band2 residual des": ("lines from S/N 2,\n32.5-35.5", "#1b5e20"),
+    "hough/band2s5 residual": ("lines from S/N 5,\n32-34.5", "#7b3294"),
 }
 
 
@@ -3722,7 +3735,7 @@ def des2018_training(trainings=DES2018_TRAININGS):
 
     strength = pd.read_csv(DES2018 / "strength.csv").set_index("stream")
     order = strength.sort_values("real_snr", ascending=False).index
-    fig, ax = plt.subplots(figsize=(7.5, 6.8))
+    fig, ax = plt.subplots(figsize=(4.5 + 1.1 * len(trainings) * 2, 6.8))
     x = 0.0
     centres = {"known": [], "blind": []}
     for test in ("known", "blind"):
@@ -3741,7 +3754,7 @@ def des2018_training(trainings=DES2018_TRAININGS):
                 )
             ax.text(x, len(order) - 0.2, f"{int(hits.sum())} of {len(hits)}",
                     ha="center", va="top", fontsize=9)  # fmt: skip
-            ax.text(x, -0.9, label.replace(" on ", "\non "), ha="center",
+            ax.text(x, -0.9, label, ha="center",
                     va="bottom", fontsize=8.5)  # fmt: skip
             centres[test].append(x)
             x += 1.0
