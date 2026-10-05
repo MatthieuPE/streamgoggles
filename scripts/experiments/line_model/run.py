@@ -15,6 +15,7 @@ Steps (from the repository root, streamml environment):
   python scripts/experiments/line_model/run.py figures     # the copies' figures, and the guide's
   python scripts/experiments/line_model/run.py line-sky --config "hough/band2 residual x4"   # the whole sky
   python scripts/experiments/line_model/run.py leads       # the catalogue's leads, one by one
+  python scripts/experiments/line_model/run.py des2018     # the DES 2018 streams where they are
 
 Docs: docs/source/experiments/line_model.
 """
@@ -137,6 +138,29 @@ CONFIGS = {
         "training": {"background_fraction": 0.3},
         "windows": 19200,
         "seeds": [42],
+    },
+    # the 2-degree line model trained on streams as strong as the DES 2018
+    # streams are in our data -- surface brightness 32.5-35.5 instead of
+    # 32-34.5: the copies at Table 1's surface brightness are 0.5-2 mag
+    # stronger than the real streams (des2018_known.md)
+    "hough/band2 residual des": {
+        "label": "band2",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+        "training_set": "population des2018",
+    },
+    # the 2-degree line model taught lines only where they show: the band
+    # label from S/N 5 in the window instead of 2 -- training on fainter
+    # streams made the model less sensitive (des2018_known.md), as if lines it
+    # could not see taught it to answer softly everywhere
+    "hough/band2s5 residual": {
+        "label": "band2s5",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
     },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
@@ -261,7 +285,7 @@ def train(config, seed, train_sky="fold0"):
 
 HOUGH_NULL_WINDOWS = 600  # stream-free windows per queried distance
 HOUGH_FALSE_ALARM = 0.01  # blind test: share of stream-free windows with a line found
-HOUGH_MIN_LENGTH_DEG = 4.0  # a window scores a copy if it holds this much of it
+HOUGH_MIN_LENGTH_DEG = 2.0  # a window scores a copy if it holds this much of it
 # A stream-free window must lie on calibration sky: at least this share of
 # its valid pixels. The per-pixel false-alarm rates are measured on
 # calibration pixels alone; a window reaching into the training-only sky
@@ -270,6 +294,17 @@ HOUGH_MIN_LENGTH_DEG = 4.0  # a window scores a copy if it holds this much of it
 HOUGH_NULL_CALIBRATION = 0.95
 # The lines of a per-pixel model scored as lines (configurations with "lines")
 HOUGH_GRID = {"n_theta": 90, "rho_step": 2.0, "min_pixels": 20}
+
+
+def _run_length_pix(mask, grid):
+    """The length, in pixels, of a band's longest straight run in a window:
+    the most of the mask a line gathers (`line_counts`), over the width of the
+    strip a line gathers, ``rho_step`` pixels. (Before 2026-10-02 the scripts
+    compared `line_counts` itself with 4 degrees: the same windows as 2
+    degrees of run now.)"""
+    from streamgoggles.models.hough import line_counts
+
+    return float(line_counts(mask, grid).max()) / float(grid.rhos[1] - grid.rhos[0])
 
 
 def window_level_sky(eval_sky, image_pix=IMAGE_PIX, label="count"):
@@ -355,6 +390,169 @@ def copy_places(index, stream, sky):
         placed += 1
 
 
+def scoring_models(config, train_sky, seeds=SEEDS):
+    """(models, grid): a configuration's models trained on one sky, in eval
+    mode, and the lines their answers are scored on -- a line model's own;
+    for a per-pixel ensemble (configurations with "lines"), HOUGH_GRID's."""
+    import torch
+
+    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
+
+    # before any model is built: a sparse tensor's coalesce starts OpenMP
+    # workers, which crash with this environment's duplicate libomp
+    configure_torch_threads(num_workers=0)
+    if "hough" in CONFIGS[config]:  # a line model: one answer per line
+        models = load_line_models(config, train_sky, seeds)
+        return models, models[0].hough.grid
+    from streamgoggles.datasets.transforms import QueryDistanceTransform
+    from streamgoggles.models import build_model
+    from streamgoggles.models.hough import HoughLines
+
+    sp = real_des().stream_parameters_module()
+    models = []
+    for part in CONFIGS[config].get("parts", [config]):
+        for seed in CONFIGS[config].get("seeds", seeds):
+            model = build_model(
+                QueryDistanceTransform.n_channels,
+                **{**sp.MODEL, **PIXEL_CONFIGS[part].get("model", {})},
+            )
+            model.load_state_dict(
+                torch.load(pixel_model_stem(part, seed, train_sky).with_suffix(".pt"))
+            )
+            models.append(model.eval())
+    image_pix = CONFIGS[config].get("image_pix", IMAGE_PIX)
+    return models, HoughLines(image_pix, image_pix, **HOUGH_GRID)
+
+
+def line_scorer(config, models, grid):
+    """``score(maps_full, valid, smooth, windows, query)``: the scores of
+    every line through some windows of a sky at one queried distance --
+    {"network": ..., "matched filter": ...}, (n_windows, n_theta, n_rho)
+    each, NaN on lines too short to count.
+
+    The network's score is the line model's probability (the mean over
+    ``models``); for a per-pixel ensemble, the logit of its mean output, minus
+    its median over the window, summed along the line over the square root of
+    the line's length. The matched filter's is the counts at the queried
+    distance minus the smooth local background, over the background's square
+    root, summed the same way (`HoughLines`). ``maps_full``: the sky's
+    channels, full-sky; ``valid``: its valid sky; ``smooth``: its smooth
+    background at the queried distance (`smooth_backgrounds`); ``windows``:
+    `WindowProjection`s.
+    """
+    import numpy as np
+    import torch
+
+    from streamgoggles.datasets.transforms import (
+        QueryDistanceTransform,
+        StreamMapTransform,
+    )
+
+    sp = real_des().stream_parameters_module()
+    chans = channels()
+    norm = normalizer(CONFIGS[config]["normalizer"], chans)
+    transforms = {
+        q: QueryDistanceTransform(
+            StreamMapTransform(normalizer=norm, augment=False),
+            query_grid=sp.QUERY_GRID,
+            step=sp.STEP,
+            query=q,
+        )
+        for q in sp.QUERY_GRID
+    }
+    good_at = {
+        q: next(
+            i
+            for i, c in enumerate(chans)
+            if c["filter"] == "good" and c["distance_modulus"] == q
+        )
+        for q in sp.QUERY_GRID
+    }
+
+    def score(maps_full, valid, smooth, windows, query):
+        inputs, matched, valids = [], [], []
+        for projection in windows:
+            valids.append(projection.valid)
+            valid_at = valid[projection.pixnums]
+            stack = np.stack(
+                [
+                    projection.image(np.where(valid_at, m[projection.pixnums], 0.0))
+                    for m in maps_full
+                ]
+            ).astype(np.float32)
+            sample = {
+                "map_stack": stack,
+                "label_stack": np.zeros_like(stack),
+                "valid_mask": projection.valid,
+                "params": {},
+                "metadata": {"channels": chans},
+            }
+            inputs.append(transforms[query](sample)["map_stack"])
+            background = projection.image(
+                np.where(valid_at, smooth[projection.pixnums], 0.0)
+            )
+            residual = (stack[good_at[query]] - background) / np.sqrt(
+                np.maximum(background, 0.5)
+            )
+            matched.append(grid(np.where(projection.valid, residual, 0.0)))
+        network = []
+        with torch.no_grad():
+            for start in range(0, len(inputs), 32):
+                x = torch.as_tensor(np.stack(inputs[start : start + 32]))
+                if "hough" in CONFIGS[config]:
+                    network.append(
+                        np.mean([torch.sigmoid(m(x))[:, 0].numpy() for m in models], 0)
+                    )
+                    continue
+                answer = np.mean([m(x)[:, 0].numpy() for m in models], 0)
+                answer = np.log(np.clip(answer, 1e-6, 1 - 1e-6))
+                answer -= np.log1p(-np.exp(answer))  # the logit
+                for image, ok in zip(answer, valids[start : start + 32], strict=True):
+                    residual = np.where(ok, image - np.median(image[ok]), 0.0)
+                    network.append(grid(residual)[None])
+        network = np.concatenate(network).astype(np.float32)
+        matched = np.stack(matched).astype(np.float32)
+        network[:, ~grid.valid] = np.nan
+        matched[:, ~grid.valid] = np.nan
+        return {"network": network, "matched filter": matched}
+
+    return score
+
+
+def null_windows(sky):
+    """The stream-free windows of an evaluation sky (`window_level_sky`):
+    HOUGH_NULL_WINDOWS windows centred on random calibration pixels, at least
+    half valid, lying on calibration sky (HOUGH_NULL_CALIBRATION of their
+    valid pixels), unrotated like the tiles -- the same at every call."""
+    import healpy as hp
+    import numpy as np
+
+    from streamgoggles.matched_filter import WindowProjection
+    from streamgoggles.windows import Window
+
+    rng = np.random.default_rng([EVAL_SEED, 7])
+    candidates = np.flatnonzero(sky.calibration)
+    windows = []
+    while len(windows) < HOUGH_NULL_WINDOWS:
+        ra, dec = hp.pix2ang(sky.nside, int(rng.choice(candidates)), lonlat=True)
+        window = Window(
+            center_ra=float(ra),
+            center_dec=float(dec),
+            width_deg=sky.window_deg,
+            height_deg=sky.window_deg,
+        )
+        projection = WindowProjection.for_window(window, sky.pix, sky.valid)
+        if projection.valid.mean() < 0.5:
+            continue
+        on_calibration = projection.image(
+            sky.calibration[projection.pixnums].astype(float)
+        )
+        share = (on_calibration > 0.99)[projection.valid].mean()
+        if share >= HOUGH_NULL_CALIBRATION:
+            windows.append(projection)
+    return windows
+
+
 def evaluate_hough(
     config, seeds=SEEDS, train_sky="fold0", sets=("DES 2018", "distance scan")
 ):
@@ -387,19 +585,11 @@ def evaluate_hough(
       found when at most a fraction 1 / (N_NULL_BANDS + 1) of them score as
       high (the level of `evaluate`'s band tests).
     """
-    import healpy as hp
     import numpy as np
     import pandas as pd
-    import torch
 
     from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
-    from streamgoggles.datasets.transforms import (
-        QueryDistanceTransform,
-        StreamMapTransform,
-    )
-    from streamgoggles.matched_filter import WindowProjection
-    from streamgoggles.models.hough import hough_target, line_counts
-    from streamgoggles.windows import Window
+    from streamgoggles.models.hough import hough_target
 
     configure_torch_threads(num_workers=0)
     rd = real_des()
@@ -407,32 +597,9 @@ def evaluate_hough(
     image_pix = CONFIGS[config].get("image_pix", IMAGE_PIX)
     sky = window_level_sky(EVALUATED_ON[train_sky], image_pix)
     background, injector, pix = sky.background, sky.injector, sky.pix
-    nside, valid, window_deg = sky.nside, sky.valid, sky.window_deg
-    tile_pixels, projections = sky.tile_pixels, sky.projections
-    calibration = sky.calibration
-    chans = channels()
-    norm = normalizer(CONFIGS[config]["normalizer"], chans)
-    models = []
-    if "hough" in CONFIGS[config]:  # a line model: one answer per line
-        models = load_line_models(config, train_sky, seeds)
-        grid = models[0].hough.grid
-    else:  # a per-pixel ensemble, its answer summed along lines
-        from streamgoggles.models import build_model
-        from streamgoggles.models.hough import HoughLines
-
-        for part in CONFIGS[config].get("parts", [config]):
-            for seed in CONFIGS[config].get("seeds", seeds):
-                model = build_model(
-                    QueryDistanceTransform.n_channels,
-                    **{**sp.MODEL, **PIXEL_CONFIGS[part].get("model", {})},
-                )
-                model.load_state_dict(
-                    torch.load(
-                        pixel_model_stem(part, seed, train_sky).with_suffix(".pt")
-                    )
-                )
-                models.append(model.eval())
-        grid = HoughLines(image_pix, image_pix, **HOUGH_GRID)
+    valid, tile_pixels, projections = sky.valid, sky.tile_pixels, sky.projections
+    models, grid = scoring_models(config, train_sky, seeds)
+    score = line_scorer(config, models, grid)
     min_length_pix = HOUGH_MIN_LENGTH_DEG / pix.pixel_scale_deg
     streams = evaluation_streams(sets)
     queries = sorted(
@@ -441,15 +608,7 @@ def evaluate_hough(
             for *_, p in streams
         }
     )
-    transforms = {
-        q: QueryDistanceTransform(
-            StreamMapTransform(normalizer=norm, augment=False),
-            query_grid=sp.QUERY_GRID,
-            step=sp.STEP,
-            query=q,
-        )
-        for q in queries
-    }
+    chans = channels()
     good_at = {
         q: next(
             i
@@ -459,83 +618,14 @@ def evaluate_hough(
         for q in queries
     }
     smooth_background = smooth_backgrounds(background, queries)
-
-    def scores(maps_full, windows, query):
-        """Line scores of the model and of the matched filter, (n, n_theta,
-        n_rho) each, NaN on lines too short to count."""
-        inputs, matched, valids = [], [], []
-        for projection in windows:
-            valids.append(projection.valid)
-            valid_at = valid[projection.pixnums]
-            stack = np.stack(
-                [
-                    projection.image(np.where(valid_at, m[projection.pixnums], 0.0))
-                    for m in maps_full
-                ]
-            ).astype(np.float32)
-            sample = {
-                "map_stack": stack,
-                "label_stack": np.zeros_like(stack),
-                "valid_mask": projection.valid,
-                "params": {},
-                "metadata": {"channels": chans},
-            }
-            inputs.append(transforms[query](sample)["map_stack"])
-            smooth = projection.image(
-                np.where(valid_at, smooth_background[query][projection.pixnums], 0.0)
-            )
-            residual = (stack[good_at[query]] - smooth) / np.sqrt(
-                np.maximum(smooth, 0.5)
-            )
-            matched.append(grid(np.where(projection.valid, residual, 0.0)))
-        network = []
-        with torch.no_grad():
-            for start in range(0, len(inputs), 32):
-                x = torch.as_tensor(np.stack(inputs[start : start + 32]))
-                if "hough" in CONFIGS[config]:
-                    network.append(
-                        np.mean([torch.sigmoid(m(x))[:, 0].numpy() for m in models], 0)
-                    )
-                    continue
-                answer = np.mean([m(x)[:, 0].numpy() for m in models], 0)
-                answer = np.log(np.clip(answer, 1e-6, 1 - 1e-6))
-                answer -= np.log1p(-np.exp(answer))  # the logit
-                for image, ok in zip(answer, valids[start : start + 32], strict=True):
-                    residual = np.where(ok, image - np.median(image[ok]), 0.0)
-                    network.append(grid(residual)[None])
-        network = np.concatenate(network).astype(np.float32)
-        matched = np.stack(matched).astype(np.float32)
-        network[:, ~grid.valid] = np.nan
-        matched[:, ~grid.valid] = np.nan
-        return {"network": network, "matched filter": matched}
-
-    # Stream-free windows: centred on random calibration pixels, at least
-    # half valid, lying on calibration sky, unrotated like the tiles.
-    rng = np.random.default_rng([EVAL_SEED, 7])
-    candidates = np.flatnonzero(calibration)
-    null_windows = []
-    while len(null_windows) < HOUGH_NULL_WINDOWS:
-        ra, dec = hp.pix2ang(nside, int(rng.choice(candidates)), lonlat=True)
-        window = Window(
-            center_ra=float(ra),
-            center_dec=float(dec),
-            width_deg=window_deg,
-            height_deg=window_deg,
-        )
-        projection = WindowProjection.for_window(window, pix, valid)
-        if projection.valid.mean() < 0.5:
-            continue
-        on_calibration = projection.image(calibration[projection.pixnums].astype(float))
-        share = (on_calibration > 0.99)[projection.valid].mean()
-        if share >= HOUGH_NULL_CALIBRATION:
-            null_windows.append(projection)
     background_maps = [
         background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
     ]
+    windows = null_windows(sky)
     null, thresholds, null_rows, null_best = {}, {}, [], {}
     start = time.time()
     for q in queries:
-        null[q] = scores(background_maps, null_windows, q)
+        null[q] = score(background_maps, valid, smooth_background[q], windows, q)
         for scorer, values in null[q].items():
             best = np.nanmax(values.reshape(len(values), -1), axis=1)
             null_best[f"{scorer}|{q:.1f}"] = best
@@ -580,7 +670,7 @@ def evaluate_hough(
                     continue
                 projection = projections[i]
                 inside = projection.image(band[projection.pixnums].astype(float)) > 0.5
-                length = line_counts(inside, grid).max()
+                length = _run_length_pix(inside, grid)
                 if length >= min_length_pix:
                     scored.append(projection)
                     regions.append(hough_target(inside, grid) > 0)
@@ -596,7 +686,9 @@ def evaluate_hough(
                 "n_windows": len(scored),
             }
             if scored:
-                answers = scores(injected["map_full"], scored, query)
+                answers = score(
+                    injected["map_full"], valid, smooth_background[query], scored, query
+                )
                 longest = int(np.argmax(lengths))
                 for scorer, values in answers.items():
                     along = [
@@ -1319,11 +1411,93 @@ def _suffix(mask_objects):
 
 
 def _figure_tag(config):
-    """ "" for LINE_SKY_CONFIG's figures, "_<label>" for another model's
-    ("hough/band2 residual" -> "_band2"), so both sets stay side by side."""
+    """ "" for LINE_SKY_CONFIG's figures, "_<label>[-<variant>]" for another
+    model's ("hough/band2 residual" -> "_band2", "hough/band2 residual long
+    x4" -> "_band2-long-x4"), so each set stays side by side."""
     if config == LINE_SKY_CONFIG:
         return ""
-    return "_" + config.split("/")[1].split()[0]
+    label, *variant = config.split("/")[1].split()
+    return "_" + "-".join([label, *(v for v in variant if v != "residual")])
+
+
+def inference_sky(config, mask_objects=True):
+    """The DES inference sky as the sky search sees it, a namespace:
+    background, pix, nside; valid (the valid sky, less the bright objects'
+    outskirts with ``mask_objects``: `object_mask` with dwarfs brighter than
+    LINE_SKY_DWARF_MV); tiles (the search's windows, half overlapping, over
+    the inference footprint); queries; maps (the channels, full-sky); smooth
+    ({query: the smooth local background}); grid; score ({train sky: the
+    `line_scorer` of the configuration's models trained there}); levels and
+    half ({(train sky, scorer, query): the level the best line of 1% of the
+    models' stream-free windows reaches, and of 0.5%}); and combination (the
+    two searches' false-alarm rate together, each at half its rate)."""
+    import types
+
+    import numpy as np
+    import pandas as pd
+
+    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
+    from streamgoggles.objects_overlap import get_footprint
+    from streamgoggles.windows import tile_footprint
+
+    configure_torch_threads(num_workers=0)
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    background, _, pix = build_sky(
+        "inference", "count", CONFIGS[config].get("image_pix", IMAGE_PIX)
+    )
+    nside = pix.nside
+    valid = background.valid_mask_full
+    if mask_objects:
+        valid = valid & ~rd.object_mask(nside, max_dwarf_mv=LINE_SKY_DWARF_MV)
+    usable = get_footprint("des_yr6_inference", nside=nside)[0]
+    window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
+    tiles = tile_footprint(
+        usable & valid, nside, tile_size_deg=window_deg, stride_deg=window_deg / 2
+    )
+    name = config.replace("/", "_")
+    score, levels = {}, {}
+    for train_sky in ("fold0", "fold1"):
+        models, grid = scoring_models(config, train_sky)
+        score[train_sky] = line_scorer(config, models, grid)
+        null = pd.read_csv(result_dir(train_sky) / f"hough_null_{name}.csv")
+        for row in null.itertuples():
+            levels[(train_sky, row.scorer, round(row.query, 1))] = row.threshold
+    # the combination: each search at half the false-alarm rate, and what the
+    # two give together on the same stream-free windows
+    half, combination = {}, []
+    for train_sky in ("fold0", "fold1"):
+        best = np.load(result_dir(train_sky) / f"hough_null_best_{name}.npz")
+        for q in sorted({float(k.split("|")[1]) for k in best.files}):
+            together = np.zeros(len(best[f"network|{q:.1f}"]), bool)
+            for scorer in ("network", "matched filter"):
+                values = best[f"{scorer}|{q:.1f}"]
+                half[(train_sky, scorer, round(q, 1))] = float(
+                    np.quantile(values, 1 - HOUGH_FALSE_ALARM / 2)
+                )
+                together |= values >= half[(train_sky, scorer, round(q, 1))]
+            combination.append(
+                {"models": train_sky, "query": q, "false_alarm_rate": together.mean()}
+            )
+    queries = list(sp.QUERY_GRID)
+    return types.SimpleNamespace(
+        background=background,
+        pix=pix,
+        nside=nside,
+        valid=valid,
+        tiles=tiles,
+        queries=queries,
+        maps=[
+            background.raw_map_full_dict[c["filter"]][c["distance_modulus"]]
+            for c in channels()
+        ],
+        smooth=smooth_backgrounds(background, queries, valid),
+        grid=grid,
+        score=score,
+        levels=levels,
+        half=half,
+        combination=combination,
+    )
 
 
 def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
@@ -1355,81 +1529,15 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
 
     import numpy as np
     import pandas as pd
-    import torch
     from scipy import ndimage
 
-    from streamgoggles.datasets.stream_map_dataset import configure_torch_threads
-    from streamgoggles.datasets.transforms import (
-        QueryDistanceTransform,
-        StreamMapTransform,
-    )
     from streamgoggles.matched_filter import WindowProjection, _tangent_plane_radec
-    from streamgoggles.objects_overlap import get_footprint, spatial_fold
-    from streamgoggles.windows import tile_footprint
+    from streamgoggles.objects_overlap import spatial_fold
 
-    configure_torch_threads(num_workers=0)
     rd = real_des()
-    sp = rd.stream_parameters_module()
-    background, _, pix = build_sky(
-        "inference", "count", CONFIGS[config].get("image_pix", IMAGE_PIX)
-    )
-    nside = pix.nside
-    valid = background.valid_mask_full
-    if mask_objects:
-        valid = valid & ~rd.object_mask(nside, max_dwarf_mv=LINE_SKY_DWARF_MV)
-    usable = get_footprint("des_yr6_inference", nside=nside)[0]
-    window_deg = pix.image_size_pix[0] * pix.pixel_scale_deg
-    tiles = tile_footprint(
-        usable & valid, nside, tile_size_deg=window_deg, stride_deg=window_deg / 2
-    )
-    chans = channels()
+    sky = inference_sky(config, mask_objects)
+    pix, valid, grid, tiles = sky.pix, sky.valid, sky.grid, sky.tiles
     name = config.replace("/", "_")
-    models, levels = {}, {}
-    for train_sky in ("fold0", "fold1"):
-        models[train_sky] = load_line_models(config, train_sky)
-        null = pd.read_csv(result_dir(train_sky) / f"hough_null_{name}.csv")
-        for row in null.itertuples():
-            levels[(train_sky, row.scorer, round(row.query, 1))] = row.threshold
-    # the combination: each search at half the false-alarm rate, and what the
-    # two give together on the same stream-free windows
-    half, combination = {}, []
-    for train_sky in ("fold0", "fold1"):
-        best = np.load(result_dir(train_sky) / f"hough_null_best_{name}.npz")
-        for q in sorted({float(k.split("|")[1]) for k in best.files}):
-            together = np.zeros(len(best[f"network|{q:.1f}"]), bool)
-            for scorer in ("network", "matched filter"):
-                values = best[f"{scorer}|{q:.1f}"]
-                half[(train_sky, scorer, round(q, 1))] = float(
-                    np.quantile(values, 1 - HOUGH_FALSE_ALARM / 2)
-                )
-                together |= values >= half[(train_sky, scorer, round(q, 1))]
-            combination.append(
-                {"models": train_sky, "query": q, "false_alarm_rate": together.mean()}
-            )
-    grid = models["fold0"][0].hough.grid
-    queries = list(sp.QUERY_GRID)
-    norm = normalizer(CONFIGS[config]["normalizer"], chans)
-    transforms = {
-        q: QueryDistanceTransform(
-            StreamMapTransform(normalizer=norm, augment=False),
-            query_grid=sp.QUERY_GRID,
-            step=sp.STEP,
-            query=q,
-        )
-        for q in queries
-    }
-    good_at = {
-        q: next(
-            i
-            for i, c in enumerate(chans)
-            if c["filter"] == "good" and c["distance_modulus"] == q
-        )
-        for q in queries
-    }
-    smooth_background = smooth_backgrounds(background, queries, valid)
-    maps = [
-        background.raw_map_full_dict[c["filter"]][c["distance_modulus"]] for c in chans
-    ]
     size = pix.image_size_pix[0]
     yy, xx = np.mgrid[0:size, 0:size] - (size - 1) / 2
     print(f"{len(tiles)} tiles", flush=True)
@@ -1441,20 +1549,6 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
         )
         scoring = f"fold{1 - fold}"  # the models that never trained on this fold
         projection = WindowProjection.for_window(tile, pix, valid)
-        valid_at = valid[projection.pixnums]
-        stack = np.stack(
-            [
-                projection.image(np.where(valid_at, m[projection.pixnums], 0.0))
-                for m in maps
-            ]
-        ).astype(np.float32)
-        sample = {
-            "map_stack": stack,
-            "label_stack": np.zeros_like(stack),
-            "valid_mask": projection.valid,
-            "params": {},
-            "metadata": {"channels": chans},
-        }
         ra_grid, dec_grid = _tangent_plane_radec(
             dataclasses.replace(
                 pix,
@@ -1463,25 +1557,13 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
                 rotation_deg=tile.rotation_deg,
             )
         )
-        with torch.no_grad():
-            x = torch.as_tensor(
-                np.stack([transforms[q](dict(sample))["map_stack"] for q in queries])
+        for q in sky.queries:
+            answers = sky.score[scoring](
+                sky.maps, valid, sky.smooth[q], [projection], q
             )
-            network = np.mean(
-                [torch.sigmoid(m(x))[:, 0].numpy() for m in models[scoring]], 0
-            )
-        for k, q in enumerate(queries):
-            smooth = projection.image(
-                np.where(valid_at, smooth_background[q][projection.pixnums], 0.0)
-            )
-            residual = (stack[good_at[q]] - smooth) / np.sqrt(np.maximum(smooth, 0.5))
-            matched = grid(np.where(projection.valid, residual, 0.0))
-            for scorer, values in (
-                ("network", network[k]),
-                ("matched filter", matched),
-            ):
-                values = np.where(grid.valid, values, -np.inf)
-                level = levels[(scoring, scorer, round(q, 1))]
+            for scorer, values in answers.items():
+                values = np.where(grid.valid, values[0], -np.inf)
+                level = sky.levels[(scoring, scorer, round(q, 1))]
                 peaks = (values == ndimage.maximum_filter(values, size=5)) & (
                     values >= level
                 )
@@ -1506,7 +1588,7 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
                             "rho_pix": float(rho),
                             "score": float(values[t, r]),
                             "level": float(level),
-                            "level_half": half[(scoring, scorer, round(q, 1))],
+                            "level_half": sky.half[(scoring, scorer, round(q, 1))],
                             "ra1": float(ra_grid[on][first]),
                             "dec1": float(dec_grid[on][first]),
                             "ra2": float(ra_grid[on][last]),
@@ -1527,7 +1609,7 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
     table.to_csv(
         LINE_SKY / f"detections_{name}{_suffix(mask_objects)}.csv", index=False
     )
-    combination = pd.DataFrame(combination)
+    combination = pd.DataFrame(sky.combination)
     combination.to_csv(LINE_SKY / f"combination_{name}.csv", index=False)
     print(
         "combination, stream-free windows with a line from either search: "
@@ -3055,6 +3137,654 @@ def lead_fits(names=None):
     table.to_csv(LEADS_DIR / "fits.csv", index=False)
 
 
+# The DES 2018 streams where DES 2018 found them, each method side by side:
+# what the streamobs-trained models recover of the streams found by eye
+DES2018 = OUT / "des2018"
+DES2018_CONFIGS = ("hough/band2 residual x4", "hough/band2 residual long x4")
+# Not in our data, even with the paper's own cuts, filter and track
+# (docs: real_des/des2018_reproduction)
+DES2018_NOT_IN_DATA = ("Molonglo", "Ravi")
+
+
+def des2018_known(config="hough/band2 residual long x4", mask_objects=True):
+    """The copies' two tests (`evaluate_hough`) on the real streams, where
+    DES 2018 found them.
+
+    Each stream's band -- within one width of its DES 2018 track (the arc of
+    Shipp et al. 2018, `real_des.detection_tracks`) -- on the inference sky
+    as the sky search sees it (`inference_sky`, the bright objects masked),
+    at the queried distance nearest the stream's own, in the search's windows
+    that hold at least HOUGH_MIN_LENGTH_DEG of it. Each window is scored by
+    the models that never trained on its fold, and by the matched filter's
+    line sums; the lines along the track in a window are those `hough_target`
+    makes of the band there. Against the copies' stream-free windows
+    (`null_windows`, on the calibration sky of the window's fold, scored by
+    the same models):
+
+    - known track: in the window holding the longest stretch of the band, the
+      best line along the track against the same lines in the stream-free
+      windows; found when at most 1 / (N_NULL_BANDS + 1) of them score as
+      high;
+    - blind: found when a line along the track, in any of its windows, scores
+      above the level the best line of HOUGH_FALSE_ALARM of the stream-free
+      windows reaches;
+    - and the combination, as the sky search's: either search at half its
+      rate (for the known track, either p-value at half the level).
+
+    Writes des2018/known_<config>.csv.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from streamgoggles.evaluation.footprint import track_band
+    from streamgoggles.matched_filter import WindowProjection
+    from streamgoggles.models.hough import hough_target
+    from streamgoggles.objects_overlap import get_footprint, spatial_fold
+
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    sky = inference_sky(config, mask_objects)
+    pix, valid, grid = sky.pix, sky.valid, sky.grid
+    usable = get_footprint("des_yr6_inference", nside=sky.nside)[0]
+    min_length_pix = HOUGH_MIN_LENGTH_DEG / pix.pixel_scale_deg
+    projections = [WindowProjection.for_window(t, pix, valid) for t in sky.tiles]
+    folds = spatial_fold(
+        np.array([t.center_ra for t in sky.tiles]), rd.STRIPE_DEG, rd.N_FOLDS
+    )
+    tracks = rd.detection_tracks()
+    scorers = ("network", "matched filter")
+    # each stream's windows on the inference sky, scored out of fold
+    rows, longest = [], {}
+    for name, (width, _, distance, _) in sp.DES_STREAMS.items():
+        query = min(sp.QUERY_GRID, key=lambda q: abs(q - distance))
+        points = _unit(*tracks[name][0])
+        reach = track_band(tracks[name], width, sky.nside) & usable
+        band = reach & valid
+        row = {
+            "config": config,
+            "stream": name,
+            "distance_modulus": distance,
+            "query": query,
+            "width": width,
+            "arc_deg": float(
+                np.degrees(
+                    np.arccos(np.clip((points[1:] * points[:-1]).sum(1), -1, 1))
+                ).sum()
+            ),
+            "input_snr": rd.REAL_INPUT_SNR[name],
+            "band_valid_share": float(band.sum() / max(reach.sum(), 1)),
+            "n_windows": 0,
+        }
+        margins, stretches = {}, []
+        for i, projection in enumerate(projections):
+            on = band[projection.pixnums]
+            if not on.any():
+                continue
+            inside = projection.image(on.astype(float)) > 0.5
+            stretch = _run_length_pix(inside, grid)
+            if stretch < min_length_pix:
+                continue
+            region = hough_target(inside, grid) > 0
+            scoring = f"fold{1 - folds[i]}"
+            answers = sky.score[scoring](
+                sky.maps, valid, sky.smooth[query], [projection], query
+            )
+            along = {s: float(np.nanmax(answers[s][0][region])) for s in scorers}
+            row["n_windows"] += 1
+            for s in scorers:
+                key = (scoring, s, round(query, 1))
+                for rate, levels in (("", sky.levels), (" half", sky.half)):
+                    margins[s + rate] = max(
+                        margins.get(s + rate, -np.inf), along[s] - levels[key]
+                    )
+            stretches.append((stretch, i, scoring, region, along))
+        for s in scorers:
+            row[f"{s} blind margin"] = margins.get(s, np.nan)
+            row[f"{s} blind"] = bool(margins.get(s, -np.inf) >= 0)
+        row["combined blind"] = any(
+            margins.get(s + " half", -np.inf) >= 0 for s in scorers
+        )
+        if stretches:
+            stretch, i, scoring, region, along = max(stretches, key=lambda x: x[0])
+            row.update(
+                {
+                    "longest_deg": stretch * pix.pixel_scale_deg,
+                    "window_ra": sky.tiles[i].center_ra,
+                    "window_dec": sky.tiles[i].center_dec,
+                    "models": scoring,
+                    **{f"{s} along": along[s] for s in scorers},
+                }
+            )
+            longest[name] = (scoring, query, region, along)
+        rows.append(row)
+        print(
+            f"{name}: {row['n_windows']} windows, "
+            + ", ".join(f"{s} blind {row[f'{s} blind']}" for s in scorers),
+            flush=True,
+        )
+    # the known track: against the same lines in the stream-free windows of
+    # the models that scored the stream's longest stretch
+    table = pd.DataFrame(rows).set_index("stream")
+    for train_sky in ("fold0", "fold1"):
+        names = [n for n, v in longest.items() if v[0] == train_sky]
+        if not names:
+            continue
+        fold_sky = window_level_sky(EVALUATED_ON[train_sky], pix.image_size_pix[0])
+        windows = null_windows(fold_sky)
+        maps = [
+            fold_sky.background.raw_map_full_dict[c["filter"]][c["distance_modulus"]]
+            for c in channels()
+        ]
+        queries = sorted({longest[n][1] for n in names})
+        smooth = smooth_backgrounds(fold_sky.background, queries)
+        for q in queries:
+            start = time.time()
+            null = sky.score[train_sky](maps, fold_sky.valid, smooth[q], windows, q)
+            for n in names:
+                _, query, region, along = longest[n]
+                if query != q:
+                    continue
+                for s in scorers:
+                    null_along = np.nanmax(null[s][:, region], axis=1)
+                    exceed = int(np.sum(null_along >= along[s]))
+                    table.loc[n, f"{s} known exceed"] = exceed
+                    table.loc[n, f"{s} known p"] = (1 + exceed) / (1 + len(null_along))
+                    table.loc[n, f"{s} null median"] = float(np.median(null_along))
+            print(
+                f"{train_sky} m-M {q:.1f}: stream-free windows in "
+                f"{time.time() - start:.0f}s",
+                flush=True,
+            )
+        del fold_sky, maps, smooth
+    known_level = 1.0 / (N_NULL_BANDS + 1)
+    for s in scorers:
+        table[f"{s} known"] = table[f"{s} known p"] <= known_level + 1e-12
+    table["combined known"] = (
+        table[[f"{s} known p" for s in scorers]].min(axis=1) <= known_level / 2 + 1e-12
+    )
+    DES2018.mkdir(parents=True, exist_ok=True)
+    table = table.reset_index()
+    table.to_csv(DES2018 / f"known_{config.replace('/', '_')}.csv", index=False)
+    pd.set_option("display.width", 220)
+    print(
+        table[
+            ["stream", "query", "input_snr", "n_windows", "longest_deg"]
+            + [f"{s} {t}" for t in ("known p", "known", "blind") for s in scorers]
+            + ["combined known", "combined blind"]
+        ]
+        .round(3)
+        .to_string(index=False),
+        flush=True,
+    )
+    return table
+
+
+def _copies(config):
+    """The DES 2018 copies of `evaluate_hough` for a configuration, both
+    folds, at Table 1's surface brightness and FAINTER_BY fainter: a row per
+    copy, with its stream and ``fainter`` (0 at Table 1's)."""
+    import pandas as pd
+
+    name = config.replace("/", "_")
+    tables = [
+        pd.read_csv(path)
+        for train_sky in ("fold0", "fold1")
+        for suffix in ("", "__fainter")
+        if (path := result_dir(train_sky) / f"hough_{name}{suffix}.csv").exists()
+    ]
+    copies = pd.concat(tables, ignore_index=True)
+    copies = copies[copies.set.isin(["DES 2018", "fainter"])].copy()
+    parts = copies.stream.str.extract(r"^(?P<stream>.*?)(?: \+(?P<fainter>[\d.]+))?$")
+    copies["stream"] = parts.stream
+    copies["fainter"] = parts.fainter.astype(float).fillna(0.0)
+    return copies
+
+
+def des2018_strength(config="hough/band2 residual long x4"):
+    """How strong each DES 2018 stream is in our data, on the simulation's
+    scale: its copies' median input S/N at Table 1's surface brightness and
+    FAINTER_BY fainter, a line in log S/N against magnitudes fainter (the S/N
+    falls as the flux, 0.4 dex a magnitude), read at the real stream's S/N
+    (`real_des.REAL_INPUT_SNR`) -- how much fainter than Table 1's the real
+    stream is, and its surface brightness on streamobs's scale. Writes
+    des2018/strength.csv."""
+    import numpy as np
+    import pandas as pd
+
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    copies = _copies(config)
+    rows = []
+    for name, (width, length, distance, sb) in sp.DES_STREAMS.items():
+        levels = copies[copies.stream == name].groupby("fainter").input_snr.median()
+        slope, intercept = np.polyfit(levels.index, np.log10(levels.to_numpy()), 1)
+        real = rd.REAL_INPUT_SNR[name]
+        fainter = (np.log10(real) - intercept) / slope if real > 0 else np.nan
+        rows.append(
+            {
+                "stream": name,
+                "distance_modulus": distance,
+                "width": width,
+                "length": length,
+                "table1_sb": sb,
+                "copies_snr": float(levels.loc[0.0]),
+                "real_snr": real,
+                "dex_per_mag": float(slope),
+                "fainter_by": float(fainter),
+                "effective_sb": float(sb + fainter),
+            }
+        )
+    table = pd.DataFrame(rows).sort_values("effective_sb")
+    DES2018.mkdir(parents=True, exist_ok=True)
+    table.to_csv(DES2018 / "strength.csv", index=False)
+    return table
+
+
+def _at_strength(copies, column, snr):
+    """(share, side): the share of a stream's copies found (``column``) at
+    the input S/N ``snr`` -- each brightness's share at the median input S/N
+    of its copies, interpolated in log S/N; beyond the copies' range, the
+    nearest brightness's share, and on which side ("fainter", "brighter")."""
+    import numpy as np
+
+    levels = (
+        copies.groupby("fainter")
+        .agg(snr=("input_snr", "median"), found=(column, "mean"))
+        .sort_values("snr")
+    )
+    if snr < levels.snr.iloc[0]:
+        return float(levels.found.iloc[0]), "fainter"
+    if snr > levels.snr.iloc[-1]:
+        return float(levels.found.iloc[-1]), "brighter"
+    return float(np.interp(np.log(snr), np.log(levels.snr), levels.found)), ""
+
+
+def des2018_table(configs=DES2018_CONFIGS):
+    """The DES 2018 streams, each method side by side, in long form: per
+    stream, configuration, scorer and test (known track, blind), whether the
+    real stream is found (`des2018_known`), and the share of its copies
+    found at its strength in our data (`real_des.REAL_INPUT_SNR`;
+    `_at_strength`). With the per-pixel network's test (the first training,
+    along the known track) and the sky search's verdict (lines along the
+    track beyond chance, `line_sky_summary`). Writes des2018/streams.csv."""
+    import numpy as np
+    import pandas as pd
+
+    rd = real_des()
+    rows = []
+    for config in configs:
+        name = config.replace("/", "_")
+        known = pd.read_csv(DES2018 / f"known_{name}.csv")
+        copies = _copies(config)
+        matches = pd.read_csv(LINE_SKY / f"matches_{name}.csv").set_index("stream")
+        for _, stream in known.iterrows():
+            mine = copies[copies.stream == stream.stream]
+            table1 = mine[mine.fainter == 0]
+            for scorer in ("network", "matched filter", "combined"):
+                for test in ("known", "blind"):
+                    share, side = (np.nan, "")
+                    if scorer != "combined":
+                        share, side = _at_strength(
+                            mine, f"{scorer} {test}", rd.REAL_INPUT_SNR[stream.stream]
+                        )
+                    sky = np.nan
+                    if test == "blind" and f"{scorer} found" in matches:
+                        found = matches.loc[stream.stream]
+                        sky = bool(
+                            found[f"{scorer} found"]
+                            and found[f"{scorer} p"] <= LINE_SKY_SIGNIFICANCE
+                        )
+                    rows.append(
+                        {
+                            "config": config,
+                            "stream": stream.stream,
+                            "distance_modulus": stream.distance_modulus,
+                            "input_snr": rd.REAL_INPUT_SNR[stream.stream],
+                            "scorer": scorer,
+                            "test": test,
+                            "found": bool(stream[f"{scorer} {test}"]),
+                            "copies_at_strength": share,
+                            "copies_side": side,
+                            "copies_table1": float(table1[f"{scorer} {test}"].mean())
+                            if scorer != "combined"
+                            else np.nan,
+                            "copies_table1_snr": float(table1.input_snr.median()),
+                            "sky_search": sky,
+                            "per_pixel": bool(
+                                matches.loc[stream.stream, "per-pixel found"]
+                            ),
+                        }
+                    )
+    table = pd.DataFrame(rows)
+    table.to_csv(DES2018 / "streams.csv", index=False)
+    return table
+
+
+# The methods of the DES 2018 figures: (configuration, scorer) -> label, colour
+DES2018_METHODS = {
+    ("hough/band2 residual long x4", "matched filter"): (
+        "matched-filter\nline sums",
+        "#e07b39",
+    ),
+    ("hough/band2 residual x4", "network"): (
+        "line network,\n4 quick models",
+        "#88c999",
+    ),
+    ("hough/band2 residual long x4", "network"): (
+        "line network,\n4 long models",
+        "#2e8b57",
+    ),
+    ("hough/band2 residual long x4", "combined"): (
+        "both, half\nthe rate each",
+        "#1f6fb4",
+    ),
+}
+
+
+def des2018_figures(configs=DES2018_CONFIGS):
+    """des2018_methods.png: the fourteen DES 2018 streams, strongest in our
+    data first, and which method finds each where DES 2018 found it -- along
+    the known track and without it (`des2018_known`), with the per-pixel
+    network's test (the first training, along the track) for reference.
+    des2018_copies.png: each stream found or not against the share of its
+    copies found at its strength in our data (`des2018_table`)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    des2018_strength()
+    table = des2018_table(configs)
+    streams = (
+        table.drop_duplicates("stream")
+        .sort_values("input_snr", ascending=False)
+        .reset_index(drop=True)
+    )
+    DOC_FIGURES.mkdir(parents=True, exist_ok=True)
+
+    def found(config, scorer, test):
+        chosen = table[
+            (table.config == config) & (table.scorer == scorer) & (table.test == test)
+        ].set_index("stream")
+        return chosen.loc[streams.stream, "found"].to_numpy(bool)
+
+    columns = [("known", "per-pixel network\n(first training)", "#4d4d4d", None)]
+    columns += [
+        ("known", label, colour, key)
+        for key, (label, colour) in DES2018_METHODS.items()
+    ]
+    columns += [
+        ("blind", label, colour, key)
+        for key, (label, colour) in DES2018_METHODS.items()
+    ]
+    fig, ax = plt.subplots(figsize=(12.5, 6.8))
+    x = 0.0
+    centres = {"known": [], "blind": []}
+    for test, label, colour, key in columns:
+        if test == "blind" and not centres["blind"]:
+            x += 0.8  # a gap between the two tests
+        if key is None:
+            hits = (
+                table.drop_duplicates("stream")
+                .set_index("stream")
+                .loc[streams.stream, "per_pixel"]
+                .to_numpy(bool)
+            )
+        else:
+            hits = found(key[0], key[1], test)
+        for y, hit in enumerate(hits):
+            ax.scatter(
+                x,
+                y,
+                s=140,
+                facecolors=colour if hit else "white",
+                edgecolors=colour,
+                linewidths=1.5,
+            )
+        ax.text(
+            x,
+            len(streams) - 0.2,
+            f"{int(hits.sum())} of {len(hits)}",
+            ha="center",
+            va="top",
+            fontsize=9,
+        )
+        ax.text(x, -0.9, label, ha="center", va="bottom", fontsize=8.5)
+        centres[test].append(x)
+        x += 1.0
+    for test, title in (
+        ("known", "along the known track"),
+        ("blind", "without the track (1% false lines per window)"),
+    ):
+        ax.text(
+            np.mean(centres[test]),
+            -2.3,
+            title,
+            ha="center",
+            va="bottom",
+            fontsize=10.5,
+            weight="bold",
+        )
+    ax.set_yticks(range(len(streams)))
+    ax.set_yticklabels(
+        [
+            f"{row.stream}  (S/N {row.input_snr:.1f}, m−M {row.distance_modulus:g})"
+            for row in streams.itertuples()
+        ],
+        fontsize=9,
+    )
+    ax.set_ylim(len(streams) + 0.4, -2.6)
+    ax.set_xlim(-0.6, x - 0.4)
+    ax.set_xticks([])
+    ax.tick_params(length=0)
+    ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(DOC_FIGURES / "des2018_methods.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+
+    # each stream against its copies at its strength
+    panels = [
+        (config, scorer, test)
+        for test in ("known", "blind")
+        for config, scorer in (
+            ("hough/band2 residual long x4", "network"),
+            ("hough/band2 residual long x4", "matched filter"),
+        )
+    ]
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8.6), sharex=True, sharey=True)
+    for ax, (config, scorer, test) in zip(axes.flat, panels, strict=True):
+        chosen = table[
+            (table.config == config)
+            & (table.scorer == scorer)
+            & (table.test == test)
+            & ~table.stream.isin(DES2018_NOT_IN_DATA)
+        ].sort_values("copies_at_strength", ascending=False)
+        label, colour = DES2018_METHODS[(config, scorer)]
+        placed = []  # the labels' boxes so far: (log10 x, y) corners
+        for row in chosen.itertuples():
+            ax.scatter(
+                row.input_snr,
+                row.copies_at_strength,
+                s=70,
+                marker="o"
+                if not row.copies_side
+                else ("<" if row.copies_side == "fainter" else ">"),
+                facecolors=colour if row.found else "white",
+                edgecolors=colour,
+                linewidths=1.5,
+                zorder=3,
+            )
+            # the first of four places beside the point whose box (in log S/N
+            # and share, about 0.02 dex a letter and 0.035 high) meets no other
+            x0, y0 = np.log10(row.input_snr), row.copies_at_strength
+            width = 0.021 * len(row.stream)
+            for dx, dy, side in ((5, 3, "left"), (5, -10, "left"),
+                                 (-5, 3, "right"), (-5, -10, "right")):  # fmt: skip
+                left = x0 + 0.012 if side == "left" else x0 - 0.012 - width
+                bottom = y0 + (0.01 if dy > 0 else -0.045)
+                box = (left, bottom, left + width, bottom + 0.035)
+                if not any(
+                    box[0] < b[2] and b[0] < box[2] and box[1] < b[3] and b[1] < box[3]
+                    for b in placed
+                ):
+                    break
+            placed.append(box)
+            ax.annotate(
+                row.stream,
+                (row.input_snr, row.copies_at_strength),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                ha=side,
+                fontsize=7.5,
+            )
+        ax.set_xscale("log")
+        ax.set_xlim(3, 30)
+        ax.set_xticks([3, 4, 6, 10, 20, 30])
+        ax.set_xticklabels(["3", "4", "6", "10", "20", "30"])
+        ax.minorticks_off()
+        ax.set_ylim(-0.05, 1.08)
+        ax.axhline(0.5, color="#b0b0b0", lw=0.8, ls=":")
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.set_title(
+            f"{label.replace(chr(10), ' ')}, "
+            + ("along the known track" if test == "known" else "without the track"),
+            fontsize=10,
+        )
+    for ax in axes[1]:
+        ax.set_xlabel("the real stream's S/N in our data")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("its copies found at that S/N")
+    fig.suptitle(
+        "The twelve DES 2018 streams in our data against their copies at their "
+        "strength\nfilled: the real stream found; open: missed; ◁ fainter than all "
+        "its copies (the faintest's share, an upper bound), ▷ brighter",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    fig.savefig(DOC_FIGURES / "des2018_copies.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return table
+
+
+# The trainings compared: the same 2-degree line model, two quick models per
+# fold, its band label from S/N 2 or 5 in the window, trained on the
+# population set (32-34.5 mag/arcsec2) or at the DES 2018 streams' strength in
+# our data (32.5-35.5)
+DES2018_TRAININGS = {
+    "hough/band2 residual": ("lines from S/N 2,\n32-34.5", "#88c999"),
+    "hough/band2 residual des": ("lines from S/N 2,\n32.5-35.5", "#1b5e20"),
+    "hough/band2s5 residual": ("lines from S/N 5,\n32-34.5", "#7b3294"),
+}
+
+
+def des2018_training(trainings=DES2018_TRAININGS):
+    """What training at the DES 2018 streams' strength changes, for each
+    configuration of ``trainings``: on the copies (fold-0 models on fold 1:
+    the input S/N where half are found, near and far, and the DES 2018 copies
+    found), on the sky (the DES 2018 streams found beyond chance,
+    `line_sky_summary`), and on the real streams where DES 2018 found them
+    (`des2018_known`). Writes des2018/training.csv and
+    des2018_training.png: each stream found or not by each training."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    rows, known = [], {}
+    for config in trainings:
+        name = config.replace("/", "_")
+        copies = pd.concat(
+            [
+                pd.read_csv(path)
+                for suffix in ("", "__fainter")
+                if (path := result_dir("fold0") / f"hough_{name}{suffix}.csv").exists()
+            ]
+        )
+        copies = copies[copies.set.isin(["DES 2018", "fainter"])]
+        row = {"config": config}
+        for near, part in ((True, "near"), (False, "far")):
+            mine = copies[(copies.distance_modulus < 16.5) == near]
+            for scorer, test in (("network", "blind"), ("network", "known")):
+                rated = mine.assign(detected=mine[f"{scorer} {test}"].astype(float))
+                row[f"{test} half-recovery S/N, {part}"] = half_recovery_snr(rated)
+            row[f"DES 2018 copies found blind, {part}"] = float(
+                mine[mine.set == "DES 2018"]["network blind"].mean()
+            )
+        matches = pd.read_csv(LINE_SKY / f"matches_{name}.csv")
+        significant = {
+            scorer: matches[f"{scorer} found"]
+            & (matches[f"{scorer} p"] <= LINE_SKY_SIGNIFICANCE)
+            for scorer in ("network", "matched filter", "combined")
+        }
+        row["sky: network"] = int(significant["network"].sum())
+        row["sky: both, half rate"] = int(significant["combined"].sum())
+        row["sky: either"] = int(
+            (significant["network"] | significant["matched filter"]).sum()
+        )
+        known[config] = pd.read_csv(DES2018 / f"known_{name}.csv").set_index("stream")
+        for test in ("known", "blind"):
+            row[f"DES 2018 streams, network {test}"] = int(
+                known[config][f"network {test}"].sum()
+            )
+        rows.append(row)
+    table = pd.DataFrame(rows)
+    table.to_csv(DES2018 / "training.csv", index=False)
+
+    strength = pd.read_csv(DES2018 / "strength.csv").set_index("stream")
+    order = strength.sort_values("real_snr", ascending=False).index
+    fig, ax = plt.subplots(figsize=(4.5 + 1.1 * len(trainings) * 2, 6.8))
+    x = 0.0
+    centres = {"known": [], "blind": []}
+    for test in ("known", "blind"):
+        if test == "blind":
+            x += 0.8
+        for config, (label, colour) in trainings.items():
+            hits = known[config].loc[order, f"network {test}"].to_numpy(bool)
+            for y, hit in enumerate(hits):
+                ax.scatter(
+                    x,
+                    y,
+                    s=140,
+                    facecolors=colour if hit else "white",
+                    edgecolors=colour,
+                    linewidths=1.5,
+                )
+            ax.text(x, len(order) - 0.2, f"{int(hits.sum())} of {len(hits)}",
+                    ha="center", va="top", fontsize=9)  # fmt: skip
+            ax.text(x, -0.9, label, ha="center",
+                    va="bottom", fontsize=8.5)  # fmt: skip
+            centres[test].append(x)
+            x += 1.0
+    for test, title in (("known", "along the known track"), ("blind", "without it")):
+        ax.text(np.mean(centres[test]), -2.3, title, ha="center", va="bottom",
+                fontsize=10.5, weight="bold")  # fmt: skip
+    ax.set_yticks(range(len(order)))
+    ax.set_yticklabels(
+        [
+            f"{s}  (S/N {strength.loc[s, 'real_snr']:.1f}, "
+            f"{strength.loc[s, 'effective_sb']:.1f} mag/arcsec²)"
+            if np.isfinite(strength.loc[s, "effective_sb"])
+            else f"{s}  (S/N {strength.loc[s, 'real_snr']:.1f})"
+            for s in order
+        ],
+        fontsize=9,
+    )
+    ax.set_ylim(len(order) + 0.4, -2.6)
+    ax.set_xlim(-0.6, x - 0.4)
+    ax.set_xticks([])
+    ax.tick_params(length=0)
+    ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
+    fig.tight_layout()
+    fig.savefig(DOC_FIGURES / "des2018_training.png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    pd.set_option("display.width", 250)
+    print(table.round(2).T.to_string(), flush=True)
+    return table
+
+
 def hough_figures(train_sky="fold0"):
     """hough_{blind,known}_{sky}.png and hough.csv: the line model, the
     per-pixel network with a line search on top, and the matched filter, on
@@ -3161,7 +3891,16 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
-        "step", choices=["train", "evaluate", "figures", "line-sky", "leads", "fits"]
+        "step",
+        choices=[
+            "train",
+            "evaluate",
+            "figures",
+            "line-sky",
+            "leads",
+            "fits",
+            "des2018",
+        ],
     )
     parser.add_argument("--config", choices=list(CONFIGS))
     parser.add_argument("--seed", type=int, default=SEEDS[0])
@@ -3188,6 +3927,14 @@ if __name__ == "__main__":
         lead_inspection()
     elif arguments.step == "fits":  # the leads that held, fitted
         lead_fits()
+    elif arguments.step == "des2018":  # the DES 2018 streams where they are
+        for config in [arguments.config] if arguments.config else DES2018_CONFIGS:
+            des2018_known(config)
+        if all(
+            (DES2018 / f"known_{c.replace('/', '_')}.csv").exists()
+            for c in DES2018_CONFIGS
+        ):
+            des2018_figures()
     elif arguments.step == "line-sky":  # the line model over the whole DES sky
         config = arguments.config or LINE_SKY_CONFIG
         line_sky(config)

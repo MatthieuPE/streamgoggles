@@ -275,6 +275,13 @@ def build_sky(sky, label, image_pix=IMAGE_PIX):
             "band_min_snr": BAND_MIN_SNR,
             "band_min_length_deg": 2.0,
         },
+        # the 2-degree band label for clearly visible streams only: a line from
+        # S/N 5 in the window (a fainter stream is redrawn, never shown)
+        "band2s5": {
+            "label_policy": "stream_band",
+            "band_min_snr": 5.0,
+            "band_min_length_deg": 2.0,
+        },
         "bandseg": {
             "label_policy": "stream_band",
             "band_min_snr": BAND_MIN_SNR,

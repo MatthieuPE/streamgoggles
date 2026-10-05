@@ -92,9 +92,12 @@ The same DES 2018 copies as in {doc}`../real_des/labels_normalization` — each 
 its Table 1 parameters, 8 places on fold 1, at full brightness and 1 and 1.5
 mag/arcsec² fainter — land on exactly the same places (checked copy by copy),
 so the methods compare copy by copy. Each window covering a copy (the
-half-overlapping tiles of a search), if it holds at least 4° of it, answers
-with one score per line; the lines "along the track" are those the copy's
-band makes there (the label's rule).
+half-overlapping tiles of a search), if it holds at least 2° of it in a
+straight run, answers with one score per line; the lines "along the track"
+are those the copy's band makes there (the label's rule). (This page said
+4° until 2026-10-02: the scripts compared 4° with a line's pixel count,
+which takes in a strip two pixels wide and so counts each degree of run
+twice. The windows, and every result, are the same.)
 
 Three scorers, all on the same windows:
 
