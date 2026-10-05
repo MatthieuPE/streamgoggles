@@ -162,6 +162,17 @@ CONFIGS = {
         "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
         "training": {"background_fraction": 0.3},
     },
+    # both: lines only where they show, on streams as strong as the DES 2018
+    # streams are in our data (32.5-35.5) -- fainter training failed under the
+    # S/N-2 label, perhaps only because of the lines it could not see
+    "hough/band2s5 residual des": {
+        "label": "band2s5",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+        "training_set": "population des2018",
+    },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
         "label": None,
@@ -3675,6 +3686,7 @@ DES2018_TRAININGS = {
     "hough/band2 residual": ("lines from S/N 2,\n32-34.5", "#88c999"),
     "hough/band2 residual des": ("lines from S/N 2,\n32.5-35.5", "#1b5e20"),
     "hough/band2s5 residual": ("lines from S/N 5,\n32-34.5", "#7b3294"),
+    "hough/band2s5 residual des": ("lines from S/N 5,\n32.5-35.5", "#3f007d"),
 }
 
 
