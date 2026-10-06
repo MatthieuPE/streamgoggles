@@ -35,7 +35,10 @@ their tracks and 7 without**, with two quick models per fold. With both
 Wambelong, by a hair, on the sky — and loses far ones: no better overall.
 Longer training (19,200 windows) buys nothing on the DES 2018 streams and
 loses the short streams again, and more short streams in training make the
-network worse at them: the quick S/N-5 models are the ones to keep.
+network worse at them. **Four quick S/N-5 models per fold are the best line
+network so far: ten of the fourteen streams along their tracks, eight
+without, nine in the sky search with the matched filter's line sums** — the
+second pair of seeds confirms the first.
 
 ## The test
 
@@ -348,19 +351,61 @@ trainings of this page, on two to four models per fold — so how much of the
 quick S/N-5 models' lead is theirs, and how much a good draw of seeds, is
 the open question.
 
+## Four quick S/N-5 models per fold
+
+Is the quick S/N-5 models' lead theirs, or a good draw of seeds? Two more
+per fold (seeds 44 and 45), scored alone (`hough/band2s5 residual s44`) and
+averaged with the first two (`hough/band2s5 residual x4`):
+
+| lines from S/N 5, quick models | seeds 42-43 | seeds 44-45 | **all four** |
+|---|---|---|---|
+| copies: half found without the track, near / far (input S/N) | 8.4 / 11.5 | 7.9 / 12.0 | 8.0 / 11.5 |
+| copies: half found along the track, near / far | 6.6 / 8.3 | 6.6 / **7.9** | **5.8** / 8.3 |
+| DES 2018 copies found without the track, near / far | 85% / 94% | 88% / 93% | 88% / 94% |
+| bright streams found without the track, 4° / 5° / 6° / 8° | 62% / 100% / 100% / 100% | 50% / 100% / 100% / 100% | 50% / 100% / 100% / 100% |
+| sky search: line network / both searches / either | 7 / 8 / 8 | **8 / 9 / 9** | **8 / 9 / 9** |
+| **DES 2018 streams along their tracks / without** | 9 / 7 | 9 / **8** | **10 / 8** |
+
+```{image} ../figures/line_model/des2018_seeds.png
+:alt: Each DES 2018 stream found or not by the quick S/N-5 line network, each pair of seeds and all four
+:width: 100%
+```
+
+*Each DES 2018 stream found or not by the quick S/N-5 line network: the
+first pair of models per fold, the second, and all four. `run.py`,
+`des2018_training(DES2018_SEEDS, "seeds")`.*
+
+**The lead holds**: the second pair finds the same nine streams along their
+tracks and the short streams as well (bright 5-8° streams all found, 4° half
+of them), so the S/N-5 label's gain is not a draw. **Four quick models per
+fold are the best line network so far**: **ten of the fourteen DES 2018
+streams along their tracks** — every stream in our data but Aliqa Uma, under
+the Fornax mask, and Indus, which it finds without its track — and **eight
+without**; in the sky search, eight for the network alone and **nine with
+the matched filter's line sums**, both at half the rate. The tenth and the
+eighth are **Wambelong** (S/N 5.2), found by a small margin — along its track
+one stream-free window of 600 scores as high (*p* = 0.003), on the sky two
+lines along it, 1.09 times the level, which chance gives in 1.5% of places —
+but by the second pair and by its average with the first, and before by the
+models trained at the streams' strength: a faint stream at the edge of what
+the network sees, not a single model's accident. Along the track, half the
+near copies are now found at S/N 5.8, near the matched filter's own band
+test (5.2, {doc}`../real_des/labels_normalization`).
+
 ## What it means for the question
 
 - **A network trained only on streamobs simulations finds, without being
-  told where to look, seven of the fourteen DES 2018 streams** in our
+  told where to look, eight of the fourteen DES 2018 streams** in our
   matched-filter maps, at one false line per hundred stream-free windows;
-  with the matched filter's own line sums, eight. **Along their known
-  tracks, nine** — the network alone.
-- **Eight is about what this input allows at that false-alarm rate**: the
-  streams missed without their track are those our data hold at S/N 5 or
-  less (Wambelong, Turbio, Turranburra), Aliqa Uma under the Fornax mask, and
-  the two that are not in our data; Willka Yaku (8.7), found without its
-  track by the matched filter's line sums only, is the one the network
-  could still gain.
+  with the matched filter's own line sums, nine. **Along their known
+  tracks, ten** — the network alone, four quick models per fold with the
+  S/N-5 label: every stream in our data but Aliqa Uma (masked) and Indus
+  (found without its track).
+- **Nine is about what this input allows at that false-alarm rate**: the
+  streams missed without their track are Turbio and Turranburra, at S/N 5
+  and below in our data, Aliqa Uma under the Fornax mask, and the two that
+  are not in our data; Willka Yaku (8.7), found without its track by the
+  matched filter's line sums only, is the one the network could still gain.
 - **The simulations predict the network's results on the real streams**, so
   the copies are a sound bench to improve it on — and what helped on the
   copies (the S/N-5 label) helped on the real streams.
@@ -380,10 +425,11 @@ python scripts/experiments/line_model/run.py train --config "hough/band2s5 resid
 python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual"           # --train-sky fold1; --sets fainter
 python scripts/experiments/line_model/run.py line-sky --config "hough/band2s5 residual"
 python scripts/experiments/line_model/run.py des2018 --config "hough/band2s5 residual"            # and "hough/band2 residual"
+python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual" --seed 44   # 45; both folds; then evaluate / line-sky / des2018 the "hough/band2s5 residual x4" and "s44" ensembles
 python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual short" --seed 42   # 43; --train-sky fold1; ~33 min each, four at once
 python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual long" --seed 42   # 43; --train-sky fold1; ~2h15 each, four at once
 python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual" --sets "length scan"   # and the long models'
 ```
 
 The comparisons are `des2018_training()`, `des2018_training(DES2018_LONG, "long")` and
-`des2018_training(DES2018_SHORT, "short")` in `run.py`.
+`des2018_training(DES2018_SHORT, "short")`, `des2018_training(DES2018_SEEDS, "seeds")` in `run.py`.
