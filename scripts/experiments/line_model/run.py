@@ -212,6 +212,23 @@ CONFIGS = {
         "parts": ["hough/band2s5 residual"],
         "seeds": [42, 43, 44, 45],
     },
+    # the S/N-5 line model with segment lines: the window's lines and those
+    # of nine half-overlapping 48-pixel sub-windows (5.5 degrees), so that a
+    # short stream fills a line of its size (`SegmentLines`)
+    "hough/band2s5 residual seg": {
+        "label": "band2s5",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {
+            "features": 8,
+            "n_theta": 90,
+            "rho_step": 2.0,
+            "min_pixels": 20,
+            "sub_size": 48,
+            "sub_stride": 24,
+        },
+        "training": {"background_fraction": 0.3},
+    },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
         "label": None,
@@ -237,17 +254,19 @@ def hough_parts(config):
     `build_model(kind="hough")` with the configuration's options (backbone
     as the per-pixel models'), and the view turning the label into lines."""
     from streamgoggles.models import build_model
-    from streamgoggles.models.hough import HoughLines, HoughTargetTransform
+    from streamgoggles.models.hough import HoughTargetTransform, line_grid
 
     sp = real_des().stream_parameters_module()
     options = CONFIGS[config]["hough"]
     image_pix = CONFIGS[config].get("image_pix", IMAGE_PIX)
-    grid = HoughLines(
+    grid = line_grid(
         image_pix,
         image_pix,
         options["n_theta"],
         options["rho_step"],
         options["min_pixels"],
+        options.get("sub_size"),
+        options.get("sub_stride"),
     )
 
     def factory(in_channels):
@@ -354,7 +373,7 @@ def _run_length_pix(mask, grid):
     degrees of run now.)"""
     from streamgoggles.models.hough import line_counts
 
-    return float(line_counts(mask, grid).max()) / float(grid.rhos[1] - grid.rhos[0])
+    return float(line_counts(mask, grid).max()) / grid.rho_step
 
 
 def window_level_sky(eval_sky, image_pix=IMAGE_PIX, label="count"):
@@ -1619,7 +1638,7 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
                 )
                 for t, r in zip(*np.nonzero(peaks), strict=True):
                     theta, rho = grid.thetas[t], grid.rhos[r]
-                    line = np.abs(xx * np.cos(theta) + yy * np.sin(theta) - rho) < 1.0
+                    line = grid.line_mask(t, r)  # within its part of the grid
                     on = line & projection.valid
                     if on.sum() < 2:
                         continue
@@ -1636,6 +1655,11 @@ def line_sky(config=LINE_SKY_CONFIG, mask_objects=True):
                             "query": q,
                             "theta_deg": float(np.rad2deg(theta)),
                             "rho_pix": float(rho),
+                            "part": next(
+                                k
+                                for k, c in enumerate(grid.parts)
+                                if c.start <= r < c.stop
+                            ),
                             "score": float(values[t, r]),
                             "level": float(level),
                             "level_half": sky.half[(scoring, scorer, round(q, 1))],
@@ -3738,6 +3762,11 @@ DES2018_SEEDS = {
     "hough/band2s5 residual": ("lines from S/N 5,\nseeds 42-43", "#7b3294"),
     "hough/band2s5 residual s44": ("lines from S/N 5,\nseeds 44-45", "#c2a5cf"),
     "hough/band2s5 residual x4": ("lines from S/N 5,\nall four", "#40004b"),
+}
+# Segment lines against window lines (S/N-5 label, two quick models per fold)
+DES2018_SEG = {
+    "hough/band2s5 residual": ("window lines", "#7b3294"),
+    "hough/band2s5 residual seg": ("window and\nsub-window lines", "#e66101"),
 }
 # What longer training buys the S/N-5 label: two quick models per fold, two
 # long ones, and the four long S/N-2 models per fold (the best before)

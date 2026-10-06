@@ -38,7 +38,9 @@ loses the short streams again, and more short streams in training make the
 network worse at them. **Four quick S/N-5 models per fold are the best line
 network so far: ten of the fourteen streams along their tracks, eight
 without, nine in the sky search with the matched filter's line sums** — the
-second pair of seeds confirms the first.
+second pair of seeds confirms the first. **Segment lines** — the lines of
+nine sub-windows beside the window's — **add the faint, long and wide
+streams**: the network alone finds nine on the sky, either search eleven.
 
 ## The test
 
@@ -392,20 +394,75 @@ the network sees, not a single model's accident. Along the track, half the
 near copies are now found at S/N 5.8, near the matched filter's own band
 test (5.2, {doc}`../real_des/labels_normalization`).
 
+## Segment lines
+
+A 4° stream fills a third of a window-long line, and the line's sum is
+divided by the square root of all its pixels. The window's lines and those of
+nine half-overlapping sub-windows of 48 pixels (5.5°, every 24 pixels) side
+by side (`SegmentLines`, `streamgoggles.models.hough`): each sub-window's
+lines are their own columns of the grid, with empty columns between parts so
+that the line network's convolutions, the peak finding and the target never
+mix two parts; a sub-window's lines hold a target only where the label runs
+16 pixels along one. The matched filter's line search uses the same lines.
+The S/N-5 model, two quick models per fold, same seeds
+(`hough/band2s5 residual seg`):
+
+| lines from S/N 5, two quick models per fold | window lines | window and sub-window lines |
+|---|---|---|
+| copies: half found without the track, near / far (input S/N) | 8.4 / 11.5 | **7.7 / 11.2** |
+| copies: half found along the track, near / far | **6.6** / 8.3 | 7.3 / **8.2** |
+| DES 2018 copies found without the track, near / far | 85% / **94%** | **90%** / 88% |
+| bright streams found without the track, 4° / 5° / 6° / 8° | **62% / 100% / 100%** / 100% | 50% / 62% / 88% / 100% |
+| sky search: line network / matched-filter lines / both / either | 7 / 6 / 8 / 8 | **9 / 8 / 9 / 11** |
+| **DES 2018 streams along their tracks / without** | 9 / 7 | **10 / 8** |
+
+```{image} ../figures/line_model/des2018_seg.png
+:alt: Each DES 2018 stream found or not by the S/N-5 line network with window lines and with sub-window lines too
+:width: 85%
+```
+
+*Each DES 2018 stream found or not by the S/N-5 line network with window
+lines, and with the sub-windows' lines too. `run.py`,
+`des2018_training(DES2018_SEG, "seg")`.*
+
+1. **Segment lines help the search without the track**: half the copies
+   found at S/N 7.7 and 11.2 (near and far) against 8.4 and 11.5, and on the
+   sky **the line network alone finds nine** of the fourteen — Turbio
+   (*p* = 0.04 against random tracks) and Turranburra (0.03) added to the
+   seven — **the matched filter's segment lines eight** (Indus and Wambelong
+   added), both at half the rate nine, **either at its own rate eleven**:
+   all but Aliqa Uma, under the Fornax mask, and the two not in our data.
+   Along their tracks, ten (Indus added).
+2. **Not where expected**: the bright short streams are found no better
+   without their track (5°: 62% against 100%), the near copies along the
+   track a little worse. The gain is on the long, faint and wide streams —
+   Turbio (15°, S/N 5.1), Turranburra (17°, 3.9), Indus (20°, 0.83° wide) —
+   likely because their signal is patchy along the track: a sub-window line
+   can pick the stretch that stands out, where a window line averages it
+   with the stretch that does not.
+3. **More lines on the sky**: 552 network lines and 1,620 matched-filter
+   lines above their levels, against 223 and 430. The level is set so that 1%
+   of stream-free windows hold a line, whatever their number of lines, so
+   the extra lines come from windows holding structure — each structure now
+   cut into several segments; the chance test against random tracks counts
+   them. Turbio and Turranburra pass it narrowly.
+
 ## What it means for the question
 
 - **A network trained only on streamobs simulations finds, without being
-  told where to look, eight of the fourteen DES 2018 streams** in our
-  matched-filter maps, at one false line per hundred stream-free windows;
-  with the matched filter's own line sums, nine. **Along their known
-  tracks, ten** — the network alone, four quick models per fold with the
-  S/N-5 label: every stream in our data but Aliqa Uma (masked) and Indus
-  (found without its track).
-- **Nine is about what this input allows at that false-alarm rate**: the
-  streams missed without their track are Turbio and Turranburra, at S/N 5
-  and below in our data, Aliqa Uma under the Fornax mask, and the two that
-  are not in our data; Willka Yaku (8.7), found without its track by the
-  matched filter's line sums only, is the one the network could still gain.
+  told where to look, eight to nine of the fourteen DES 2018 streams** in
+  our matched-filter maps, at one false line per hundred stream-free
+  windows: eight with four quick S/N-5 models per fold, nine on the sky
+  with segment lines (two quick models per fold); with the matched
+  filter's own line sums, nine, and eleven with either at its own rate.
+  **Along their known tracks, ten** — the network alone: every stream in
+  our data but Aliqa Uma (masked) and one more (Indus with window lines,
+  Wambelong with segment lines).
+- **What this input allows**: with segment lines, either search finds
+  every stream in our data but Aliqa Uma, under the Fornax mask — Turbio
+  and Turranburra narrowly; Willka Yaku (8.7) and Wambelong (5.2), found by
+  the matched filter's segment lines, are the ones the network could still
+  gain.
 - **The simulations predict the network's results on the real streams**, so
   the copies are a sound bench to improve it on — and what helped on the
   copies (the S/N-5 label) helped on the real streams.
@@ -425,6 +482,7 @@ python scripts/experiments/line_model/run.py train --config "hough/band2s5 resid
 python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual"           # --train-sky fold1; --sets fainter
 python scripts/experiments/line_model/run.py line-sky --config "hough/band2s5 residual"
 python scripts/experiments/line_model/run.py des2018 --config "hough/band2s5 residual"            # and "hough/band2 residual"
+python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual seg" --seed 42   # 43; both folds; ~46 min each, four at once
 python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual" --seed 44   # 45; both folds; then evaluate / line-sky / des2018 the "hough/band2s5 residual x4" and "s44" ensembles
 python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual short" --seed 42   # 43; --train-sky fold1; ~33 min each, four at once
 python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual long" --seed 42   # 43; --train-sky fold1; ~2h15 each, four at once
@@ -432,4 +490,5 @@ python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 re
 ```
 
 The comparisons are `des2018_training()`, `des2018_training(DES2018_LONG, "long")` and
-`des2018_training(DES2018_SHORT, "short")`, `des2018_training(DES2018_SEEDS, "seeds")` in `run.py`.
+`des2018_training(DES2018_SHORT, "short")`, `des2018_training(DES2018_SEEDS, "seeds")`,
+`des2018_training(DES2018_SEG, "seg")` in `run.py`.

@@ -3,14 +3,17 @@
 import numpy as np
 import pytest
 import torch
+from scipy import ndimage
 
 from streamgoggles.models.hough import (
     HoughLines,
     HoughTargetTransform,
     HoughTransform,
     HoughUNet,
+    SegmentLines,
     hough_matrix,
     hough_target,
+    line_counts,
 )
 
 
@@ -140,3 +143,102 @@ def test_build_model_chooses_by_options():
         build_model(7, kind="hough")
     with pytest.raises(ValueError):
         build_model(7, kind="transformer")
+
+
+def segment_image(size, theta_deg, centre, length, half_width=1.0):
+    """A straight band of ``length`` pixels through ``centre`` (x, y, pixels
+    from the image centre) at angle theta (its normal), as `line_image`."""
+    y, x = np.mgrid[0:size, 0:size]
+    x = x - (size - 1) / 2 - centre[0]
+    y = y - (size - 1) / 2 - centre[1]
+    theta = np.deg2rad(theta_deg)
+    across = x * np.cos(theta) + y * np.sin(theta)
+    along = -x * np.sin(theta) + y * np.cos(theta)
+    return ((np.abs(across) < half_width) & (np.abs(along) <= length / 2)).astype(float)
+
+
+def test_segment_lines_hold_the_window_lines_and_nine_sub_windows():
+    full = HoughLines(96, 96)
+    grid = SegmentLines(96, 96, sub_size=48, sub_stride=24)
+    assert len(grid.parts) == 10  # the window and 3 x 3 sub-windows
+    first = grid.parts[0]
+    np.testing.assert_allclose(grid.lengths[:, first], full.lengths)
+    image = np.random.default_rng(1).normal(size=(96, 96))
+    np.testing.assert_allclose(grid(image)[:, first], full(image), atol=1e-12)
+    # the columns between parts hold no line
+    between = np.ones(grid.shape[1], bool)
+    for columns in grid.parts:
+        between[columns] = False
+    assert between.sum() == 2 * 9
+    assert not grid.valid[:, between].any()
+    # every pixel of the window votes once per theta in each part it lies in
+    in_parts = 1 + sum(
+        1
+        for row in (0, 24, 48)
+        for col in (0, 24, 48)
+        if row <= 0 < row + 48 and col <= 0 < col + 48
+    )
+    votes = np.asarray(
+        grid.matrix.multiply(
+            np.sqrt(np.maximum(grid.lengths.ravel(), 1.0))[:, None]
+        ).sum(axis=0)
+    ).ravel()
+    assert votes[0] == pytest.approx(90.0 * in_parts)
+
+
+def test_a_short_stream_stands_out_more_on_segment_lines():
+    """A 30-pixel stream in one corner: its best sub-window line gathers it
+    over fewer background pixels than any window-long line."""
+    grid = SegmentLines(96, 96, sub_size=48, sub_stride=24)
+    image = 5.0 * segment_image(96, 30.0, (-24.0, -24.0), 30) + np.random.default_rng(
+        2
+    ).normal(scale=0.1, size=(96, 96))
+    sums = np.where(grid.valid, grid(image), -np.inf)
+    window = sums[:, grid.parts[0]].max()
+    segments = max(sums[:, columns].max() for columns in grid.parts[1:])
+    assert segments > 1.3 * window
+
+
+def test_line_mask_follows_the_line_inside_its_part():
+    grid = SegmentLines(96, 96, sub_size=48, sub_stride=24)
+    columns = grid.parts[1]  # the first sub-window: rows and columns 0-47
+    t = 30
+    r = columns.start + int(np.nanargmin(np.abs(grid.rhos[columns])))
+    mask = grid.line_mask(t, r)
+    assert mask.any()
+    assert not mask[48:, :].any() and not mask[:, 48:].any()
+    # the pixels the line's own row weighs lie on the mask (or one pixel off)
+    weights = grid.matrix[t * grid.shape[1] + r].toarray().reshape(96, 96)
+    assert (weights > 0.25 / np.sqrt(grid.lengths[t, r]))[
+        ~ndimage.binary_dilation(mask)
+    ].sum() == 0
+
+
+def test_window_line_mask_is_the_full_line():
+    grid = HoughLines(64, 64)
+    t, r = 20, 40
+    np.testing.assert_array_equal(
+        grid.line_mask(t, r),
+        line_image(64, np.rad2deg(grid.thetas[t]), grid.rhos[r]) > 0,
+    )
+
+
+def test_segment_target_marks_only_the_parts_the_stream_runs_through():
+    grid = SegmentLines(96, 96, sub_size=48, sub_stride=24)
+    label = segment_image(96, 60.0, (-24.0, -24.0), 30, half_width=2.0)
+    target = hough_target(label, grid)
+    counts = line_counts(label, grid)
+    for columns, least in zip(grid.parts, grid.part_min_counts, strict=True):
+        marked = target[:, columns].any()
+        assert marked == (counts[:, columns].max() >= max(least, 1e-9))
+    assert target[:, grid.parts[0]].any()  # the window's own lines too
+    assert not target[:, grid.parts[-1]].any()  # the far corner: nothing
+
+
+def test_segment_model_outputs_one_logit_per_segment_line():
+    model = HoughUNet(
+        7, 96, features=4, depth=1, base_width=4, sub_size=48, sub_stride=24
+    )
+    out = model(torch.zeros(2, 7, 96, 96))
+    assert tuple(out.shape) == (2, 1, *model.hough.grid.shape)
+    assert isinstance(model.hough.grid, SegmentLines)
