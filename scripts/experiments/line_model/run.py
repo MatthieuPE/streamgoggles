@@ -162,6 +162,29 @@ CONFIGS = {
         "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
         "training": {"background_fraction": 0.3},
     },
+    # both: lines only where they show, on streams as strong as the DES 2018
+    # streams are in our data (32.5-35.5) -- fainter training failed under the
+    # S/N-2 label, perhaps only because of the lines it could not see
+    "hough/band2s5 residual des": {
+        "label": "band2s5",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+        "training_set": "population des2018",
+    },
+    # the S/N-5 label at the long tier (19,200 windows), two models per fold:
+    # what longer training buys the best quick line model -- and whether it
+    # keeps the short streams one long S/N-2 model per fold lost
+    "hough/band2s5 residual long": {
+        "label": "band2s5",
+        "normalizer": "residual",
+        "loss": "bce",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "training": {"background_fraction": 0.3},
+        "windows": 19200,
+        "seeds": [42, 43],
+    },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
         "label": None,
@@ -3675,17 +3698,26 @@ DES2018_TRAININGS = {
     "hough/band2 residual": ("lines from S/N 2,\n32-34.5", "#88c999"),
     "hough/band2 residual des": ("lines from S/N 2,\n32.5-35.5", "#1b5e20"),
     "hough/band2s5 residual": ("lines from S/N 5,\n32-34.5", "#7b3294"),
+    "hough/band2s5 residual des": ("lines from S/N 5,\n32.5-35.5", "#3f007d"),
+}
+# What longer training buys the S/N-5 label: two quick models per fold, two
+# long ones, and the four long S/N-2 models per fold (the best before)
+DES2018_LONG = {
+    "hough/band2s5 residual": ("lines from S/N 5,\n2 quick models", "#7b3294"),
+    "hough/band2s5 residual long": ("lines from S/N 5,\n2 long models", "#3f007d"),
+    "hough/band2 residual long x4": ("lines from S/N 2,\n4 long models", "#2e8b57"),
 }
 
 
-def des2018_training(trainings=DES2018_TRAININGS):
-    """What training at the DES 2018 streams' strength changes, for each
-    configuration of ``trainings``: on the copies (fold-0 models on fold 1:
-    the input S/N where half are found, near and far, and the DES 2018 copies
-    found), on the sky (the DES 2018 streams found beyond chance,
-    `line_sky_summary`), and on the real streams where DES 2018 found them
-    (`des2018_known`). Writes des2018/training.csv and
-    des2018_training.png: each stream found or not by each training."""
+def des2018_training(trainings=DES2018_TRAININGS, name="training"):
+    """The line network under several trainings, for each configuration of
+    ``trainings``: on the copies (fold-0 models on fold 1: the input S/N
+    where half are found, near and far; the DES 2018 copies found; and, if
+    evaluated, the bright streams of the length scan found by length), on
+    the sky (the DES 2018 streams found beyond chance, `line_sky_summary`),
+    and on the real streams where DES 2018 found them (`des2018_known`).
+    Writes des2018/<name>.csv and des2018_<name>.png: each stream found or
+    not under each training."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -3695,12 +3727,12 @@ def des2018_training(trainings=DES2018_TRAININGS):
 
     rows, known = [], {}
     for config in trainings:
-        name = config.replace("/", "_")
+        name_ = config.replace("/", "_")
         copies = pd.concat(
             [
                 pd.read_csv(path)
                 for suffix in ("", "__fainter")
-                if (path := result_dir("fold0") / f"hough_{name}{suffix}.csv").exists()
+                if (path := result_dir("fold0") / f"hough_{name_}{suffix}.csv").exists()
             ]
         )
         copies = copies[copies.set.isin(["DES 2018", "fainter"])]
@@ -3713,7 +3745,7 @@ def des2018_training(trainings=DES2018_TRAININGS):
             row[f"DES 2018 copies found blind, {part}"] = float(
                 mine[mine.set == "DES 2018"]["network blind"].mean()
             )
-        matches = pd.read_csv(LINE_SKY / f"matches_{name}.csv")
+        matches = pd.read_csv(LINE_SKY / f"matches_{name_}.csv")
         significant = {
             scorer: matches[f"{scorer} found"]
             & (matches[f"{scorer} p"] <= LINE_SKY_SIGNIFICANCE)
@@ -3724,14 +3756,25 @@ def des2018_training(trainings=DES2018_TRAININGS):
         row["sky: either"] = int(
             (significant["network"] | significant["matched filter"]).sum()
         )
-        known[config] = pd.read_csv(DES2018 / f"known_{name}.csv").set_index("stream")
+        known[config] = pd.read_csv(DES2018 / f"known_{name_}.csv").set_index("stream")
         for test in ("known", "blind"):
             row[f"DES 2018 streams, network {test}"] = int(
                 known[config][f"network {test}"].sum()
             )
+        scan = result_dir("fold0") / f"hough_{name_}__length-scan.csv"
+        if scan.exists():
+            bright = pd.read_csv(scan)
+            bright = bright[
+                bright.stream.str.endswith(f"SB {_patches.LENGTH_SCAN['sb'][0]:g}")
+            ]
+            length = bright.stream.str.split().str[1].astype(float)
+            for degrees in (4.0, 5.0, 6.0, 8.0):
+                row[f"bright {degrees:g} deg streams found blind"] = float(
+                    bright[length == degrees]["network blind"].mean()
+                )
         rows.append(row)
     table = pd.DataFrame(rows)
-    table.to_csv(DES2018 / "training.csv", index=False)
+    table.to_csv(DES2018 / f"{name}.csv", index=False)
 
     strength = pd.read_csv(DES2018 / "strength.csv").set_index("stream")
     order = strength.sort_values("real_snr", ascending=False).index
@@ -3778,7 +3821,7 @@ def des2018_training(trainings=DES2018_TRAININGS):
     ax.tick_params(length=0)
     ax.spines[["top", "right", "left", "bottom"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(DOC_FIGURES / "des2018_training.png", dpi=110, bbox_inches="tight")
+    fig.savefig(DOC_FIGURES / f"des2018_{name}.png", dpi=110, bbox_inches="tight")
     plt.close(fig)
     pd.set_option("display.width", 250)
     print(table.round(2).T.to_string(), flush=True)
