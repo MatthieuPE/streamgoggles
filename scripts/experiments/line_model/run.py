@@ -196,6 +196,22 @@ CONFIGS = {
         "training": {"background_fraction": 0.3},
         "training_set": "population short",
     },
+    # the quick S/N-5 models' seed spread: two more per fold (44, 45), alone
+    # and averaged with the first two -- how much of their lead is a good draw
+    "hough/band2s5 residual s44": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "parts": ["hough/band2s5 residual"],
+        "seeds": [44, 45],
+    },
+    "hough/band2s5 residual x4": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {"features": 8, "n_theta": 90, "rho_step": 2.0, "min_pixels": 20},
+        "parts": ["hough/band2s5 residual"],
+        "seeds": [42, 43, 44, 45],
+    },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
         "label": None,
@@ -3716,6 +3732,12 @@ DES2018_TRAININGS = {
 DES2018_SHORT = {
     "hough/band2s5 residual": ("lengths uniform,\n4-30°", "#7b3294"),
     "hough/band2s5 residual short": ("lengths log-uniform,\n4-30°", "#c51b7d"),
+}
+# The quick S/N-5 models' seeds: the first pair, the second, and all four
+DES2018_SEEDS = {
+    "hough/band2s5 residual": ("lines from S/N 5,\nseeds 42-43", "#7b3294"),
+    "hough/band2s5 residual s44": ("lines from S/N 5,\nseeds 44-45", "#c2a5cf"),
+    "hough/band2s5 residual x4": ("lines from S/N 5,\nall four", "#40004b"),
 }
 # What longer training buys the S/N-5 label: two quick models per fold, two
 # long ones, and the four long S/N-2 models per fold (the best before)
