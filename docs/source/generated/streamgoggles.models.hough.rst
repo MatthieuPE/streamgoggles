@@ -11,6 +11,7 @@ streamgoggles.models.hough
       hough_matrix
       hough_target
       line_counts
+      line_grid
    
    .. rubric:: Classes
 
@@ -20,4 +21,5 @@ streamgoggles.models.hough
       HoughTargetTransform
       HoughTransform
       HoughUNet
+      SegmentLines
    
