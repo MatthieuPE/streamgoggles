@@ -225,6 +225,15 @@ TRAINING_SETS = {
         "z": (0.0001, 0.001, "log"),
         "richness": (32.5, 35.5),
     },
+    # the population set with more short streams: lengths log-uniform over the
+    # same 4-30 degrees (34% under 8 degrees, against 15% uniform) -- trained
+    # long, the line model loses the short streams a uniform range leaves rare
+    # (scripts/experiments/line_model, des2018)
+    "population short": {
+        "age": (9.0, 13.5),
+        "z": (0.0001, 0.001, "log"),
+        "length": (4.0, 30.0, "log"),
+    },
 }
 
 

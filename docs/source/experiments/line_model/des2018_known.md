@@ -34,7 +34,8 @@ their tracks and 7 without**, with two quick models per fold. With both
 (the S/N-5 label at the streams' strength) the network gains near streams —
 Wambelong, by a hair, on the sky — and loses far ones: no better overall.
 Longer training (19,200 windows) buys nothing on the DES 2018 streams and
-loses the short streams again: the quick S/N-5 models are the ones to keep.
+loses the short streams again, and more short streams in training make the
+network worse at them: the quick S/N-5 models are the ones to keep.
 
 ## The test
 
@@ -309,6 +310,44 @@ not by the label; likely because long streams dominate a training range of
 Three more long models per fold are not worth training; the quick S/N-5
 models are the line network to keep.
 
+## More short streams in training
+
+If the long training loses the short streams because a uniform 4-30° range
+holds few of them (15% under 8°), training on more should keep them. The
+S/N-5 model, two quick models per fold, with lengths log-uniform over the
+same 4-30° (34% under 8°, median 11° against 17°; the `population short`
+training set, `hough/band2s5 residual short`):
+
+| two quick models per fold, lines from S/N 5 | lengths uniform | lengths log-uniform |
+|---|---|---|
+| copies: half found without the track, near / far (input S/N) | 8.4 / **11.5** | **8.3** / 11.9 |
+| copies: half found along the track, near / far | **6.6** / 8.3 | 7.1 / **8.2** |
+| DES 2018 copies found without the track, near / far | 85% / **94%** | **88%** / 76% |
+| bright streams found without the track, 4° / 5° / 6° / 8° | **62% / 100% / 100% / 100%** | 0% / 25% / 50% / 100% |
+| bright streams found along the track, 4° / 5° / 6° / 8° | **100% / 100% / 100% / 100%** | 25% / 88% / 100% / 100% |
+| sky search: line network / both searches / either | **7** / 8 / 8 | 6 / 8 / 8 |
+| **DES 2018 streams along their tracks / without** | **9 / 7** | 8 / 6 |
+
+```{image} ../figures/line_model/des2018_short.png
+:alt: Each DES 2018 stream found or not by the S/N-5 line network trained on uniform and on log-uniform lengths
+:width: 85%
+```
+
+*Each DES 2018 stream found or not by the S/N-5 line network trained on
+lengths uniform and log-uniform over 4-30°. `run.py`,
+`des2018_training(DES2018_SHORT, "short")`.*
+
+**More short streams in training make the network worse at short streams**,
+not better: its median score on the bright 4-6° streams falls from 0.62 to
+0.28 — the network's own answer, not its stream-free windows' level, which
+hardly moves — and it loses Willka Yaku along its track and Phoenix without
+it. So the short streams are not lost for want of examples. The line
+network's answer to them swings widely from one training to the next — of
+the bright 5° streams, found without their track 12% to 100% across the
+trainings of this page, on two to four models per fold — so how much of the
+quick S/N-5 models' lead is theirs, and how much a good draw of seeds, is
+the open question.
+
 ## What it means for the question
 
 - **A network trained only on streamobs simulations finds, without being
@@ -330,8 +369,7 @@ models are the line network to keep.
   8.6 to 3.9 ({doc}`../real_des/des2018_reproduction`); the search's masks
   (Aliqa Uma under Fornax's 12 half-light radii); and the network's own
   sensitivity to short, narrow streams, which longer training loses
-  whatever the label — the training's length range (4-30°, dominated by
-  long streams) is the next lever there.
+  whatever the label, and more short streams in training do not restore.
 
 ## Reproducing
 
@@ -342,8 +380,10 @@ python scripts/experiments/line_model/run.py train --config "hough/band2s5 resid
 python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual"           # --train-sky fold1; --sets fainter
 python scripts/experiments/line_model/run.py line-sky --config "hough/band2s5 residual"
 python scripts/experiments/line_model/run.py des2018 --config "hough/band2s5 residual"            # and "hough/band2 residual"
+python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual short" --seed 42   # 43; --train-sky fold1; ~33 min each, four at once
 python scripts/experiments/line_model/run.py train --config "hough/band2s5 residual long" --seed 42   # 43; --train-sky fold1; ~2h15 each, four at once
 python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual" --sets "length scan"   # and the long models'
 ```
 
-The comparisons are `des2018_training()` and `des2018_training(DES2018_LONG, "long")` in `run.py`.
+The comparisons are `des2018_training()`, `des2018_training(DES2018_LONG, "long")` and
+`des2018_training(DES2018_SHORT, "short")` in `run.py`.
