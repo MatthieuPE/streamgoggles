@@ -4034,6 +4034,142 @@ def des2018_dwarf_profiles(queries=(16.0, 17.5, 19.0)):
     plt.close(fig)
 
 
+# The selection's faint limits compared (g and r; ours is 24.5)
+DES2018_DEPTHS = (23.0, 23.5, 24.0, 24.5)
+
+
+def des2018_depth(limits=DES2018_DEPTHS, own_distance=False):
+    """Each DES 2018 stream's S/N in our matched filter against the
+    selection's faint limit: the inference catalogue's stars, both bands
+    between 16 and the limit, selected by the matched filter at the queried
+    distance nearest the stream's; their density across its DES 2018 track,
+    on the search's valid sky (the contaminants' pixels and the tight object
+    mask out) away from the other DES 2018 streams (two widths of theirs), in
+    bins of a quarter width out to four widths; a quadratic
+    fitted to it beyond two widths; the stars within one width against it.
+    With ``own_distance``, the matched filter at the stream's own distance
+    (Table 1) instead, as `real_des.REAL_INPUT_SNR` was measured. Writes
+    des2018/depth.csv (depth_own.csv)."""
+    import healpy as hp
+    import numpy as np
+    import pandas as pd
+    import pyarrow.parquet as pq
+    from scipy.spatial import cKDTree
+
+    from streamgoggles.evaluation.footprint import track_band
+    from streamgoggles.matched_filter import build_matched_filters
+    from streamgoggles.objects_overlap import des2018_arc
+
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    nside = 512
+    background, _, _ = build_sky("inference", "count", IMAGE_PIX)
+    excluded = hp.read_map(str(_patches.contaminants())) != 0
+    valid = (
+        background.valid_mask_full
+        & ~excluded
+        & ~rd.object_mask(
+            nside,
+            max_dwarf_mv=LINE_SKY_DWARF_MV,
+            max_radius_deg=LINE_SKY_DWARF_MAX_DEG,
+        )
+    )
+    arcs = {name: des2018_arc(name, n=400) for name in sp.DES_STREAMS}
+    regions = {
+        name: track_band([arcs[name]], 4.5 * width, nside)
+        for name, (width, *_) in sp.DES_STREAMS.items()
+    }
+    anywhere = np.logical_or.reduce(list(regions.values())) & valid
+    # the stars near any track, read a row group at a time
+    catalogue = pq.ParquetFile(rd.INFERENCE_CATALOGUE)
+    kept = []
+    for group in range(catalogue.num_row_groups):
+        stars = catalogue.read_row_group(group).to_pandas()
+        pixel = hp.ang2pix(
+            nside, stars.ra.to_numpy(), stars.dec.to_numpy(), lonlat=True
+        )
+        kept.append(stars[anywhere[pixel]].assign(pixel=pixel[anywhere[pixel]]))
+    stars = pd.concat(kept, ignore_index=True)
+    good = build_matched_filters(rd.filters_config(), namespace=rd.NAMESPACE)["good"]
+    g, r = (stars[f"{rd.NAMESPACE}_{band}_obs"].to_numpy() for band in ("g", "r"))
+    area = hp.nside2pixarea(nside, degrees=True)
+
+    def across(vectors, points, tangents, poles):
+        """Signed distance from the track (degrees), and whether the nearest
+        track point is inside the arc (not an end)."""
+        nearest = cKDTree(points).query(vectors)[1]
+        phi2 = np.degrees(np.arcsin(np.clip((vectors * poles[nearest]).sum(1), -1, 1)))
+        return phi2, (nearest > 0) & (nearest < len(points) - 1)
+
+    rows = []
+    for name, (width, _, distance, _) in sp.DES_STREAMS.items():
+        query = (
+            distance
+            if own_distance
+            else min(sp.QUERY_GRID, key=lambda q: abs(q - distance))
+        )
+        points = _unit(*arcs[name])
+        tangents = _tangents(points)
+        poles = np.cross(points, tangents)
+        poles /= np.linalg.norm(poles, axis=1, keepdims=True)
+        clear = ~np.logical_or.reduce(
+            [
+                track_band([arcs[other]], 2 * sp.DES_STREAMS[other][0], nside)
+                for other in sp.DES_STREAMS
+                if other != name
+            ]
+        )
+        mine = (regions[name] & clear)[stars.pixel.to_numpy()]
+        phi2, inside = across(
+            _unit(stars.ra.to_numpy()[mine], stars.dec.to_numpy()[mine]),
+            points,
+            tangents,
+            poles,
+        )
+        selected = good.select(stars[mine], ["g", "r"], query)
+        sky = np.flatnonzero(regions[name] & valid & clear)
+        sky_phi2, sky_inside = across(
+            np.asarray(hp.pix2vec(nside, sky)).T, points, tangents, poles
+        )
+        edges = np.arange(-4.0, 4.0 + 1e-9, 0.25) * width
+        centres = (edges[:-1] + edges[1:]) / 2
+        areas = np.histogram(sky_phi2[sky_inside], edges)[0] * area
+        side = (np.abs(centres) >= 2 * width) & (areas > 0)
+        core = np.abs(centres) < width
+        row = {"stream": name, "distance_modulus": distance, "query": query}
+        for limit in limits:
+            chosen = (
+                selected
+                & inside
+                & (g[mine] >= 16.0)
+                & (r[mine] >= 16.0)
+                & (g[mine] <= limit)
+                & (r[mine] <= limit)
+            )
+            counts = np.histogram(phi2[chosen], edges)[0]
+            fit = np.polyfit(
+                centres[side], counts[side] / areas[side], 2, w=np.sqrt(areas[side])
+            )
+            expected = float((np.polyval(fit, centres[core]) * areas[core]).sum())
+            row[f"S/N {limit:g}"] = (counts[core].sum() - expected) / np.sqrt(
+                max(expected, 1.0)
+            )
+            row[f"stars {limit:g}"] = int(counts[core].sum())
+        row["S/N reference"] = rd.REAL_INPUT_SNR[name]
+        rows.append(row)
+        print(
+            name,
+            {k: round(v, 1) for k, v in row.items() if k.startswith("S/N")},
+            flush=True,
+        )
+    table = pd.DataFrame(rows)
+    DES2018.mkdir(parents=True, exist_ok=True)
+    table.to_csv(
+        DES2018 / ("depth_own.csv" if own_distance else "depth.csv"), index=False
+    )
+    return table
+
+
 def hough_figures(train_sky="fold0"):
     """hough_{blind,known}_{sky}.png and hough.csv: the line model, the
     per-pixel network with a line search on top, and the matched filter, on
