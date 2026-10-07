@@ -4170,6 +4170,215 @@ def des2018_depth(limits=DES2018_DEPTHS, own_distance=False):
     return table
 
 
+# What the sky search's lines lie along, and how the summary draws them
+DES2018_LINE_CLASSES = {
+    "DES 2018": ("along a DES 2018 track", "#1a9850"),
+    "known": ("along another known stream (galstreams)", "#0b4fff"),
+    "objects": ("around the Magellanic Clouds or a bright dwarf", "#9e9ac8"),
+    "unexplained": ("unexplained: false alarm or candidate", "#d7301f"),
+}
+
+
+def des2018_sky_lines(config="hough/band2s5 residual x4", mask_objects="tight"):
+    """The sky search's lines (`line_sky`, either search at half its rate:
+    about 1% of stream-free windows hold one), each classed by what it lies
+    along: a DES 2018 track (`line_sky_matches`), another stream galstreams
+    traces (at least MIN_ALONG_DEG of the line within GALSTREAMS_TOLERANCE_DEG
+    of it, running along it), the Magellanic Clouds' outskirts or a bright
+    dwarf (LINE_SKY_OBJECTS), or nothing known. Writes
+    des2018/sky_lines_<config><mask>.csv and returns the table."""
+    import pandas as pd
+
+    name = config.replace("/", "_") + _suffix(mask_objects)
+    table = pd.read_csv(LINE_SKY / f"detections_{name}.csv")
+    table = table[_chosen(table, "combined")].reset_index(drop=True)
+    known = {k: _unit(*v) for k, v in _known_tracks().items()}
+    known_tangents = {k: _tangents(v) for k, v in known.items()}
+    classes = []
+    for row in table.itertuples():
+        if row.kind == "along a DES 2018 track":
+            classes.append("DES 2018")
+            continue
+        if str(row.kind).startswith("around"):
+            classes.append("objects")
+            continue
+        n = max(int(row.length_deg / 0.1), 2)
+        points = _unit(*_arc(row.ra1, row.dec1, row.ra2, row.dec2, n))
+        step = row.length_deg / (n - 1)
+        along_known = any(
+            _aligned_length(
+                points, step, reference, GALSTREAMS_TOLERANCE_DEG,
+                reference_tangents=known_tangents[k],
+            )
+            >= MIN_ALONG_DEG
+            for k, reference in known.items()
+        )  # fmt: skip
+        classes.append("known" if along_known else "unexplained")
+    table["class"] = classes
+    DES2018.mkdir(parents=True, exist_ok=True)
+    table.to_csv(DES2018 / f"sky_lines_{name}.csv", index=False)
+    return table
+
+
+def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
+    """des2018_sky.gif: the matched filter over the DES footprint, one frame
+    per queried distance -- the counts over their smooth local background,
+    minus one, smoothed with a 0.4-degree Gaussian on the search's valid sky
+    -- with the sky search's lines found at that distance
+    (`des2018_sky_lines`), coloured by what they lie along (solid: the line
+    network's; dotted: the matched filter's line sums), the fourteen DES 2018
+    tracks (dashed; bold at the queried distance nearest their own), and
+    their names: green, a line along the track at this distance; black, at
+    another distance only; red, at none."""
+    import healpy as hp
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib import patheffects
+    from matplotlib.animation import FuncAnimation, PillowWriter
+    from matplotlib.lines import Line2D
+    from scipy import ndimage
+
+    from streamgoggles.objects_overlap import des2018_arc
+
+    rd = real_des()
+    sp = rd.stream_parameters_module()
+    lines = des2018_sky_lines(config, mask_objects)
+    background, _, pix = build_sky("inference", "count", IMAGE_PIX)
+    nside = pix.nside
+    valid = background.valid_mask_full & ~rd.object_mask(
+        nside,
+        max_dwarf_mv=LINE_SKY_DWARF_MV,
+        max_radius_deg=LINE_SKY_DWARF_MAX_DEG if mask_objects == "tight" else None,
+    )
+    queries = list(sp.QUERY_GRID)
+    smooth = smooth_backgrounds(background, queries, valid)
+    # the map: projected on a 0.1-degree RA, Dec grid, then a Gaussian of
+    # 0.4 degrees on the sky (wider in RA by 1 / cos(dec), at the footprint's
+    # mean declination), normalized by the valid sky it covers
+    step = 0.1
+    ra_axis = np.arange(-65.0, 105.0, step)
+    dec_axis = np.arange(-72.0, 6.0, step)
+    grid_ra, grid_dec = np.meshgrid(ra_axis, dec_axis)
+    grid_pixels = hp.ang2pix(nside, grid_ra % 360, grid_dec, lonlat=True)
+    on_sky = valid[grid_pixels].astype(float)
+    sigma = (0.4 / step, 0.4 / step / np.cos(np.radians(40.0)))
+    weight = ndimage.gaussian_filter(on_sky, sigma)
+    images = {}
+    for q in queries:
+        counts = ndimage.gaussian_filter(
+            on_sky * background.raw_map_full_dict["good"][q][grid_pixels], sigma
+        )
+        expected = ndimage.gaussian_filter(on_sky * smooth[q][grid_pixels], sigma)
+        images[q] = np.where(
+            (on_sky > 0) & (weight > 0.3),
+            counts / np.maximum(expected, 1e-9) - 1,
+            np.nan,
+        )
+
+    def wrap(ra):
+        ra = np.asarray(ra, float) % 360
+        return np.where(ra > 180, ra - 360, ra)
+
+    nearest = {
+        name: min(queries, key=lambda q: abs(q - distance))
+        for name, (_, _, distance, _) in sp.DES_STREAMS.items()
+    }
+    found_at = {
+        name: {
+            q
+            for q, along in zip(lines["query"], lines["along"].fillna(""), strict=True)
+            if name in along.split("; ")
+        }
+        for name in sp.DES_STREAMS
+    }
+    outline = [patheffects.withStroke(linewidth=2.5, foreground="black")]
+    fig, ax = plt.subplots(figsize=(12, 5.6))
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.98, bottom=0.09)
+
+    def draw(k):
+        q = queries[k]
+        ax.clear()
+        ax.imshow(
+            images[q],
+            origin="lower",
+            extent=(ra_axis[0], ra_axis[-1] + step, dec_axis[0], dec_axis[-1] + step),
+            cmap="gray",
+            vmin=-0.08,
+            vmax=0.08,
+            interpolation="bilinear",
+        )
+        for name in sp.DES_STREAMS:
+            ra, dec = des2018_arc(name, n=200)
+            here = nearest[name] == q
+            track = ax.plot(wrap(ra), dec, ls="--", color="#fee08b",
+                            lw=2.4 if here else 1.2)[0]  # fmt: skip
+            track.set_path_effects(
+                [
+                    patheffects.withStroke(
+                        linewidth=4 if here else 2.6, foreground="black"
+                    )
+                ]
+            )
+            if here:
+                middle = len(ra) // 2
+                label = ax.text(wrap(ra[middle]) + 1.0, dec[middle], name,
+                                color="#fee08b", fontsize=8, weight="bold")  # fmt: skip
+                label.set_path_effects(outline)
+        mine = lines[np.isclose(lines["query"], q)]
+        for kind, (_, colour) in DES2018_LINE_CLASSES.items():
+            for row in mine[mine["class"] == kind].itertuples():
+                ra, dec = _arc(row.ra1, row.dec1, row.ra2, row.dec2, 20)
+                ax.plot(wrap(ra), dec, color=colour, lw=2.2,
+                        ls="-" if row.scorer == "network" else ":")  # fmt: skip
+        # the distance, and the DES 2018 streams found here, elsewhere, nowhere
+        ax.text(-12, -6, f"DM = {q:.1f}", fontsize=18, weight="bold", va="top")
+        ax.text(101, 4.5, "DES 2018 streams", fontsize=9, weight="bold", va="top")
+        ax.text(101, 1.6, "green: found at this DM · black: at another · red: at none",
+                fontsize=7, color="#525252", va="top")  # fmt: skip
+        names = list(sp.DES_STREAMS)
+        for i, name in enumerate(names):
+            colour = (
+                "#1a9850"
+                if q in found_at[name]
+                else ("black" if found_at[name] else "#d7301f")
+            )
+            ax.text(
+                101 - 19 * (i // 7),
+                -1.2 - 2.3 * (i % 7), name, fontsize=8.5,
+                    color=colour, weight="bold" if colour != "black" else "normal",
+                    va="top")  # fmt: skip
+        handles = [
+            Line2D([], [], color=colour, lw=2.2, label=label.split(":")[0])
+            for label, colour in DES2018_LINE_CLASSES.values()
+        ]
+        handles += [
+            Line2D([], [], color="#636363", lw=2.2, label="line network"),
+            Line2D([], [], color="#636363", lw=2.2, ls=":", label="matched-filter line sums"),
+            Line2D([], [], color="#fee08b", lw=1.6, ls="--", label="DES 2018 track (bold: at this DM)",
+                   path_effects=[patheffects.withStroke(linewidth=3, foreground="black")]),
+        ]  # fmt: skip
+        ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.66, 0.79),
+                  fontsize=7.5, frameon=False, handlelength=2.6)  # fmt: skip
+        ax.set_xlim(ra_axis[-1], ra_axis[0])  # RA increasing to the left
+        ax.set_ylim(dec_axis[0], dec_axis[-1])
+        ax.set_xlabel("RA (degrees)")
+        ax.set_ylabel("Dec (degrees)")
+        return []
+
+    animation = FuncAnimation(fig, draw, frames=len(queries), blit=False)
+    DOC_FIGURES.mkdir(parents=True, exist_ok=True)
+    animation.save(
+        DOC_FIGURES / "des2018_sky.gif", writer=PillowWriter(fps=0.8), dpi=100
+    )
+    draw(queries.index(17.0))
+    fig.savefig(DOC_FIGURES / "des2018_sky_17.png", dpi=120)
+    plt.close(fig)
+    return lines
+
+
 def hough_figures(train_sky="fold0"):
     """hough_{blind,known}_{sky}.png and hough.csv: the line model, the
     per-pixel network with a line search on top, and the matched filter, on
