@@ -229,6 +229,36 @@ CONFIGS = {
         },
         "training": {"background_fraction": 0.3},
     },
+    # the segment-line model's seeds: two more per fold (44, 45), alone and
+    # averaged with the first two
+    "hough/band2s5 residual seg s44": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {
+            "features": 8,
+            "n_theta": 90,
+            "rho_step": 2.0,
+            "min_pixels": 20,
+            "sub_size": 48,
+            "sub_stride": 24,
+        },
+        "parts": ["hough/band2s5 residual seg"],
+        "seeds": [44, 45],
+    },
+    "hough/band2s5 residual seg x4": {
+        "label": None,
+        "normalizer": "residual",
+        "hough": {
+            "features": 8,
+            "n_theta": 90,
+            "rho_step": 2.0,
+            "min_pixels": 20,
+            "sub_size": 48,
+            "sub_stride": 24,
+        },
+        "parts": ["hough/band2s5 residual seg"],
+        "seeds": [42, 43, 44, 45],
+    },
     # four of them per fold: is the long model's sky a good draw?
     "hough/band2 residual long x4": {
         "label": None,
@@ -3767,6 +3797,13 @@ DES2018_SEEDS = {
 DES2018_SEG = {
     "hough/band2s5 residual": ("window lines", "#7b3294"),
     "hough/band2s5 residual seg": ("window and\nsub-window lines", "#e66101"),
+}
+# The segment-line model's seeds, against four window-line models per fold
+DES2018_SEG_SEEDS = {
+    "hough/band2s5 residual x4": ("window lines,\nall four", "#40004b"),
+    "hough/band2s5 residual seg": ("segment lines,\nseeds 42-43", "#e66101"),
+    "hough/band2s5 residual seg s44": ("segment lines,\nseeds 44-45", "#fdb863"),
+    "hough/band2s5 residual seg x4": ("segment lines,\nall four", "#b35806"),
 }
 # What longer training buys the S/N-5 label: two quick models per fold, two
 # long ones, and the four long S/N-2 models per fold (the best before)

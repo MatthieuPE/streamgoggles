@@ -29,8 +29,8 @@ their copies at Table 1's surface brightness**, 33.0 to 35.5 on streamobs's
 scale, where the training stopped at 34.5 — but training at their strength
 makes the network less sensitive (8 streams along their tracks → 6). What
 helps is the label: **a line taught only where the stream reaches S/N 5 in
-the window, not 2, gives the best line network so far — 9 of the 14 along
-their tracks and 7 without**, with two quick models per fold. With both
+the window, not 2, gives a better line network — 9 of the 14 along their
+tracks and 7 without**, with two quick models per fold. With both
 (the S/N-5 label at the streams' strength) the network gains near streams —
 Wambelong, by a hair, on the sky — and loses far ones: no better overall.
 Longer training (19,200 windows) buys nothing on the DES 2018 streams and
@@ -39,8 +39,10 @@ network worse at them. **Four quick S/N-5 models per fold are the best line
 network so far: ten of the fourteen streams along their tracks, eight
 without, nine in the sky search with the matched filter's line sums** — the
 second pair of seeds confirms the first. **Segment lines** — the lines of
-nine sub-windows beside the window's — **add the faint, long and wide
-streams**: the network alone finds nine on the sky, either search eleven.
+nine sub-windows beside the window's — help the matched filter's line search
+(eight streams on the sky against six), not the network: its first pair's
+nine on the sky was partly a good draw, and four segment models find what
+four window-line models find.
 
 ## The test
 
@@ -425,9 +427,10 @@ The S/N-5 model, two quick models per fold, same seeds
 lines, and with the sub-windows' lines too. `run.py`,
 `des2018_training(DES2018_SEG, "seg")`.*
 
-1. **Segment lines help the search without the track**: half the copies
-   found at S/N 7.7 and 11.2 (near and far) against 8.4 and 11.5, and on the
-   sky **the line network alone finds nine** of the fourteen — Turbio
+1. **Segment lines help the search without the track** — with these two
+   models; four, below, temper it: half the copies found at S/N 7.7 and
+   11.2 (near and far) against 8.4 and 11.5, and on the sky **the line
+   network alone finds nine** of the fourteen — Turbio
    (*p* = 0.04 against random tracks) and Turranburra (0.03) added to the
    seven — **the matched filter's segment lines eight** (Indus and Wambelong
    added), both at half the rate nine, **either at its own rate eleven**:
@@ -447,22 +450,61 @@ lines, and with the sub-windows' lines too. `run.py`,
    cut into several segments; the chance test against random tracks counts
    them. Turbio and Turranburra pass it narrowly.
 
+### Four segment models per fold
+
+Two more segment models per fold (seeds 44 and 45), alone
+(`hough/band2s5 residual seg s44`) and with the first two
+(`hough/band2s5 residual seg x4`), against the four window-line models per
+fold:
+
+| lines from S/N 5, quick models | window lines, all four | segment lines, seeds 42-43 | seeds 44-45 | **segment lines, all four** |
+|---|---|---|---|---|
+| copies: half found without the track, near / far (input S/N) | 8.0 / 11.5 | 7.7 / 11.2 | 8.1 / 11.2 | **7.7 / 11.1** |
+| copies: half found along the track, near / far | **5.8 / 8.3** | 7.3 / 8.2 | 7.4 / 8.5 | 7.3 / 8.5 |
+| bright streams found without the track, 4° / 5° / 6° / 8° | 50% / 100% / 100% / 100% | 50% / 62% / 88% / 100% | 62% / 88% / 100% / 100% | 50% / 62% / 100% / 100% |
+| sky search: line network / both / either | 8 / 9 / 9 | 9 / 9 / 11 | 8 / 8 / 10 | 8 / 9 / **10** |
+| **DES 2018 streams along their tracks / without** | **10 / 8** | 10 / 8 | 7 / 7 | 8 / 7 |
+
+```{image} ../figures/line_model/des2018_segseeds.png
+:alt: Each DES 2018 stream found or not by four window-line models per fold and by the segment-line models, each pair and all four
+:width: 100%
+```
+
+*Each DES 2018 stream found or not by the four window-line models per fold
+and by the segment-line models: each pair of seeds and all four. `run.py`,
+`des2018_training(DES2018_SEG_SEEDS, "segseeds")`.*
+
+**The first pair's nine on the sky was partly a good draw.** The second
+pair finds eight on the sky and seven along the tracks; the four together
+find eight on the sky and seven without the track — as the four window-line
+models — and along the tracks eight against their ten. The test along the
+track is harder for segment lines: a stream's own lines now include its
+sub-windows' lines, so the stream-free windows have more chances to score as
+high, and Turbio, Turranburra and Wambelong miss its level by a hair (*p* =
+0.005-0.008 against 0.005). On the copies, the segment models find the far
+ones a little more often without the track (half at 11.1 against 11.5), the
+near ones a little less often along it. **For the line network, segment
+lines are no better than window lines. For the matched filter's line search
+they are**: in every segment run it finds eight streams on the sky against
+six (Indus and Wambelong added; it does not depend on the network's seeds),
+so that either search finds ten.
+
 ## What it means for the question
 
 - **A network trained only on streamobs simulations finds, without being
-  told where to look, eight to nine of the fourteen DES 2018 streams** in
-  our matched-filter maps, at one false line per hundred stream-free
-  windows: eight with four quick S/N-5 models per fold, nine on the sky
-  with segment lines (two quick models per fold); with the matched
-  filter's own line sums, nine, and eleven with either at its own rate.
-  **Along their known tracks, ten** — the network alone: every stream in
-  our data but Aliqa Uma (masked) and one more (Indus with window lines,
-  Wambelong with segment lines).
-- **What this input allows**: with segment lines, either search finds
-  every stream in our data but Aliqa Uma, under the Fornax mask — Turbio
-  and Turranburra narrowly; Willka Yaku (8.7) and Wambelong (5.2), found by
-  the matched filter's segment lines, are the ones the network could still
-  gain.
+  told where to look, eight of the fourteen DES 2018 streams** in our
+  matched-filter maps, at one false line per hundred stream-free windows —
+  four quick S/N-5 models per fold, with window or segment lines; with the
+  matched filter's own line sums, nine, and ten with either search at its
+  own rate (the matched filter's segment lines). **Along their known
+  tracks, ten** — the network alone, window lines: every stream in our data
+  but Aliqa Uma (masked) and Indus (found without its track).
+- **What this input allows**: either search finds every stream in our data
+  but Aliqa Uma, under the Fornax mask, and Turranburra (S/N 3.9), at
+  about 2% false lines per window; Willka Yaku (8.7), found without its
+  track by the matched filter's line sums only, is the one the network could
+  still gain. Model changes have reached a plateau — one or two streams
+  between pairs of seeds is the noise — and what is left is the input.
 - **The simulations predict the network's results on the real streams**, so
   the copies are a sound bench to improve it on — and what helped on the
   copies (the S/N-5 label) helped on the real streams.
@@ -491,4 +533,4 @@ python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 re
 
 The comparisons are `des2018_training()`, `des2018_training(DES2018_LONG, "long")` and
 `des2018_training(DES2018_SHORT, "short")`, `des2018_training(DES2018_SEEDS, "seeds")`,
-`des2018_training(DES2018_SEG, "seg")` in `run.py`.
+`des2018_training(DES2018_SEG, "seg")`, `des2018_training(DES2018_SEG_SEEDS, "segseeds")` in `run.py`.
