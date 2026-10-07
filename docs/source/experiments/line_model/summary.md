@@ -77,11 +77,13 @@ across it ({doc}`../real_des/des2018_reproduction`).*
 ```
 
 *The matched filter over the DES footprint, one frame per queried distance
-(m−M 15 to 19): its counts over their smooth local background, averaged over
-0.9° and shown −10% to +10%. Dashed yellow: the DES 2018 tracks, bold at their
-own distance. Lines: what the sky search reports at that distance with both
-searches at half their rate (solid, the line network; dotted, the matched
-filter's line sums), coloured by what they lie along. `run.py`,
+(DM = m−M, 15 to 19): its counts over their smooth local background,
+smoothed with a 0.4° Gaussian and shown −8% to +8%. Dashed yellow: the DES
+2018 tracks, bold and named at their own distance. Lines: what the sky search
+reports at that distance with both searches at half their rate (solid, the
+line network; dotted, the matched filter's line sums), coloured by what they
+lie along. Top left, the DES 2018 streams: green, a line along the track at
+this distance; black, at another distance only; red, at none. `run.py`,
 `des2018_gif`; the frame at m−M 17 alone: `des2018_sky_17.png`.*
 
 The search reports 556 lines over the nine distances — each stream, each

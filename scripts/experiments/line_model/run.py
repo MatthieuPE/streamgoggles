@@ -4223,12 +4223,13 @@ def des2018_sky_lines(config="hough/band2s5 residual x4", mask_objects="tight"):
 def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     """des2018_sky.gif: the matched filter over the DES footprint, one frame
     per queried distance -- the counts over their smooth local background,
-    minus one, averaged over nside-64 pixels (0.9 degrees) on the search's
-    valid sky and interpolated between them -- with the sky
-    search's lines found at that distance (`des2018_sky_lines`), coloured by
-    what they lie along (solid: the line network's; dotted: the matched
-    filter's line sums), and the fourteen DES 2018 tracks (dashed; bold at
-    the queried distance nearest their own)."""
+    minus one, smoothed with a 0.4-degree Gaussian on the search's valid sky
+    -- with the sky search's lines found at that distance
+    (`des2018_sky_lines`), coloured by what they lie along (solid: the line
+    network's; dotted: the matched filter's line sums), the fourteen DES 2018
+    tracks (dashed; bold at the queried distance nearest their own), and
+    their names: green, a line along the track at this distance; black, at
+    another distance only; red, at none."""
     import healpy as hp
     import matplotlib
 
@@ -4238,6 +4239,7 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     from matplotlib import patheffects
     from matplotlib.animation import FuncAnimation, PillowWriter
     from matplotlib.lines import Line2D
+    from scipy import ndimage
 
     from streamgoggles.objects_overlap import des2018_arc
 
@@ -4253,23 +4255,26 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     )
     queries = list(sp.QUERY_GRID)
     smooth = smooth_backgrounds(background, queries, valid)
-    ra_axis = np.arange(-65.0, 105.0, 0.1)
-    dec_axis = np.arange(-72.0, 6.0, 0.1)
+    # the map: projected on a 0.1-degree RA, Dec grid, then a Gaussian of
+    # 0.4 degrees on the sky (wider in RA by 1 / cos(dec), at the footprint's
+    # mean declination), normalized by the valid sky it covers
+    step = 0.1
+    ra_axis = np.arange(-65.0, 105.0, step)
+    dec_axis = np.arange(-72.0, 6.0, step)
     grid_ra, grid_dec = np.meshgrid(ra_axis, dec_axis)
-    coarse = 64
-    on_sky = hp.get_interp_val(
-        hp.ud_grade(valid.astype(float), coarse), grid_ra % 360, grid_dec, lonlat=True
-    )
+    grid_pixels = hp.ang2pix(nside, grid_ra % 360, grid_dec, lonlat=True)
+    on_sky = valid[grid_pixels].astype(float)
+    sigma = (0.4 / step, 0.4 / step / np.cos(np.radians(40.0)))
+    weight = ndimage.gaussian_filter(on_sky, sigma)
     images = {}
     for q in queries:
-        counts = hp.ud_grade(
-            np.where(valid, background.raw_map_full_dict["good"][q], 0.0), coarse
+        counts = ndimage.gaussian_filter(
+            on_sky * background.raw_map_full_dict["good"][q][grid_pixels], sigma
         )
-        expected = hp.ud_grade(np.where(valid, smooth[q], 0.0), coarse)
-        contrast = counts / np.maximum(expected, 1e-9) - 1
+        expected = ndimage.gaussian_filter(on_sky * smooth[q][grid_pixels], sigma)
         images[q] = np.where(
-            on_sky > 0.5,
-            hp.get_interp_val(contrast, grid_ra % 360, grid_dec, lonlat=True),
+            (on_sky > 0) & (weight > 0.3),
+            counts / np.maximum(expected, 1e-9) - 1,
             np.nan,
         )
 
@@ -4281,7 +4286,17 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
         name: min(queries, key=lambda q: abs(q - distance))
         for name, (_, _, distance, _) in sp.DES_STREAMS.items()
     }
-    fig, ax = plt.subplots(figsize=(14, 7))
+    found_at = {
+        name: {
+            q
+            for q, along in zip(lines["query"], lines["along"].fillna(""), strict=True)
+            if name in along.split("; ")
+        }
+        for name in sp.DES_STREAMS
+    }
+    outline = [patheffects.withStroke(linewidth=2.5, foreground="black")]
+    fig, ax = plt.subplots(figsize=(12, 5.6))
+    fig.subplots_adjust(left=0.06, right=0.99, top=0.98, bottom=0.09)
 
     def draw(k):
         q = queries[k]
@@ -4289,79 +4304,77 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
         ax.imshow(
             images[q],
             origin="lower",
-            extent=(ra_axis[0], ra_axis[-1], dec_axis[0], dec_axis[-1]),
+            extent=(ra_axis[0], ra_axis[-1] + step, dec_axis[0], dec_axis[-1] + step),
             cmap="gray",
-            vmin=-0.1,
-            vmax=0.1,
-            alpha=0.75,
+            vmin=-0.08,
+            vmax=0.08,
             interpolation="bilinear",
         )
         for name in sp.DES_STREAMS:
             ra, dec = des2018_arc(name, n=200)
             here = nearest[name] == q
             track = ax.plot(wrap(ra), dec, ls="--", color="#fee08b",
-                            lw=2.6 if here else 1.4)[0]  # fmt: skip
+                            lw=2.4 if here else 1.2)[0]  # fmt: skip
             track.set_path_effects(
                 [
                     patheffects.withStroke(
-                        linewidth=4.5 if here else 3, foreground="black"
+                        linewidth=4 if here else 2.6, foreground="black"
                     )
                 ]
             )
-            middle = len(ra) // 2
-            label = ax.text(wrap(ra[middle]) + 1.0, dec[middle], name, color="#fee08b",
-                            fontsize=8.5 if here else 7, weight="bold" if here else "normal",
-                            alpha=1.0 if here else 0.75)  # fmt: skip
-            label.set_path_effects(
-                [patheffects.withStroke(linewidth=2.5, foreground="black")]
-            )
+            if here:
+                middle = len(ra) // 2
+                label = ax.text(wrap(ra[middle]) + 1.0, dec[middle], name,
+                                color="#fee08b", fontsize=8, weight="bold")  # fmt: skip
+                label.set_path_effects(outline)
         mine = lines[np.isclose(lines["query"], q)]
-        counts = {}
         for kind, (_, colour) in DES2018_LINE_CLASSES.items():
-            chosen = mine[mine["class"] == kind]
-            counts[kind] = len(chosen)
-            for row in chosen.itertuples():
+            for row in mine[mine["class"] == kind].itertuples():
                 ra, dec = _arc(row.ra1, row.dec1, row.ra2, row.dec2, 20)
-                ax.plot(wrap(ra), dec, color=colour, lw=2.4,
+                ax.plot(wrap(ra), dec, color=colour, lw=2.2,
                         ls="-" if row.scorer == "network" else ":")  # fmt: skip
+        # the distance, and the DES 2018 streams found here, elsewhere, nowhere
+        ax.text(-12, -6, f"DM = {q:.1f}", fontsize=18, weight="bold", va="top")
+        ax.text(101, 4.5, "DES 2018 streams", fontsize=9, weight="bold", va="top")
+        ax.text(101, 1.6, "green: found at this DM · black: at another · red: at none",
+                fontsize=7, color="#525252", va="top")  # fmt: skip
+        names = list(sp.DES_STREAMS)
+        for i, name in enumerate(names):
+            colour = (
+                "#1a9850"
+                if q in found_at[name]
+                else ("black" if found_at[name] else "#d7301f")
+            )
+            ax.text(
+                101 - 19 * (i // 7),
+                -1.2 - 2.3 * (i % 7), name, fontsize=8.5,
+                    color=colour, weight="bold" if colour != "black" else "normal",
+                    va="top")  # fmt: skip
+        handles = [
+            Line2D([], [], color=colour, lw=2.2, label=label.split(":")[0])
+            for label, colour in DES2018_LINE_CLASSES.values()
+        ]
+        handles += [
+            Line2D([], [], color="#636363", lw=2.2, label="line network"),
+            Line2D([], [], color="#636363", lw=2.2, ls=":", label="matched-filter line sums"),
+            Line2D([], [], color="#fee08b", lw=1.6, ls="--", label="DES 2018 track (bold: at this DM)",
+                   path_effects=[patheffects.withStroke(linewidth=3, foreground="black")]),
+        ]  # fmt: skip
+        ax.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.66, 0.79),
+                  fontsize=7.5, frameon=False, handlelength=2.6)  # fmt: skip
         ax.set_xlim(ra_axis[-1], ra_axis[0])  # RA increasing to the left
         ax.set_ylim(dec_axis[0], dec_axis[-1])
         ax.set_xlabel("RA (degrees)")
         ax.set_ylabel("Dec (degrees)")
-        at = [n for n, d in nearest.items() if d == q]
-        ax.set_title(
-            f"matched filter at m−M {q:.1f}"
-            + (f" — DES 2018 streams at this distance: {', '.join(at)}" if at else "")
-            + "\nlines found: "
-            + ", ".join(f"{counts[k]} {DES2018_LINE_CLASSES[k][0].split(':')[0]}" for k in DES2018_LINE_CLASSES),
-            fontsize=10,
-        )  # fmt: skip
-        handles = [
-            Line2D([], [], color=colour, lw=2.4, label=label)
-            for label, colour in DES2018_LINE_CLASSES.values()
-        ]
-        handles += [
-            Line2D([], [], color="#636363", lw=2.4, label="line network"),
-            Line2D([], [], color="#636363", lw=2.4, ls=":", label="matched-filter line sums"),
-            Line2D([], [], color="#fee08b", lw=1.5, ls="--", label="DES 2018 track"),
-        ]  # fmt: skip
-        ax.legend(
-            handles=handles,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.09),
-            ncol=4,
-            fontsize=8,
-            frameon=False,
-        )
         return []
 
     animation = FuncAnimation(fig, draw, frames=len(queries), blit=False)
     DOC_FIGURES.mkdir(parents=True, exist_ok=True)
     animation.save(
-        DOC_FIGURES / "des2018_sky.gif", writer=PillowWriter(fps=0.8), dpi=80
+        DOC_FIGURES / "des2018_sky.gif", writer=PillowWriter(fps=0.8), dpi=100
     )
     draw(queries.index(17.0))
-    fig.savefig(DOC_FIGURES / "des2018_sky_17.png", dpi=110, bbox_inches="tight")
+    fig.savefig(DOC_FIGURES / "des2018_sky_17.png", dpi=120)
     plt.close(fig)
     return lines
 
