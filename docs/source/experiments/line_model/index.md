@@ -22,7 +22,7 @@ and figures.
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks; the bright dwarfs masked; the two line searches combined; a catalogue of tracks; why short streams were missed (the label), and the 2° label | done (2026-10-01) |
 | {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02) |
 | {doc}`long_and_fits` | four long line models per fold; the leads that held, fitted: a distance and a curved track each | done (2026-10-02, branch `line-model-long-fits`) |
-| {doc}`des2018_known` | the DES 2018 streams where DES 2018 found them, each method side by side, along their tracks and without; each against its simulated copies at its strength; why the misses; training at the streams' strength, the label from S/N 5, both, longer training, more short streams, four quick S/N-5 models per fold, and segment lines | done (2026-10-07, branches `des2018-recovery`, `des2018-s5-strength`, `des2018-s5-long`, `des2018-short-streams`, `des2018-s5-seeds`, `segment-lines`, `segment-lines-x4`) |
+| {doc}`des2018_known` | the DES 2018 streams where DES 2018 found them, each method side by side, along their tracks and without; each against its simulated copies at its strength; why the misses; training at the streams' strength, the label from S/N 5, both, longer training, more short streams, four quick S/N-5 models per fold, segment lines, the dwarfs' mask, and the selection's depth | done (2026-10-07, branches `des2018-recovery`, `des2018-s5-strength`, `des2018-s5-long`, `des2018-short-streams`, `des2018-s5-seeds`, `segment-lines`, `segment-lines-x4`, `des2018-input`) |
 
 ## Conclusions so far
 
@@ -83,7 +83,10 @@ and figures.
    nine 5.5° sub-windows beside the window's) help the matched filter's
    line search (8 streams on the sky against 6), not the network: four
    segment models find what four window-line models find, and either search
-   finds 10. The model work has reached a plateau; what is left is the input
+   finds 10. The model work has reached a plateau; what is left is the input.
+   **Masking the bright dwarfs to 2° at most** — their stars end at 1.5° —
+   frees Aliqa Uma from Fornax's 4° mask at no cost: **11 of the 14 along
+   their tracks**. A shallower selection would trade streams, not add them
    ({doc}`des2018_known`).
 
 ## Where things live

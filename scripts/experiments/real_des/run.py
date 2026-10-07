@@ -382,7 +382,7 @@ CLUSTER_RADIUS_DEG = 2.0  # NGC 1904, NGC 1261: 72-86% within 1 deg, ~4% at 1-2
 CALIBRATION_MASK = OUT / "calibration_mask_nside512.fits.gz"
 
 
-def object_mask(nside=512, max_dwarf_mv=None):
+def object_mask(nside=512, max_dwarf_mv=None, max_radius_deg=None):
     """The compact objects whose outskirts the training mask leaves: every
     dwarf galaxy near the footprint to DWARF_HALF_LIGHT_RADII half-light
     radii, and every globular cluster within CLUSTER_RADIUS_DEG of it to that
@@ -390,7 +390,10 @@ def object_mask(nside=512, max_dwarf_mv=None):
     every line through such an object is bright. With ``max_dwarf_mv``, only
     the dwarfs brighter than that absolute magnitude: the ultra-faint ones
     make no bursts of lines, and some lie on streams (Tucana III's own
-    progenitor, Tucana II beside Indus)."""
+    progenitor, Tucana II beside Indus). With ``max_radius_deg``, no dwarf is
+    masked farther than that: Fornax's and Sculptor's stars stand out to
+    1.5 degrees in the matched filter, where 12 half-light radii reach 4.0
+    and 2.2 (docs: line_model/des2018_known)."""
     import healpy as hp
     import numpy as np
 
@@ -415,6 +418,12 @@ def object_mask(nside=512, max_dwarf_mv=None):
     if max_dwarf_mv is not None:
         bright = np.asarray(dwarfs["M_V"].filled(np.nan), float) < max_dwarf_mv
         dwarfs = dwarfs[bright]
+    if max_radius_deg is not None:
+        dwarfs = dwarfs.copy()
+        dwarfs["rhalf"] = np.minimum(
+            np.asarray(dwarfs["rhalf"].filled(np.nan), float),
+            60.0 * max_radius_deg / DWARF_HALF_LIGHT_RADII,
+        )
     dwarf_mask, _ = mask_objects(
         dwarfs,
         near_footprint(dwarfs, 2.0),
