@@ -16,8 +16,12 @@ than per pixel, run over the whole sky out of fold, and its detections are
 lines that can be joined into tracks: hence its own section, script, results
 and figures.
 
+**Start with the summary, {doc}`summary`**: what was tried, what worked and
+what did not, and the best result on the DES 2018 streams.
+
 | page | what it holds | status |
 |---|---|---|
+| {doc}`summary` | **the summary**: what was tried, what worked and what did not, and the best result on the DES 2018 streams, with the sky search distance by distance (GIF) | 2026-10-07 |
 | {doc}`window_level` | the line model on the copies, without knowing their track and along it, against the per-pixel network and the matched filter's own line search; S/N inputs | done, quick models (2026-10-01) |
 | {doc}`line_sky` | the line model over the whole DES sky with the real streams in it: on-sky maps of the detected lines against the DES 2018 tracks; the bright dwarfs masked; the two line searches combined; a catalogue of tracks; why short streams were missed (the label), and the 2° label | done (2026-10-01) |
 | {doc}`line_followup` | more models and longer training of the 2° line model; the catalogue's leads looked at one by one (maps, distance profiles, Hess differences) | done (2026-10-02) |
@@ -117,6 +121,7 @@ python scripts/experiments/line_model/run.py leads                              
 :maxdepth: 1
 :hidden:
 
+summary
 window_level
 line_sky
 line_followup
