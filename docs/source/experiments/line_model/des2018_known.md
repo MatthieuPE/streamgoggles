@@ -42,7 +42,9 @@ second pair of seeds confirms the first. **Segment lines** — the lines of
 nine sub-windows beside the window's — help the matched filter's line search
 (eight streams on the sky against six), not the network: its first pair's
 nine on the sky was partly a good draw, and four segment models find what
-four window-line models find.
+four window-line models find. **Masking the bright dwarfs to 2° at most**,
+where their stars end, instead of 12 half-light radii (Fornax's 4°) frees
+Aliqa Uma at no cost: **eleven of the fourteen along their tracks**.
 
 ## The test
 
@@ -489,6 +491,49 @@ they are**: in every segment run it finds eight streams on the sky against
 six (Indus and Wambelong added; it does not depend on the network's seeds),
 so that either search finds ten.
 
+## The input: the dwarfs' mask
+
+With the model at a plateau, the input. Aliqa Uma is in our data (S/N 7.9)
+but 59% of its band lies under the search's mask of Fornax: 12 half-light
+radii, 4.0°, where the band runs 2.4-7.8° from Fornax. Masking the bright
+dwarfs keeps every line through their outskirts out of the search; how far
+their stars reach in our matched filter decides how far that has to go:
+
+```{image} ../figures/line_model/des2018_dwarf_profiles.png
+:alt: Fornax's and Sculptor's matched-filter counts against the distance from their centres, with the two mask radii
+:width: 100%
+```
+
+*Matched-filter counts in annuli around Fornax and Sculptor, over the 6-9°
+ring, at three queried distances (Aliqa Uma's band and the other masked
+objects left out). Grey, the object mask's radius; orange, the tight
+mask's. `run.py`, `des2018_dwarf_profiles`.*
+
+**Both dwarfs' stars stand out to 1.5°** — Fornax +5-33% at 1-1.5°,
+Sculptor +12-18% there at m−M 18-19 — and nothing beyond but the
+region's large-scale gradient of a few per cent. The **tight mask** masks
+the bright dwarfs to 12 half-light radii but 2° at most
+(`object_mask(max_radius_deg=...)`, `--mask tight`): Fornax from 4.0° to
+2.0°, Sculptor from 2.2° to 2.0°, 40 deg² freed. The calibration mask, and
+so the training and the stream-free windows, are unchanged. With the best
+line network (four quick S/N-5 models per fold):
+
+| search mask | object mask (12 half-light radii) | tight (at most 2°) |
+|---|---|---|
+| Aliqa Uma's band on searchable sky; its longest straight run in a window | 41%; 4.1° | **100%; 9.8°** |
+| Aliqa Uma along its track: line network / matched-filter lines (*p*) | 0.20 / 0.042 | **0.003 / 0.002** |
+| lines on the sky: network / matched filter; within 5° of Fornax | 210 / 430; 0 | 210 / 430; 0 |
+| sky search: line network / both / either | 8 / 9 / 9 | 8 / 9 / 9 |
+| **DES 2018 streams along their tracks: line network / both searches** | 10 / 9 | **11 / 10** |
+
+**Freed, Aliqa Uma is found along its track by both searches, at no cost**:
+the ring around Fornax adds no line to the sky search — its stars end at
+1.5° — and the search finds the same streams without the tracks. Aliqa
+Uma is not among them: at S/N 7.9 it is below what a search at 1% false
+lines per window reaches. **Along their tracks the line network now finds
+eleven of the fourteen DES 2018 streams — every stream in our data but
+Indus**, which it finds without its track.
+
 ## What it means for the question
 
 - **A network trained only on streamobs simulations finds, without being
@@ -497,14 +542,17 @@ so that either search finds ten.
   four quick S/N-5 models per fold, with window or segment lines; with the
   matched filter's own line sums, nine, and ten with either search at its
   own rate (the matched filter's segment lines). **Along their known
-  tracks, ten** — the network alone, window lines: every stream in our data
-  but Aliqa Uma (masked) and Indus (found without its track).
-- **What this input allows**: either search finds every stream in our data
-  but Aliqa Uma, under the Fornax mask, and Turranburra (S/N 3.9), at
-  about 2% false lines per window; Willka Yaku (8.7), found without its
-  track by the matched filter's line sums only, is the one the network could
-  still gain. Model changes have reached a plateau — one or two streams
-  between pairs of seeds is the noise — and what is left is the input.
+  tracks, eleven** — the network alone, window lines, with the bright
+  dwarfs masked to 2° at most: every stream in our data but Indus (found
+  without its track).
+- **What this input allows**: without the tracks, the streams missed are
+  those our data hold at S/N 8 or less — Aliqa Uma (7.9), Wambelong (5.2)
+  and Turbio (5.1) by one search or none, Turranburra (3.9) — and the two
+  not in our data. Model changes have reached a plateau — one or two
+  streams between pairs of seeds is the noise. What can still move the
+  number is the input: the search's mask (done: Aliqa Uma, along its track)
+  and the selection, a magnitude deeper than DES 2018's, which takes
+  Turranburra from S/N 8.6 to 3.9 ({doc}`../real_des/des2018_reproduction`).
 - **The simulations predict the network's results on the real streams**, so
   the copies are a sound bench to improve it on — and what helped on the
   copies (the S/N-5 label) helped on the real streams.
@@ -531,6 +579,8 @@ python scripts/experiments/line_model/run.py train --config "hough/band2s5 resid
 python scripts/experiments/line_model/run.py evaluate --config "hough/band2s5 residual" --sets "length scan"   # and the long models'
 ```
 
-The comparisons are `des2018_training()`, `des2018_training(DES2018_LONG, "long")` and
+The tight mask: `line-sky --config "hough/band2s5 residual x4" --mask tight` and
+`des2018 --config "hough/band2s5 residual x4" --mask tight`; the profiles
+`des2018_dwarf_profiles()`. The comparisons are `des2018_training()`, `des2018_training(DES2018_LONG, "long")` and
 `des2018_training(DES2018_SHORT, "short")`, `des2018_training(DES2018_SEEDS, "seeds")`,
 `des2018_training(DES2018_SEG, "seg")`, `des2018_training(DES2018_SEG_SEEDS, "segseeds")` in `run.py`.
