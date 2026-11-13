@@ -26,7 +26,8 @@ Given a footprint on the sky, `streamgoggles`:
    a background-cleaning (image regression) task — and evaluates it against
    a trivial threshold baseline.
 
-See {doc}`narrative/overview` for the full picture, {doc}`narrative/tutorial`
+Start with {doc}`narrative/project_overview` for the story and the line
+model in plain terms. See {doc}`narrative/overview` for the full picture, {doc}`narrative/tutorial`
 for a task-oriented walkthrough (fix parameters, size a dataset, train, then
 detect streams across a real footprint), {doc}`narrative/ml_concepts` if
 terms like "U-Net" or "Dice coefficient" need a primer first, or jump
@@ -36,6 +37,7 @@ straight to the {doc}`api` reference.
 :maxdepth: 2
 :caption: Guide
 
+narrative/project_overview
 narrative/overview
 narrative/ml_concepts
 narrative/data_generation
