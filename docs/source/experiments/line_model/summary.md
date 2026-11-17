@@ -69,6 +69,17 @@ its shape get but in 5% of places. {doc}`des2018_known`.*
 *S/N: the stream's core in our matched filter, from the density profile
 across it ({doc}`../real_des/des2018_reproduction`).*
 
+**Why 11 along the track but 8 without it.** Along the track, only the few
+lines that follow the known track in one window are tested, against the
+same lines in stream-free windows (1 in 201). Without it, a line must beat
+the level the best of all 6,210 lines of a window reaches in 1% of
+stream-free windows: the price of looking everywhere. Willka Yaku, Aliqa
+Uma, Turbio and Turranburra clear the first bar, not the second. Indus
+does the reverse: its one known-track window gives *p* = 0.012, while
+another of its windows holds a line above the blind level. The blind
+counts are the ones that predict a search for new streams
+({doc}`../../narrative/project_overview`, section 10).
+
 ### What the search reports, distance by distance
 
 ```{image} ../figures/line_model/des2018_sky.gif
