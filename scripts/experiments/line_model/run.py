@@ -1422,6 +1422,7 @@ def line_model_example(
 
 LINE_SKY = OUT / "line_sky"
 LINE_SKY_CONFIG = "hough/band residual"
+EXCESS_RANGE = 0.08  # the sky maps' colour scale: ±8% around the background
 # A detected line runs along a DES 2018 track if at least MIN_ALONG_DEG of it
 # lies within max(TRACK_TOLERANCE_DEG, two widths) of the track.
 TRACK_TOLERANCE_DEG = 1.0
@@ -4267,6 +4268,25 @@ def des2018_excess_maps(mask_objects="tight"):
     return images, ra_axis, dec_axis, step
 
 
+def _excess_cmap():
+    """The sky maps' colour scale: black where stars are in excess, white
+    where they are lacking, and a pale blue where there is no data (outside
+    the footprint, or masked), so a mask never reads as an underdensity."""
+    import matplotlib.pyplot as plt
+
+    return plt.get_cmap("gray_r").with_extremes(bad="#dbe7f0")
+
+
+def _excess_colorbar(fig, mappable, **kwargs):
+    """A colour bar for the sky maps' excess, in percent."""
+    from matplotlib.ticker import PercentFormatter
+
+    bar = fig.colorbar(mappable, format=PercentFormatter(xmax=1, decimals=0), **kwargs)
+    bar.set_label("star excess over the smooth background", fontsize=9)
+    bar.ax.tick_params(labelsize=8)
+    return bar
+
+
 def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     """des2018_sky.gif: the matched filter over the DES footprint, one frame
     per queried distance -- the counts over their smooth local background,
@@ -4276,7 +4296,8 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     network's; dotted: the matched filter's line sums), the fourteen DES 2018
     tracks (dashed; bold at the queried distance nearest their own), and
     their names: green, a line along the track at this distance; black, at
-    another distance only; red, at none."""
+    another distance only; red, at none. The map: black, an excess of stars;
+    white, a lack; pale blue, no data (`_excess_cmap`), with a colour bar."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -4312,7 +4333,11 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     }
     outline = [patheffects.withStroke(linewidth=2.5, foreground="black")]
     fig, ax = plt.subplots(figsize=(12, 5.6))
-    fig.subplots_adjust(left=0.06, right=0.99, top=0.98, bottom=0.09)
+    fig.subplots_adjust(left=0.06, right=0.91, top=0.98, bottom=0.09)
+    scale = plt.cm.ScalarMappable(
+        norm=plt.Normalize(-EXCESS_RANGE, EXCESS_RANGE), cmap=_excess_cmap()
+    )
+    _excess_colorbar(fig, scale, cax=fig.add_axes([0.925, 0.2, 0.012, 0.6]))
 
     def draw(k):
         q = queries[k]
@@ -4321,9 +4346,9 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
             images[q],
             origin="lower",
             extent=(ra_axis[0], ra_axis[-1] + step, dec_axis[0], dec_axis[-1] + step),
-            cmap="gray",
-            vmin=-0.08,
-            vmax=0.08,
+            cmap=_excess_cmap(),
+            vmin=-EXCESS_RANGE,
+            vmax=EXCESS_RANGE,
             interpolation="bilinear",
         )
         for name in sp.DES_STREAMS:
@@ -4400,28 +4425,30 @@ def talk_sky_panel(ax, image, extent, tracks, lines=(), found=None):
     left), optionally the DES 2018 tracks (dashed) with their names, and
     lines on top (theme red). tracks: name -> (ra, dec) with RA wrapped to
     (-180, 180]; lines: (ra, dec) pairs; found: the names to write in red,
-    the rest in white. Pure plotting, no data access, so it runs on fakes."""
+    the rest in black. Black is an excess of stars (`_excess_cmap`). Returns
+    the image, for a colour bar. Pure plotting, no data access, so it runs
+    on fakes."""
     from matplotlib import patheffects
 
     red = "#A11D33"
-    ax.imshow(image, origin="lower", extent=extent, cmap="gray", vmin=-0.08,
-              vmax=0.08, interpolation="bilinear")  # fmt: skip
-    stroke = [patheffects.withStroke(linewidth=3, foreground="black")]
+    shown = ax.imshow(image, origin="lower", extent=extent, cmap=_excess_cmap(),
+                      vmin=-EXCESS_RANGE, vmax=EXCESS_RANGE,
+                      interpolation="bilinear")  # fmt: skip
+    stroke = [patheffects.withStroke(linewidth=3, foreground="white")]
     for name, (ra, dec) in tracks.items():
-        ax.plot(ra, dec, ls=(0, (4, 3)), lw=1.4, color="#fee08b")[0].set_path_effects(stroke)
+        ax.plot(ra, dec, ls=(0, (4, 3)), lw=1.6, color="#e08214")[0].set_path_effects(stroke)
         middle = len(ra) // 2
         hit = found is not None and name in found
         label = ax.text(ra[middle] - 1.0, dec[middle], name, fontsize=9,
-                        color=red if hit else "white", weight="bold")  # fmt: skip
-        label.set_path_effects(
-            [patheffects.withStroke(linewidth=2.5, foreground="white" if hit else "black")]
-        )
+                        color=red if hit else "black", weight="bold")  # fmt: skip
+        label.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground="white")])
     for ra, dec in lines:
         ax.plot(ra, dec, color=red, lw=2.6, solid_capstyle="round")
     ax.set_xlim(extent[1], extent[0])
     ax.set_ylim(extent[2], extent[3])
     ax.set_xlabel("RA (degrees)")
     ax.set_ylabel("Dec (degrees)")
+    return shown
 
 
 def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query=17.0):
@@ -4431,7 +4458,8 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
     fourteen DES 2018 tracks (dashed), every line the line network alone
     reports along one of them (its own 1% level, any distance; from the
     detections `line_sky_matches` marks), and the names of the streams it
-    finds beyond random tracks (`line_sky_chance`) in red."""
+    finds beyond random tracks (`line_sky_chance`) in red. Black is an
+    excess of stars, white a lack, pale blue no data (`_excess_cmap`)."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -4469,8 +4497,9 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
         ("talk_des_sky_found.png", {"tracks": tracks, "lines": lines, "found": found}),
     ):
         fig, ax = plt.subplots(figsize=(12, 5.6))
-        fig.subplots_adjust(left=0.06, right=0.99, top=0.98, bottom=0.09)
-        talk_sky_panel(ax, images[query], extent, **{"tracks": {}, **kwargs})
+        fig.subplots_adjust(left=0.06, right=0.91, top=0.98, bottom=0.09)
+        shown = talk_sky_panel(ax, images[query], extent, **{"tracks": {}, **kwargs})
+        _excess_colorbar(fig, shown, cax=fig.add_axes([0.925, 0.2, 0.012, 0.6]))
         fig.savefig(DOC_FIGURES / file, dpi=200)
         plt.close(fig)
     print(f"network: {len(lines)} lines along DES 2018 tracks; found {len(found)}: "
@@ -4638,6 +4667,7 @@ if __name__ == "__main__":
             des2018_figures()
     elif arguments.step == "talk-figures":  # the DES sky for slides
         talk_figures(arguments.config or "hough/band2s5 residual x4", "tight")
+        des2018_gif(arguments.config or "hough/band2s5 residual x4", "tight")
     elif arguments.step == "line-sky":  # the line model over the whole DES sky
         config = arguments.config or LINE_SKY_CONFIG
         line_sky(config, mask)

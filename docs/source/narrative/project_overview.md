@@ -352,7 +352,8 @@ sums, which makes 9 for the two searches together.
 :width: 100%
 ```
 
-*The blind sky search at m−M = 17: lines found (colored by what they lie
+*The blind sky search at m−M = 17: black, more stars than the smooth
+background; pale blue, no data. Lines found (colored by what they lie
 along) and the DES 2018 tracks (dashed). All distances:
 {doc}`../experiments/line_model/line_sky`. A version for slides, with only
 the line network's lines along the tracks: `python
