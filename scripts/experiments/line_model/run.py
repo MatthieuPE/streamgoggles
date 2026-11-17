@@ -4551,6 +4551,100 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
           f"{', '.join(sorted(found))}")  # fmt: skip
 
 
+def talk_filter_panels(query=17.0, mask_objects="tight", box=(-2.0, 40.0, -42.0, -14.0)):
+    """The talk's before/after of the matched filter, on the same sky:
+    talk_all_stars.png (every star of the inference catalogue in the
+    magnitude clip) and talk_filtered_stars.png (the stars the filter keeps
+    at m-M = query), cropped to the same RA, Dec box (default: ATLAS and the
+    footprint's edge beside it), and talk_filter_panels.png with both. The
+    two maps go through the same steps -- counts over their own smooth local
+    background (`smooth_backgrounds`' recipe: nside-32 means), minus one,
+    a 0.4-degree Gaussian on the search's valid sky -- and share one colour
+    scale (`_excess_cmap`); only the filter differs."""
+    import healpy as hp
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pyarrow.parquet as pq
+    from scipy import ndimage
+
+    rd = real_des()
+    background, _, pix = build_sky("inference", "count", IMAGE_PIX)
+    nside = pix.nside
+    valid = background.valid_mask_full & ~rd.object_mask(
+        nside,
+        max_dwarf_mv=LINE_SKY_DWARF_MV,
+        max_radius_deg=LINE_SKY_DWARF_MAX_DEG if mask_objects == "tight" else None,
+    )
+    # every star in the clip, by pixel, a row group at a time
+    columns = ["ra", "dec"] + [f"{rd.NAMESPACE}_{band}_obs" for band in ("g", "r")]
+    catalogue = pq.ParquetFile(rd.INFERENCE_CATALOGUE)
+    every = np.zeros(hp.nside2npix(nside))
+    for group in range(catalogue.num_row_groups):
+        stars = catalogue.read_row_group(group, columns=columns).to_pandas()
+        keep = np.ones(len(stars), bool)
+        for band in ("g", "r"):
+            mag = stars[f"{rd.NAMESPACE}_{band}_obs"].to_numpy()
+            keep &= (mag >= rd.CLIPPING[band]["min"]) & (mag <= rd.CLIPPING[band]["max"])
+        pixel = hp.ang2pix(nside, stars.ra.to_numpy()[keep], stars.dec.to_numpy()[keep],
+                           lonlat=True)  # fmt: skip
+        every += np.bincount(pixel, minlength=every.size)
+    maps = {"all": every, "filtered": background.raw_map_full_dict["good"][query]}
+
+    # the smooth local background, as smooth_backgrounds builds it
+    lon, lat = hp.pix2ang(nside, np.arange(valid.size), lonlat=True)
+    coarse_weight = hp.ud_grade(valid.astype(float), MF_BACKGROUND_NSIDE)
+    weight = np.maximum(hp.get_interp_val(coarse_weight, lon, lat, lonlat=True), 1e-6)
+    step = 0.1
+    ra_axis = np.arange(box[0], box[1], step)
+    dec_axis = np.arange(box[2], box[3], step)
+    grid_ra, grid_dec = np.meshgrid(ra_axis, dec_axis)
+    grid_pixels = hp.ang2pix(nside, grid_ra % 360, grid_dec, lonlat=True)
+    on_sky = valid[grid_pixels].astype(float)
+    sigma = (0.4 / step, 0.4 / step / np.cos(np.radians(np.mean(box[2:]))))
+    near = ndimage.gaussian_filter(on_sky, sigma)
+    images = {}
+    for key, counts in maps.items():
+        counts = np.where(valid, counts, 0.0)
+        smooth = hp.get_interp_val(hp.ud_grade(counts, MF_BACKGROUND_NSIDE), lon, lat,
+                                   lonlat=True) / weight  # fmt: skip
+        observed = ndimage.gaussian_filter(on_sky * counts[grid_pixels], sigma)
+        expected = ndimage.gaussian_filter(on_sky * smooth[grid_pixels], sigma)
+        images[key] = np.where(
+            (on_sky > 0) & (near > 0.3), observed / np.maximum(expected, 1e-9) - 1, np.nan
+        )
+    extent = (ra_axis[0], ra_axis[-1] + step, dec_axis[0], dec_axis[-1] + step)
+
+    def panel(ax, image, title):
+        shown = ax.imshow(image, origin="lower", extent=extent, cmap=_excess_cmap(),
+                          vmin=-EXCESS_RANGE, vmax=EXCESS_RANGE,
+                          interpolation="bilinear")  # fmt: skip
+        ax.set_xlim(extent[1], extent[0])
+        ax.set_xlabel("RA (degrees)")
+        ax.set_ylabel("Dec (degrees)")
+        ax.set_title(title, fontsize=11)
+        return shown
+
+    DOC_FIGURES.mkdir(parents=True, exist_ok=True)
+    titles = {"all": "all stars", "filtered": f"stars kept by the filter (m−M = {query:g})"}
+    for key in maps:
+        fig, ax = plt.subplots(figsize=(5.2, 4.0))
+        panel(ax, images[key], titles[key])
+        fig.savefig(DOC_FIGURES / f"talk_{key}_stars.png", dpi=200, bbox_inches="tight")
+        plt.close(fig)
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 4.0), sharey=True)
+    for ax, key in zip(axes, maps, strict=True):
+        shown = panel(ax, images[key], titles[key])
+    axes[1].set_ylabel("")
+    _excess_colorbar(fig, shown, ax=axes, fraction=0.03, pad=0.02)
+    fig.savefig(DOC_FIGURES / "talk_filter_panels.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"all stars in the box: {int(every[np.unique(grid_pixels)].sum()):,}; "
+          f"kept by the filter: {int(maps['filtered'][np.unique(grid_pixels)].sum()):,}")  # fmt: skip
+
+
 def hough_figures(train_sky="fold0"):
     """hough_{blind,known}_{sky}.png and hough.csv: the line model, the
     per-pixel network with a line search on top, and the matched filter, on
@@ -4713,6 +4807,7 @@ if __name__ == "__main__":
     elif arguments.step == "talk-figures":  # the DES sky for slides
         talk_figures(arguments.config or "hough/band2s5 residual x4", "tight")
         des2018_gif(arguments.config or "hough/band2s5 residual x4", "tight")
+        talk_filter_panels()
     elif arguments.step == "line-sky":  # the line model over the whole DES sky
         config = arguments.config or LINE_SKY_CONFIG
         line_sky(config, mask)
