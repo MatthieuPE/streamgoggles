@@ -365,6 +365,18 @@ with the matched filter's lines too: {doc}`../experiments/line_model/line_sky`
 and {doc}`../experiments/line_model/summary`. `python
 scripts/experiments/line_model/run.py talk-figures`.*
 
+```{image} ../experiments/figures/line_model/talk_des_sky_tracks.png
+:alt: The same lines joined into tracks, one great circle per structure, red along a DES 2018 track and blue elsewhere
+:width: 100%
+```
+
+*The same lines joined into tracks (section 9: great circles within 5°,
+gaps under 1°, distances within 0.5 mag), one great circle per structure.
+Red: along a DES 2018 track, at its distance or another; blue: the rest
+(Magellanic Clouds' outskirts, the footprint's edge, other known streams,
+unidentified). The line network alone; the catalogue of candidates in
+{doc}`../experiments/line_model/line_sky` joins both searches.*
+
 - Trained only on simulations, the line search recovers most known streams
   with no human in the loop.
 - The real streams are found as often as their simulated copies at the same

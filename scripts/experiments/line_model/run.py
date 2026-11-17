@@ -2239,7 +2239,8 @@ def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"
     range, its number of segments, tiles and sources, and an identification
     -- a DES 2018 stream at its distance, another stream of galstreams, the
     periphery of a Magellanic Cloud, or none. Writes
-    line_sky/tracks_<config>.csv.
+    line_sky/tracks_<config>.csv (tracks_<config>__<scorer>.csv for a single
+    scorer) and returns the table.
     """
     import numpy as np
     import pandas as pd
@@ -2401,7 +2402,8 @@ def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"
         .reset_index(drop=True)
     )
     tracks.index.name = "track"
-    tracks.to_csv(LINE_SKY / f"tracks_{name}.csv")
+    alone = "" if scorer == "combined" else "__" + scorer.replace(" ", "_")
+    tracks.to_csv(LINE_SKY / f"tracks_{name}{alone}.csv")
     print(
         f"{len(table)} segments -> {len(tracks)} tracks; "
         f"{(tracks.segments >= 2).sum()} seen in at least two segments",
@@ -2428,6 +2430,7 @@ def line_sky_tracks(config=LINE_SKY_CONFIG, mask_objects=True, scorer="combined"
         .to_string(),
         flush=True,
     )
+    return tracks
 
 
 def line_sky_track_figure(config=LINE_SKY_CONFIG, mask_objects=True, min_segments=2):
@@ -4420,7 +4423,10 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     return lines
 
 
-def talk_sky_panel(ax, image, extent, tracks, lines=(), found=None, other_lines=()):
+def talk_sky_panel(
+    ax, image, extent, tracks, lines=(), found=None, other_lines=(),
+    title="line network, every distance",
+):  # fmt: skip
     """One talk panel: a matched-filter excess map (RA increasing to the
     left), optionally the DES 2018 tracks (dashed) with their names, and
     lines on top: `lines` (along a track) in theme red, `other_lines` (the
@@ -4458,7 +4464,7 @@ def talk_sky_panel(ax, image, extent, tracks, lines=(), found=None, other_lines=
                 Line2D([], [], color="#e08214", lw=1.6, ls=(0, (4, 3)), label="DES 2018 track"),
             ],
             loc="upper right", fontsize=9, framealpha=0.9,
-            title="line network, every distance", title_fontsize=9,
+            title=title, title_fontsize=9,
         )  # fmt: skip
     ax.set_xlim(extent[1], extent[0])
     ax.set_ylim(extent[2], extent[3])
@@ -4476,7 +4482,10 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
     of 1% of stream-free windows): red, along a DES 2018 track (marked by
     `line_sky_matches`); blue, the rest (the Magellanic Clouds' outskirts,
     other structures, false lines). Names: red, the streams it finds beyond
-    random tracks (`line_sky_chance`); black, the others. Black is an
+    random tracks (`line_sky_chance`); black, the others. And
+    talk_des_sky_tracks.png: the same lines joined into tracks
+    (`line_sky_tracks` on the line network alone), one great circle per
+    structure; red when it lies along a DES 2018 track, blue otherwise. Black is an
     excess of stars, white a lack, pale blue no data (`_excess_cmap`)."""
     import matplotlib
 
@@ -4521,6 +4530,22 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
         _excess_colorbar(fig, shown, cax=fig.add_axes([0.925, 0.2, 0.012, 0.6]))
         fig.savefig(DOC_FIGURES / file, dpi=200)
         plt.close(fig)
+    joined = line_sky_tracks(config, mask_objects, scorer="network")
+    on_des, off_des = [], []
+    for row in joined.itertuples():
+        ra = np.r_[_arc(row.ra_start, row.dec_start, row.ra_mid, row.dec_mid, 40)[0],
+                   _arc(row.ra_mid, row.dec_mid, row.ra_end, row.dec_end, 40)[0]]
+        dec = np.r_[_arc(row.ra_start, row.dec_start, row.ra_mid, row.dec_mid, 40)[1],
+                    _arc(row.ra_mid, row.dec_mid, row.ra_end, row.dec_end, 40)[1]]  # fmt: skip
+        (on_des if str(row.kind).startswith("DES 2018") else off_des).append((wrap(ra), dec))
+    fig, ax = plt.subplots(figsize=(12, 5.6))
+    fig.subplots_adjust(left=0.06, right=0.91, top=0.98, bottom=0.09)
+    shown = talk_sky_panel(ax, images[query], extent, tracks, lines=on_des, found=found,
+                           other_lines=off_des, title="line network, joined into tracks")  # fmt: skip
+    _excess_colorbar(fig, shown, cax=fig.add_axes([0.925, 0.2, 0.012, 0.6]))
+    fig.savefig(DOC_FIGURES / "talk_des_sky_tracks.png", dpi=200)
+    plt.close(fig)
+    print(f"network tracks: {len(joined)}, {len(on_des)} along DES 2018 tracks")
     print(f"network: {len(lines) + len(other_lines)} lines, {len(lines)} along DES 2018 "
           f"tracks; found {len(found)}: "
           f"{', '.join(sorted(found))}")  # fmt: skip
