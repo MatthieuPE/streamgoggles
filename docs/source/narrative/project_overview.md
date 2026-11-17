@@ -122,6 +122,61 @@ window: **does a stream lie along it?** Full description:
 | over the lines | two 3 × 5 convolutions over (angle, offset), batch norm, ReLU | 16 × 90 × 69 |
 | head | a 1 × 1 convolution and a sigmoid: one probability per line | 1 × 90 × 69 |
 
+### From the U-Net to the line image
+
+```{image} figures/overview/7_shapes.png
+:alt: One input map with a stream and a blob, one feature map, the sums along every line with the stream as a peak and the blob as a sinusoid, and one probability per line
+:width: 100%
+```
+
+*Toy, one channel of each stage. Red: the stream's line and its point in
+(θ, ρ); blue: a line through the blob, one point on the blob's sinusoid. The
+feature map is a smoothed copy standing in for a U-Net feature; the last
+panel shows what training asks for, not a trained output.
+`scripts/overview/figures.py`, `fig_shapes`.*
+
+`HoughUNet.forward` is two lines: `features = cat([backbone(x), x])`, then
+`head_conv(lines(hough(features)))`. Stage by stage, for a batch of B
+windows:
+
+1. **Input, B × 7 × 96 × 96.** S/N maps of one 11° window: the matched
+   filter at d, d − 0.5, d + 0.5, the off-track color box, and three
+   constant maps holding the distances.
+2. **U-Net, → B × 8 × 96 × 96** (`models.unet.UNet`, depth 2, base width
+   12, `head="identity"`). Encoder: 12 channels at 96 × 96, then 24 at
+   48 × 48; bottleneck: 48 at 24 × 24; each block two 3 × 3 convolutions
+   with batch norm and ReLU. The decoder upsamples back to 96 × 96 with skip
+   connections, and a 1 × 1 convolution gives 8 feature maps. No sigmoid,
+   no label: each pixel gets 8 numbers that summarize its neighbourhood
+   (about 1.5° around it).
+3. **Concatenate, → B × 15 × 96 × 96.** The 7 inputs are appended to the 8
+   features, so the plain matched filter is always summed too.
+4. **Hough transform, → B × 15 × 90 × 69** (`HoughTransform`, a fixed
+   sparse matrix of 6,210 lines × 9,216 pixels, applied to every channel
+   alike). Line (θ, ρ): angle θ = 0°, 2°, …, 178°; offset ρ from the window
+   centre, from −68 to +68 px in steps of 2 px. Each pixel votes for the
+   line through it at every θ, its weight split linearly between the two
+   nearest ρ bins. A line's value is the weighted sum of its pixels divided
+   by √(sum of weights): on white noise every line has the same spread,
+   short or long. Lines of fewer than 20 pixels (the corners) are invalid:
+   left out of the loss and of detection. The result is an image of lines,
+   15 channels over (θ, ρ); channel k at (θ, ρ) is feature k summed along
+   that line. Not trained, but differentiable: gradients flow through it
+   to the U-Net.
+5. **CNN over the lines, → B × 16 × 90 × 69.** Two 3 × 5 convolutions over
+   (θ, ρ), each with batch norm and ReLU. Each line is judged with its
+   neighbours, about ±2 angles and ±4 offsets. A stream is a compact peak;
+   a round overdensity draws a sinusoid across every angle (blue above); the
+   filters, learned from the line labels, tell them apart. No template of a
+   stream's Hough pattern is given.
+6. **Head, → B × 1 × 90 × 69.** A 1 × 1 convolution gives one logit per
+   line; a sigmoid gives its probability. For detection, the four models'
+   probabilities are averaged.
+
+In short: the U-Net decides **what to sum** at each pixel, the Hough
+transform **sums it along every line**, and the CNN decides **which sums
+look like a stream**.
+
 Only the U-Net and the small network over the lines are trained. The line
 layer is fixed: it is the integration along the stream, written into the
 network.

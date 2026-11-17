@@ -295,6 +295,72 @@ def fig_model():
     save(fig, "7_model.png")
 
 
+def fig_shapes():
+    """From the U-Net's feature maps to the line image (models.hough.HoughUNet).
+
+    Toy: one input channel (noise, a stream at 0.5 sigma per pixel, a round
+    overdensity); a Gaussian-smoothed copy stands in for one U-Net feature map;
+    its sums along every line (theta, rho); the output is an illustration of
+    what training asks for (one line), not a trained network.
+    """
+    n = 96
+    yy, xx = np.mgrid[:n, :n] - n / 2 + 0.25
+    th0, r0 = np.deg2rad(60), 12
+    img = rng.normal(0, 1, (n, n))
+    img += 0.5 * (np.abs(xx * np.cos(th0) + yy * np.sin(th0) - r0) < 1.5)
+    bx, by = -22, 20                                        # a dwarf-like blob
+    img += 2.5 * np.exp(-0.5 * ((xx - bx) ** 2 + (yy - by) ** 2) / 3.0 ** 2)
+    fy, fx = np.fft.fftfreq(n)[:, None], np.fft.fftfreq(n)[None]
+    feat = np.real(np.fft.ifft2(np.fft.fft2(img) * np.exp(-2 * np.pi ** 2 * 1.5 ** 2 * (fx ** 2 + fy ** 2))))
+    H, rmax = line_sums(feat)
+    theta = np.arange(90) * 2.0
+    k0 = int(round(np.rad2deg(th0) / 2))
+    out = np.exp(-0.5 * (((theta[:, None] - theta[k0]) / 3) ** 2
+                         + ((np.arange(-rmax, rmax + 1)[None] - r0) / 3) ** 2))
+    out[np.isnan(H)] = np.nan
+
+    fig, axs = plt.subplots(1, 4, figsize=(16, 4.6), gridspec_kw=dict(wspace=0.6))
+    t = np.linspace(-80, 80, 2)
+    def draw_line(ax, th, r, **kw):
+        ax.plot(n / 2 - 0.25 + r * np.cos(th) - t * np.sin(th),
+                n / 2 - 0.25 + r * np.sin(th) + t * np.cos(th), **kw)
+    for ax, im, title, shape in (
+        (axs[0], img, "input maps\n(S/N, one of 7 shown)", "7 × 96 × 96"),
+        (axs[1], feat, "U-Net features + the inputs\n(one of 15 shown, toy)", "15 × 96 × 96"),
+    ):
+        ax.imshow(im, cmap="Greys", origin="lower", vmin=-2, vmax=3 if ax is axs[0] else 1.2)
+        draw_line(ax, th0, r0, color=RED, lw=1.6, alpha=0.8)
+        thb = np.deg2rad(150)
+        draw_line(ax, thb, bx * np.cos(thb) + by * np.sin(thb), color="#2166ac", lw=1.6, ls="--")
+        ax.set_xlim(0, n - 1), ax.set_ylim(0, n - 1), ax.set_xticks([]), ax.set_yticks([])
+        ax.set_title(title, fontsize=12)
+        ax.text(0.5, -0.1, shape, transform=ax.transAxes, ha="center", va="top", fontsize=13,
+                color=RED, fontweight="bold")
+    ext = [-rmax, rmax, 0, 180]
+    axs[2].imshow(H, origin="lower", aspect="auto", cmap="Greys", extent=ext,
+                  vmin=np.nanpercentile(H, 5), vmax=np.nanpercentile(H, 99.9))
+    th = np.linspace(0, np.pi, 200)
+    axs[2].plot(bx * np.cos(th) + by * np.sin(th), np.rad2deg(th), color="#2166ac", lw=1, ls="--")
+    axs[2].scatter([r0], [60], s=260, facecolor="none", edgecolor=RED, lw=2)
+    axs[2].scatter([bx * np.cos(np.deg2rad(150)) + by * np.sin(np.deg2rad(150))], [150], s=90,
+                   marker="x", color="#2166ac", lw=2)
+    axs[2].set_title("sum along every line\n(fixed Hough transform)", fontsize=12)
+    axs[2].text(0.5, -0.17, "15 × 90 × 69", transform=axs[2].transAxes, ha="center", va="top",
+                fontsize=13, color=RED, fontweight="bold")
+    axs[3].imshow(out, origin="lower", aspect="auto", cmap="Reds", extent=ext, vmin=0, vmax=1)
+    axs[3].set_title("small CNN over the lines\n→ probability per line", fontsize=12)
+    axs[3].text(0.5, -0.17, "1 × 90 × 69", transform=axs[3].transAxes, ha="center", va="top",
+                fontsize=13, color=RED, fontweight="bold")
+    for ax in axs[2:]:
+        ax.set_xlabel("line offset ρ (px)", fontsize=10), ax.set_ylabel("line angle θ (°)", fontsize=10)
+    for left, right in zip(axs[:-1], axs[1:]):
+        x0 = left.get_position().x1 + 0.006
+        x1 = right.get_position().x0 - (0.045 if right in axs[2:] else 0.006)
+        fig.add_artist(FancyArrowPatch((x0, 0.5), (x1, 0.5), transform=fig.transFigure,
+                                       arrowstyle="simple,head_width=9,head_length=9", color=DARK))
+    save(fig, "7_shapes.png")
+
+
 # ----------------------------------------------------- 8. line length
 def fig_length():
     """Idealized line S/N against the stream's visible length (no network).
@@ -400,5 +466,5 @@ def fig_tracks():
 if __name__ == "__main__":
     fig_stream(); fig_matched_filter(); fig_bottleneck()
     fig_line_sums(); fig_pipeline(); fig_model()
-    fig_length(); fig_tracks(); fig_two_tests()
+    fig_length(); fig_tracks(); fig_two_tests(); fig_shapes()
     print("figures written to", OUT)
