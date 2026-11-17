@@ -47,6 +47,14 @@ It cannot be seen in a plain star-count map.
 - The distance is unknown, so the map is made at a series of **trial
   distances**.
 
+On the real DES Y6 data, the filter is an outline around a 13 Gyr,
+Z = 0.0002 isochrone, here at m−M = 16.7:
+
+```{image} ../experiments/figures/des2018_reproduction/cmd.png
+:alt: The DES Y6 color-magnitude diagram at m-M 16.7 with the DES 2018 matched filter and ours
+:width: 45%
+```
+
 How the filters are built here: {doc}`data_generation`.
 
 ## 3. The bottleneck: inspection by eye
@@ -63,6 +71,15 @@ How the filters are built here: {doc}`data_generation`.
 - A visual search has no measured completeness and no false-alarm rate.
 - LSST will cover about 18,000 deg², deeper (Ivezić et al. 2019, ApJ 873,
   111). Inspecting every map by eye will not scale.
+
+The real map at one distance (top: the excess over a smooth background;
+bottom: the background with the DES 2018 tracks;
+{doc}`../experiments/real_des/des2018_reproduction`):
+
+```{image} ../experiments/figures/des2018_reproduction/figure4.png
+:alt: The DES footprint through the matched filter at m-M 16.7, and the DES 2018 tracks on the background
+:width: 70%
+```
 
 ## 4. The approach: simulations as a training set
 
@@ -108,6 +125,32 @@ window: **does a stream lie along it?** Full description:
 Only the U-Net and the small network over the lines are trained. The line
 layer is fixed: it is the integration along the stream, written into the
 network.
+
+**One network, trained together.** The U-Net, the line layer and the
+network over the lines form one model, trained end to end with one loss:
+the binary cross-entropy of the line labels (section 7). The U-Net has no
+label of its own. Its gradients come only through the line sums, so it
+learns whatever per-pixel features make the line sums separate stream from
+background. Nothing is pretrained or frozen.
+
+**Why a U-Net before the sums.** The sum along a line can only add what the
+pixels hold. The U-Net turns the 7 input maps into features at full
+resolution, combining a few degrees of context with pixel detail
+(Ronneberger et al. 2015): it can, for instance, weigh the three distances
+and the off-track color box against each other before anything is summed.
+It is the project's earlier per-pixel network, kept as a feature
+extractor. The inputs are appended untouched, so the plain matched-filter
+line sums are always available to the next stage.
+
+**Why a CNN over the lines.** After the line layer, each window is an image
+of lines (angle × offset). A stream is a compact peak there; a wide stream
+spreads over neighbouring offsets, and a round overdensity (a dwarf, a
+cluster, a background blob) draws a sinusoid across all angles (Duda & Hart
+1972). Two small convolutions over (angle, offset) see each line with its
+neighbours, so they can add up a wide stream and reject the sinusoids. On
+the real sky the line network ignores the bursts of lines around bright
+dwarfs that the matched filter's own line search fires on
+({doc}`../experiments/line_model/line_sky`).
 
 ## 6. Why lines
 
@@ -254,21 +297,67 @@ at 200 random places and position angles. The stream is found when
 
 ## 10. Result
 
-```{image} figures/overview/6_scorecard.png
-:alt: The fourteen DES 2018 streams: 5 found by the pixel network along their tracks, 9 by the line searches without their tracks
+```{image} figures/overview/6_two_tests.png
+:alt: The fourteen DES 2018 streams: 11 found by the line network when told where they are, 8 when searching the whole sky
 :width: 100%
 ```
 
-| | along the known track | without the track |
-|---|---|---|
-| per-pixel network (first training) | 5 | — |
-| matched filter's line sums | 9 | 6 |
-| **line network** | **11** | **8** |
-| both line searches, each at half its rate | 10 | 8 (sky search: **9**) |
+| | along the known track | without the track | sky search |
+|---|---|---|---|
+| per-pixel network (first training) | 5 | — | 5 |
+| matched filter's line sums | 9 | 6 | 6 |
+| **line network** | **11** | **8** | **8** |
+| both line searches, each at half its rate | 10 | 8 | **9** |
 
 *Of the 14 DES 2018 streams. Ravi and Molonglo are not in our data
 ({doc}`../experiments/real_des/des2018_reproduction`). Source:
 {doc}`../experiments/line_model/summary`.*
+
+### Two tests: told where to look, or not
+
+The same network gives different counts because the tests ask different
+questions ({doc}`../experiments/line_model/des2018_known`). Both compare
+with 600 stream-free windows of the calibration sky, scored by the same
+models.
+
+- **Along the known track** (11 of 14). We take the stream's DES 2018
+  track, the window holding its longest straight run, and the lines along
+  the track in that window. We ask: does the best of these lines score
+  higher than the same lines in stream-free windows? Found when at most 1
+  in 201 stream-free windows score as high. Only a handful of lines are
+  tested, so the bar is low.
+- **Without the track** (8 of 14). No position is given. A line along the
+  track, in any of the stream's windows, must score above the level that
+  the best of all 6,210 lines reaches in only 1% of stream-free windows.
+  That is the sky search's level: it pays for looking at every line of every
+  window, so the bar is much higher. This is the test that matters for
+  finding new streams.
+- **The sky search** (8 for the network, 9 with both searches) runs the
+  blind test over the whole footprint, then asks whether more lines fall
+  along the track than along 200 random tracks of its shape
+  (*p* ≤ 0.05; section 9).
+
+A stream can pass the blind test and fail the known-track one. The
+known-track test looks at one window, the one with the longest straight run
+of the track; for Indus it gives *p* = 0.012, short of 1/201. The blind test
+looks at all of the stream's windows, and one line along Indus, in another
+window, clears its level.
+Willka Yaku, Aliqa Uma, Turbio and Turranburra pass only along the track:
+they are short or faint, and their lines do not beat every line of
+stream-free sky. Willka Yaku is found blind by the matched filter's line
+sums, which makes 9 for the two searches together.
+
+```{image} ../experiments/figures/line_model/des2018_sky_17.png
+:alt: The matched filter over the DES footprint at m-M 17, with the lines the sky search finds and the DES 2018 tracks
+:width: 100%
+```
+
+*The blind sky search at m−M = 17: black, more stars than the smooth
+background; pale blue, no data. Lines found (colored by what they lie
+along) and the DES 2018 tracks (dashed). All distances:
+{doc}`../experiments/line_model/line_sky`. A version for slides, with only
+the line network's lines along the tracks: `python
+scripts/experiments/line_model/run.py talk-figures`.*
 
 - Trained only on simulations, the line search recovers most known streams
   with no human in the loop.

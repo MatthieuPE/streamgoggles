@@ -198,20 +198,18 @@ def fig_pipeline():
 
 
 # ----------------------------------------------------- 6. scorecard
-def fig_scorecard():
-    """The 14 DES 2018 streams (Shipp et al. 2018) and what finds them.
+def fig_two_tests():
+    """The line network's two tests on the 14 DES 2018 streams (Shipp et al. 2018).
 
-    Numbers from docs/source/experiments/line_model/summary.md (sky search, both
-    searches combined: 9 of 14; per-pixel first training: 5 of 14 along the tracks).
+    From docs/source/experiments/line_model/summary.md: along the known track 11/14,
+    without the track 8/14 (des2018_known.md has both tests).
     """
     names = ["ATLAS", "Elqui", "Phoenix", "Jhelum", "Chenab", "Tucana III", "Indus",
              "Willka Yaku", "Aliqa Uma", "Wambelong", "Turbio", "Turranburra", "Molonglo", "Ravi"]
-    pixel = {"ATLAS", "Elqui", "Chenab", "Tucana III", "Willka Yaku"}
-    sky = {"ATLAS", "Elqui", "Phoenix", "Jhelum", "Chenab", "Tucana III", "Indus",
-           "Willka Yaku", "Wambelong"}
     absent = {"Molonglo", "Ravi"}
-    rows = [("pixel network, along known tracks", pixel),
-            ("line network + line sums, blind sky search", sky)]
+    along = set(names) - absent - {"Indus"}
+    blind = {"ATLAS", "Elqui", "Phoenix", "Jhelum", "Chenab", "Tucana III", "Indus", "Wambelong"}
+    rows = [("told where the stream is", along), ("searching the whole sky", blind)]
     fig, ax = plt.subplots(figsize=(12, 2.6))
     for r, (lab, found) in enumerate(rows):
         yv = 1 - r
@@ -220,14 +218,14 @@ def fig_scorecard():
                 ax.scatter(i, yv, s=260, marker="x", color=LIGHT, lw=2)
             else:
                 ax.scatter(i, yv, s=260, color=RED if nm in found else "white", ec=RED, lw=1.8)
-        ax.text(-0.8, yv, lab, ha="right", va="center")
+        ax.text(-0.8, yv, lab, ha="right", va="center", fontsize=14)
         ax.text(len(names) - 0.2, yv, f"{len(found)} / 14", va="center", color=RED,
-                fontweight="bold", fontsize=15)
+                fontweight="bold", fontsize=17)
     for i, nm in enumerate(names):
-        ax.text(i, 1.55, nm, rotation=45, ha="left", va="bottom", fontsize=10)
+        ax.text(i, 1.55, nm, rotation=45, ha="left", va="bottom", fontsize=13)
     ax.text(len(names) - 1.5, -0.65, "×: not in our data", color="#7F7F7F", fontsize=10, ha="center")
     ax.set_xlim(-0.6, len(names) + 0.8), ax.set_ylim(-0.9, 2.6), ax.axis("off")
-    save(fig, "6_scorecard.png")
+    save(fig, "6_two_tests.png")
 
 
 # ----------------------------------------------------- 7. the model
@@ -401,6 +399,6 @@ def fig_tracks():
 
 if __name__ == "__main__":
     fig_stream(); fig_matched_filter(); fig_bottleneck()
-    fig_line_sums(); fig_pipeline(); fig_scorecard(); fig_model()
-    fig_length(); fig_tracks()
+    fig_line_sums(); fig_pipeline(); fig_model()
+    fig_length(); fig_tracks(); fig_two_tests()
     print("figures written to", OUT)
