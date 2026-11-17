@@ -347,16 +347,22 @@ they are short or faint, and their lines do not beat every line of
 stream-free sky. Willka Yaku is found blind by the matched filter's line
 sums, which makes 9 for the two searches together.
 
-```{image} ../experiments/figures/line_model/des2018_sky_17.png
-:alt: The matched filter over the DES footprint at m-M 17, with the lines the sky search finds and the DES 2018 tracks
+```{image} ../experiments/figures/line_model/talk_des_sky_found.png
+:alt: The DES sky at m-M 17 with the DES 2018 tracks and every line the line network detects on the whole sky, red along a known track, blue elsewhere
 :width: 100%
 ```
 
-*The blind sky search at m−M = 17: black, more stars than the smooth
-background; pale blue, no data. Lines found (colored by what they lie
-along) and the DES 2018 tracks (dashed). All distances:
-{doc}`../experiments/line_model/line_sky`. A version for slides, with only
-the line network's lines along the tracks: `python
+*The blind sky search with the line network alone. Background: the DES
+matched-filter map at m−M = 17 (black, more stars than the smooth
+background; pale blue, no data). Dashed orange: the 14 DES 2018 tracks.
+Lines: every line the network detects, at every queried distance (m−M
+15-19), each scored above its level — the score the best line reaches in
+only 1% of stream-free windows. Red, along a DES 2018 track; blue,
+elsewhere (mostly the Magellanic Clouds' outskirts at m−M 18-19, and a
+group in the east, {doc}`../experiments/line_model/line_followup`). Names
+in red: found beyond random tracks; black: not found. Distance by distance,
+with the matched filter's lines too: {doc}`../experiments/line_model/line_sky`
+and {doc}`../experiments/line_model/summary`. `python
 scripts/experiments/line_model/run.py talk-figures`.*
 
 - Trained only on simulations, the line search recovers most known streams

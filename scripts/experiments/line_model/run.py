@@ -4420,12 +4420,13 @@ def des2018_gif(config="hough/band2s5 residual x4", mask_objects="tight"):
     return lines
 
 
-def talk_sky_panel(ax, image, extent, tracks, lines=(), found=None):
+def talk_sky_panel(ax, image, extent, tracks, lines=(), found=None, other_lines=()):
     """One talk panel: a matched-filter excess map (RA increasing to the
     left), optionally the DES 2018 tracks (dashed) with their names, and
-    lines on top (theme red). tracks: name -> (ra, dec) with RA wrapped to
-    (-180, 180]; lines: (ra, dec) pairs; found: the names to write in red,
-    the rest in black. Black is an excess of stars (`_excess_cmap`). Returns
+    lines on top: `lines` (along a track) in theme red, `other_lines` (the
+    rest) in blue, with a legend when there are any. tracks: name -> (ra,
+    dec) with RA wrapped to (-180, 180]; lines: (ra, dec) pairs; found: the
+    names to write in red, the rest in black. Black is an excess of stars (`_excess_cmap`). Returns
     the image, for a colour bar. Pure plotting, no data access, so it runs
     on fakes."""
     from matplotlib import patheffects
@@ -4442,8 +4443,23 @@ def talk_sky_panel(ax, image, extent, tracks, lines=(), found=None):
         label = ax.text(ra[middle] - 1.0, dec[middle], name, fontsize=9,
                         color=red if hit else "black", weight="bold")  # fmt: skip
         label.set_path_effects([patheffects.withStroke(linewidth=2.5, foreground="white")])
+    blue = "#2166ac"
+    for ra, dec in other_lines:
+        ax.plot(ra, dec, color=blue, lw=2.0, solid_capstyle="round")
     for ra, dec in lines:
         ax.plot(ra, dec, color=red, lw=2.6, solid_capstyle="round")
+    if len(lines) or len(other_lines):
+        from matplotlib.lines import Line2D
+
+        ax.legend(
+            handles=[
+                Line2D([], [], color=red, lw=2.6, label=f"along a DES 2018 track ({len(lines)})"),
+                Line2D([], [], color=blue, lw=2.0, label=f"elsewhere ({len(other_lines)})"),
+                Line2D([], [], color="#e08214", lw=1.6, ls=(0, (4, 3)), label="DES 2018 track"),
+            ],
+            loc="upper right", fontsize=9, framealpha=0.9,
+            title="line network, every distance", title_fontsize=9,
+        )  # fmt: skip
     ax.set_xlim(extent[1], extent[0])
     ax.set_ylim(extent[2], extent[3])
     ax.set_xlabel("RA (degrees)")
@@ -4455,10 +4471,12 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
     """Two slide figures of the DES sky at one queried distance, both on
     `des2018_excess_maps`: talk_des_sky.png, the bare map ("find the
     streams in this"), and talk_des_sky_found.png, the same map with the
-    fourteen DES 2018 tracks (dashed), every line the line network alone
-    reports along one of them (its own 1% level, any distance; from the
-    detections `line_sky_matches` marks), and the names of the streams it
-    finds beyond random tracks (`line_sky_chance`) in red. Black is an
+    fourteen DES 2018 tracks (dashed) and every line the line network alone
+    detects on the whole sky, at any distance (its own level: the best line
+    of 1% of stream-free windows): red, along a DES 2018 track (marked by
+    `line_sky_matches`); blue, the rest (the Magellanic Clouds' outskirts,
+    other structures, false lines). Names: red, the streams it finds beyond
+    random tracks (`line_sky_chance`); black, the others. Black is an
     excess of stars, white a lack, pale blue no data (`_excess_cmap`)."""
     import matplotlib
 
@@ -4479,12 +4497,12 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
 
     name = config.replace("/", "_") + _suffix(mask_objects)
     detections = pd.read_csv(LINE_SKY / f"detections_{name}.csv")
-    mine = detections[_chosen(detections, "network")
-                      & (detections["along"].fillna("") != "")]  # fmt: skip
-    lines = []
-    for row in mine.itertuples():
+    network = detections[_chosen(detections, "network")]
+    on_track = network["along"].fillna("") != ""
+    lines, other_lines = [], []
+    for row, along in zip(network.itertuples(), on_track, strict=True):
         ra, dec = _arc(row.ra1, row.dec1, row.ra2, row.dec2, 20)
-        lines.append((wrap(ra), dec))
+        (lines if along else other_lines).append((wrap(ra), dec))
     matches = pd.read_csv(LINE_SKY / f"matches_{name}.csv")
     found = set(matches.loc[matches["network p"] <= LINE_SKY_SIGNIFICANCE, "stream"])
     tracks = {}
@@ -4494,7 +4512,8 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
     DOC_FIGURES.mkdir(parents=True, exist_ok=True)
     for file, kwargs in (
         ("talk_des_sky.png", {}),
-        ("talk_des_sky_found.png", {"tracks": tracks, "lines": lines, "found": found}),
+        ("talk_des_sky_found.png",
+         {"tracks": tracks, "lines": lines, "found": found, "other_lines": other_lines}),
     ):
         fig, ax = plt.subplots(figsize=(12, 5.6))
         fig.subplots_adjust(left=0.06, right=0.91, top=0.98, bottom=0.09)
@@ -4502,7 +4521,8 @@ def talk_figures(config="hough/band2s5 residual x4", mask_objects="tight", query
         _excess_colorbar(fig, shown, cax=fig.add_axes([0.925, 0.2, 0.012, 0.6]))
         fig.savefig(DOC_FIGURES / file, dpi=200)
         plt.close(fig)
-    print(f"network: {len(lines)} lines along DES 2018 tracks; found {len(found)}: "
+    print(f"network: {len(lines) + len(other_lines)} lines, {len(lines)} along DES 2018 "
+          f"tracks; found {len(found)}: "
           f"{', '.join(sorted(found))}")  # fmt: skip
 
 
